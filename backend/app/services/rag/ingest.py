@@ -170,6 +170,9 @@ def ingest_text(
     uploader_id: Optional[int] = None,
     title: Optional[str] = None,
     description: Optional[str] = None,
+    # 修复：原版漏掉 doc_type，导致所有元数据都默认 'manual'，分类能力失效
+    # 电商知识库等场景需要按 doc_type 区分（product / policy / faq）
+    doc_type: str = "manual",
 ) -> Dict:
     """
     把一段原文切分后入库到 Qdrant + MySQL 元数据
@@ -246,6 +249,7 @@ def ingest_text(
         uploader_id=uploader_id,
         title=title,
         description=description,
+        doc_type=doc_type,  # 修复：原版漏传，导致元数据全部默认 'manual'
     )
 
     logger.info(
