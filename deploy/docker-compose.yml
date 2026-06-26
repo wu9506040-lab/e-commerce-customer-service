@@ -1,0 +1,226 @@
+# =============================================================
+# 智能客服 Agent 系统 - Docker Compose（精简基础设施版）
+# 服务: api / frontend / qdrant / redis / mysql
+# 目标: 智能客服 + RAG + Agent + 面试可讲
+# =============================================================
+
+# 所有 build 镜像走国内 registry-mirrors（在 ~/.docker/daemon.json 已配）
+services:
+  # ---------------------------------------------------------
+  # FastAPI 后端 - RAG + Agent 核心
+  # ---------------------------------------------------------
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    image: customer-service-api:dev
+    container_name: customer-service-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Qwen (DashScope) LLM 配置
+      QWEN_API_KEY: ${QWEN_API_KEY}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL}
+      QWEN_MODEL: ${QWEN_MODEL}
+      # 数据库
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}?charset=utf8mb4
+      # 缓存
+      REDIS_URL: redis://redis:6379/0
+      # 向量库
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION}
+      # 文件上传/日志
+      UPLOAD_DIR: /app/uploads
+      LOG_DIR: /app/logs
+      # 应用
+      APP_ENV: ${APP_ENV:-dev}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - uploads_data:/app/uploads
+      - logs_data:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------
+  # 前端 - Vue3 构建产物 + nginx 反代
+  # 镜像源：registry.cn-hangzhou.aliyuncs.com/library/nginx（国内加速）
+  # Vue3 构建：本地 npm run build → frontend/dist/，mount 到 nginx html
+  # ---------------------------------------------------------
+  frontend:
+    image: nginx:alpine
+    container_name: customer-service-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    volumes:
+      # Vue3 构建产物（dist/ 由本地 npm run build 生成）
+      - ../frontend/dist:/usr/share/nginx/html:ro
+      # nginx 配置（覆盖默认）
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    networks:
+      - frontend
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------
+  # Qdrant 向量库
+  # ---------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.10.1
+    container_name: customer-service-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"      # REST API
+      - "6334:6334"      # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      # qdrant 镜像无 curl/wget/nc；/dev/tcp 仅 bash 支持，必须显式 bash -c
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf \"GET /healthz HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------
+  # Redis 缓存
+  # ---------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: customer-service-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    command: redis-server --appendonly yes --maxmemory 100mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------
+  # MySQL 8 - 结构化数据
+  # ---------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: customer-service-mysql
+    restart: unless-stopped
+    ports:
+      # 宿主 3307 -> 容器 3306（避开本机已装的 MySQL 占用 3306）
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --default-time-zone=+08:00
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+# =============================================================
+# Volumes - bind mount 到 E 盘，避免占 C 盘
+# =============================================================
+volumes:
+  qdrant_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_ROOT}/qdrant
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_ROOT}/redis
+  mysql_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_ROOT}/mysql
+  uploads_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_ROOT}/uploads
+  logs_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_ROOT}/logs
+
+# =============================================================
+# Networks - 前端/后端网络隔离
+# - frontend: 浏览器/外部访问层
+# - backend: 服务间通信层
+# =============================================================
+networks:
+  frontend:
+    driver: bridge
+    name: customer-service-frontend
+  backend:
+    driver: bridge
+    name: customer-service-backend
