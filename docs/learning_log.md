@@ -1,7 +1,7 @@
 # 智能客服 Agent 系统 - 学习日志
 
-> 按 CLAUDE.md §7 要求记录。模块顺序按开发时间线，每个模块包含 What / Why / Tech / Flow / Problem→Fix / Role 六段。
-> 目的：项目复盘 + 面试表达。
+> 按项目演进日志规范记录。模块顺序按开发时间线，每个模块包含 What / Why / Tech / Flow / Problem→Fix / Role 六段。
+> 目的：项目演进记录 + 设计思路沉淀。
 
 ---
 
@@ -497,7 +497,7 @@ POST /chat {query, session_id?}
 ### Why
 - 之前所有数据都靠 Redis 24h TTL + Qdrant 永久，缺一块「结构化业务数据」的真源
 - 用户、会话元数据、知识库运营元信息、审计日志 —— 这些都是「需要持久化 + 可查询 + 可审计」的典型关系数据
-- MySQL 是面试常考点（schema 设计 / 索引 / 字符集 / 逻辑删除 / 外键策略），单独抽出做模块便于讲解
+- MySQL 是常见工程实践考点（schema 设计 / 索引 / 字符集 / 逻辑删除 / 外键策略），单独抽出做模块便于维护
 - 与 Redis 形成「热路径 + 冷路径」双层架构：Redis 缓存最新 20 条（低延迟 prompt 注入），MySQL 存全量（回填 + 审计）
 
 ### Tech Stack
@@ -857,7 +857,7 @@ DELETE /conversations/{session_id}
 ### Why
 - 列表 N+1 是 ORM 经典坑：10 条会话 = 11 次查询；100 条 = 101 次；用户量上去后数据库 CPU 直接打满
 - Cursor 分页是聊天场景的「正确」做法：offset 在 1000 万条数据后 LIMIT 1000000, 20 要扫 100 万行（巨慢），cursor 用 id 直接定位 O(log n)
-- 两个改动同文件、同函数、同 schema，做一次模块化讲解比拆成两节更连贯
+- 两个改动同文件、同函数、同 schema，做一次模块化说明比拆成两节更连贯
 
 ### Tech Stack
 - **JOIN 子查询**：
@@ -1244,7 +1244,7 @@ GET /auth/me
 #### Why
 - **`.env.example` 字段不同步**：新人 `cp .env.example .env.dev` 启动报 JWT_SECRET 占位符错，得翻 git history
 - **prod/dev 共存**：dev 用 docker compose，prod 走 `docker-compose -f a.yml -f prod.yml` 合并，配置源唯一（dev 是主）
-- **README 老旧**：V1.0 时写的"⏳待开发"全是 V1.1/V1.2 已完成的；面试官/接手人第一眼看到"待开发"会误判项目完成度
+- **README 老旧**：V1.0 时写的"⏳待开发"全是 V1.1/V1.2 已完成的；接手人第一眼看到"待开发"会误判项目完成度
 
 #### Tech
 - Docker Compose `extends` / `-f` 合并（**没用 extends 因为 frontend 服务在 dev 中被注释**，合并更通用）
@@ -1288,7 +1288,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
 - ✅ V1.2：/health 组件状态 / /me 用户统计 / 流式滚动节流 / 代码块复制 / skeleton / prod compose / .env 补全
 - ⏳ V2.0：Agent（用户当前禁用）
 
-### V1.2 设计原则（面试可讲）
+### V1.2 设计原则
 
 | 原则 | 体现 |
 |------|------|
@@ -1323,7 +1323,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
 
 **触发场景**：V1.2 完成后，用户要求"全栈 Docker 模式"（之前是 backend 在 Docker、frontend 用 `npm run dev` 在 Windows 宿主机）。于是启用了 `deploy/docker-compose.yml` 里被注释的 frontend 服务，**第一次把 Vue3 + nginx + API 真正串成生产链路**，暴露了多个 V1.0 写 placeholder nginx 时未触发的坑。
 
-> 这一节是"从能跑 → 上线"的最后一公里，比 V1.2 主任务更费时，是项目最值得面试讲的运维/配置经验。
+> 这一节是"从能跑 → 上线"的最后一公里，比 V1.2 主任务更费时，是项目中值得分享的运维/配置经验。
 
 ### What
 1. **启用 frontend 容器**：取消 `docker-compose.yml` 中 frontend 注释 + mount `../frontend/dist` 替代占位 index.html
@@ -1332,7 +1332,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
 4. **修 1 个 CORS 跨源 301**（见下文 Problem → Fix）
 
 ### Why
-- 用户决策 "B. 全 Docker 模式"：演示/面试/交付场景需要"与生产 100% 一致"
+- 用户决策 "B. 全 Docker 模式"：演示 / 交付场景需要"与生产 100% 一致"
 - 占位 nginx 是 V1.0 临时方案（"前端待开发"），不反代 API、不处理 SSE、不考虑 location 尾斜杠语义
 - Healthcheck 在 V1.0 写 compose 时**只在 dev compose 默认行为下测过**（ip 都能通），切到全 Docker 后 IPv6/工具缺失的差异才暴露
 
@@ -1414,7 +1414,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
   2. **`$host` vs `$http_host`**：nginx 内部变量，`$host` 来自请求行第一个 `.` 之前（**剥端口**），`$http_host` 来自 HTTP 头（**保留端口**）
   3. **生产 nginx 反代必须 `$http_host`**：否则后端 redirect 的 Location 会丢端口，触发跨源
 
-### 反思（运维 / 面试向）
+### 反思（运维视角）
 
 - **占位配置的债务**：V1.0 写 nginx 占位时只服务静态 HTML，所有"反代 API、SSE、跨域、location 语义"全没暴露。这次切到全 Docker 才暴雷。**经验：基础设施代码也要"按未来真实形态写"，否则后期改动是 1+ 倍成本**
 - **"本地 dev 通 ≠ 容器 prod 通"**：
@@ -1438,7 +1438,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
 
 - **测试覆盖缺口**：这次 CORS 301 在 V1.2 期间完全没发现，**直到用户用浏览器实际点开页面才暴露**。教训：**配置类改动必须端到端浏览器验证**（curl 走 8000 直连是测不出来的，curl 走 5173 反代才会暴露 301 行为）
 
-### 关键 nginx.conf 范本（面试可背）
+### 关键 nginx.conf 范本（可直接复用）
 
 ```nginx
 server {
