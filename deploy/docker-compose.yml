@@ -1,7 +1,6 @@
 # =============================================================
 # 智能客服 Agent 系统 - Docker Compose（精简基础设施版）
 # 服务: api / frontend / qdrant / redis / mysql
-# 目标: 智能客服 + RAG + Agent + 面试可讲
 # =============================================================
 
 # 所有 build 镜像走国内 registry-mirrors（在 ~/.docker/daemon.json 已配）
