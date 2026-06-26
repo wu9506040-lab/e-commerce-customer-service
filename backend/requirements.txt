@@ -1,0 +1,42 @@
+# =============================================================
+# 智能客服后端 - Python 依赖
+# 锁版本，保证环境一致
+# =============================================================
+
+# Web 框架
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+
+# 数据验证
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# 配置管理
+python-dotenv==1.0.1
+
+# HTTP 客户端
+httpx==0.28.1
+
+# LLM（千问 DashScope OpenAI 兼容模式）
+openai==1.58.1
+
+# 向量库客户端
+qdrant-client==1.12.1
+
+# Redis 客户端（会话历史存储）
+redis==5.2.1
+
+# =============================================================
+# MySQL 持久化 + Auth（§10 新增）
+# =============================================================
+# ORM（同步风格，跟 redis_client 一致；async API 留到下期）
+SQLAlchemy==2.0.36
+# MySQL 驱动（8.0 默认 caching_sha2_password，需要 cryptography）
+PyMySQL==1.1.1
+cryptography==43.0.3
+# 密码哈希
+bcrypt==4.2.1
+# JWT 签发与校验
+python-jose[cryptography]==3.3.0
+# OAuth2PasswordRequestForm 需要 form data
+python-multipart==0.0.20
