@@ -20,10 +20,12 @@ import logging
 import threading
 from typing import Any, Generator, Optional, Tuple
 
+from app.core.config import settings
 from app.core.qwen import stream_chat as qwen_stream_chat
 from app.services.intent_service import IntentService
 from app.services.order_service import OrderService
 from app.services.policy_service import PolicyService
+from app.services.refund_graph import refund_graph_app  # V3 LangGraph 版
 from app.services.refund_service import RefundService
 from app.services.rag.pipeline import run_stream as v12_rag_run_stream
 from app.tools.product_tool import ProductTool
@@ -197,7 +199,12 @@ class Synthesizer:
                 yield from Synthesizer._handle_order(query, user_id, intent_result)
                 return
             elif intent == "refund_query":
-                yield from Synthesizer._handle_refund(query, user_id, intent_result)
+                # V3 开关：USE_LANGGRAPH_REFUND=true 时走 LangGraph 版
+                if settings.USE_LANGGRAPH_REFUND:
+                    logger.info("refund_query → LangGraph V3")
+                    yield from Synthesizer._handle_refund_v3(query, user_id, intent_result)
+                else:
+                    yield from Synthesizer._handle_refund_v2(query, user_id, intent_result)
                 return
             elif intent == "product_query":
                 yield from Synthesizer._handle_product(query, intent_result, history)
@@ -266,10 +273,13 @@ class Synthesizer:
         yield from Synthesizer._stream_llm(prompt)
 
     @staticmethod
-    def _handle_refund(
+    def _handle_refund_v2(
         query: str, user_id: int, intent_result: dict
     ) -> Generator[Tuple[str, Any], None, None]:
-        """refund_query：调 RefundService（复合 tool + policy）"""
+        """refund_query V2.x：调 RefundService（复合 tool + policy）
+
+        V3 起作为 fallback：USE_LANGGRAPH_REFUND=false 时使用，或 LangGraph 版异常时回退。
+        """
         entities = intent_result["entities"]
         order_no = entities.get("order_no")
 
@@ -324,6 +334,111 @@ class Synthesizer:
             query=query,
         )
         yield from Synthesizer._stream_llm(prompt)
+
+    @staticmethod
+    def _handle_refund_v3(
+        query: str, user_id: int, intent_result: dict
+    ) -> Generator[Tuple[str, Any], None, None]:
+        """refund_query V3：走 LangGraph refund_graph_app.stream()
+
+        与 V2 区别：
+        - LLM 调用在 LangGraph Node 6（synthesize_answer），不在 synthesizer
+        - 支持「质量问题无凭证 → escalate」升级人工路径
+        - LangGraph 异常 → fallback 到 _handle_refund_v2
+
+        SSE 协议兼容：
+        - judge Node → yield meta（含 refundable / reason / days_since_order）
+        - fetch_policy Node → 仅 log，不 yield meta
+        - synthesize / escalate Node → yield token（final_answer 作为整体 token）
+        - done 事件由 api/chat.py 统一处理（write-through）
+        """
+        entities = intent_result["entities"]
+        order_no = entities.get("order_no")
+
+        # 1. 鉴权（与 V2 一致）
+        if user_id == ANONYMOUS_USER_ID:
+            yield ("meta", {
+                "intent": "refund_query",
+                "entities": entities,
+                "contexts": [],
+                "scores": [],
+                "v3_engine": "langgraph",
+            })
+            yield from Synthesizer._stream_simple(NO_LOGIN_PROMPT)
+            return
+
+        # 2. order_no 兜底（与 V2 一致）
+        if not order_no:
+            recent = OrderService.list_user_orders(user_id)
+            recent = recent[:1] if recent else []
+            if recent:
+                order_no = recent[0]["order_no"]
+            else:
+                yield ("meta", {
+                    "intent": "refund_query",
+                    "entities": entities,
+                    "contexts": [],
+                    "scores": [],
+                    "v3_engine": "langgraph",
+                })
+                yield from Synthesizer._stream_simple("用户当前没有订单，无法判断退款。请提供订单号。")
+                return
+
+        # 3. 调 LangGraph refund_graph_app.stream() 边执行边输出
+        meta_emitted = False
+        try:
+            for event in refund_graph_app.stream(
+                {
+                    "user_id": user_id,
+                    "order_no": order_no,
+                    "query": query,
+                },
+                stream_mode="updates",  # 每步返回 {node_name: state_update}
+            ):
+                for node_name, state_update in event.items():
+                    # 跳过 __start__ / __end__ 哨兵节点
+                    if node_name.startswith("__"):
+                        continue
+
+                    if node_name == "judge":
+                        yield ("meta", {
+                            "intent": "refund_query",
+                            "entities": entities,
+                            "contexts": [],
+                            "scores": [],
+                            "order_no": order_no,
+                            "v3_engine": "langgraph",
+                            "refundable": state_update.get("refundable"),
+                            "reason": state_update.get("reason"),
+                            "days_since_order": state_update.get("days_since_order"),
+                        })
+                        meta_emitted = True
+                    elif node_name == "fetch_policy":
+                        logger.info(
+                            f"refund_v3 fetch_policy: order={order_no} "
+                            f"hits={len(state_update.get('policy_docs', []))}"
+                        )
+                    elif node_name in ("synthesize", "escalate"):
+                        if not meta_emitted:
+                            # 兜底：理论上 judge 一定先于 synthesize
+                            yield ("meta", {
+                                "intent": "refund_query",
+                                "entities": entities,
+                                "contexts": [],
+                                "scores": [],
+                                "order_no": order_no,
+                                "v3_engine": "langgraph",
+                            })
+                            meta_emitted = True
+                        chunk = state_update.get("final_answer", "")
+                        if chunk:
+                            yield ("token", chunk)
+        except Exception as e:
+            # LangGraph 挂了 → fallback 到 V2（保险丝）
+            logger.exception(
+                f"LangGraph refund 图执行失败，fallback 到 V2: order={order_no} err={e}"
+            )
+            yield from Synthesizer._handle_refund_v2(query, user_id, intent_result)
 
     @staticmethod
     def _handle_product(

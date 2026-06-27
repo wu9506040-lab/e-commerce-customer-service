@@ -2244,3 +2244,148 @@ yield ("done", ...)
 - `test_load_50users.py`：固定 50 并发的标准压测脚本（验收 §9 字面项）
 - `test_load_sweep.py`：扫 5/10/20/30/50 并发的甜点定位脚本（验收 §9 实际能力）
 - A+B 代码修复：跨 core（qwen）+ services（synthesizer）两个模块，按 CLAUDE.md §6 仍是「core 给 services 用接口」，未破坏分层
+
+---
+
+## 20. V3 LangGraph 引入：退款流程重构 + 分层架构演进（2026-06-27）
+
+### What
+把退款流程从 V2.x 的 `RefundService.check_refundable_with_policy`（固定 3 步 if/else）升级为 LangGraph StateGraph，并引入「固定 vs 复杂」分层原则：
+- **固定路径**（11 个模块：商品咨询 / 政策问答 / 订单查询 / 物流 / FAQ / Auth / Session 等）继续走 RAG + Tool
+- **复杂路径**（步骤 ≥ 4 或需要条件分支或需要升级人工）走 LangGraph
+
+交付物：
+- `backend/app/services/refund_graph.py`（~210 行）：LangGraph 版退款图（6 Node + 3 条件边）
+- `backend/tests/test_refund_graph.py`（~180 行）：16 个 LangGraph 单测
+- `backend/tests/test_synthesizer_refund.py`（~190 行）：9 个 synthesizer 集成测试
+- `backend/app/services/synthesizer.py`：新增 `_handle_refund_v3`，V2 改名 `_handle_refund_v2`，env 控制 dispatch
+- `backend/app/core/config.py`：加 `USE_LANGGRAPH_REFUND: bool = False`
+- `docs/refund_graph_v3.png`（26 KB）：状态图 PNG（可直接放简历）
+
+### Why
+**为什么引入 LangGraph（不是"规则禁了所以引入"）**：
+1. **业务真到了复杂门槛**：退款流程从 3 步扩展到 5-6 步（查订单→判断→查政策→验凭证→升级人工），4 条条件分支 + 1 个升级路径，if/else 嵌套难维护
+2. **可观测性**：LangGraph 的 stream + 状态可视化（mermaid PNG）+ Checkpoint 让每步可追溯，if/else 版只能 log
+3. **市场匹配**：JD 普遍要求 LangGraph 经验（一线/新一线 70%+），项目里没有 LangGraph 字样简历初筛容易挂
+4. **生态复用**：LangGraph 的 StateGraph / Conditional Edge / Checkpoint / interrupt 这些能力自研做起来很重
+
+**为什么不重构整个项目（YAGNI 原则）**：
+- 11 个固定模块路径明确、调用链简单，LangGraph 引入是浪费
+- 业务复杂度没到框架门槛时，框架就是负担
+- **判定标准**：步骤 ≥ 4 或需要条件分支或需要自我修正 → LangGraph；其他继续 RAG + Tool
+
+### Tech Stack
+- **langgraph 0.2.76**：StateGraph + Conditional Edge + stream_mode="updates"
+- **pydantic 2.13.4**：TypedDict 定义 state schema（`total=False` 容错）
+- **现有项目组件**：OrderTool / PolicyService / qwen_chat（零新增基础设施）
+- **依赖冲突**：pydantic-settings 2.3.4 vs 2.4.0（langchain-community 要求），暂不升级
+
+### Flow（LangGraph refund_graph 6 Node）
+
+```
+输入: {user_id, order_no, query, user_proof}
+   ↓
+[Node 1] fetch_order
+   调 OrderTool.get_order_by_no(user_id, order_no)
+   算 days_since_order = (now - create_time).days
+   return {order_info, days_since_order}
+   ↓
+[Node 2] judge_basic_refundable
+   if not order → refundable=False, "订单不存在"
+   elif status == "refunded" → refundable=False, "已退款"
+   elif status == "delivered" and days <= 7 → refundable=True, "符合 7 天无理由"
+   else → refundable=False, "超过 7 天或未签收"
+   return {refundable, reason, days_since_order(pass-through)}
+   ↓
+[Conditional 1] should_fetch_policy(refundable)?
+   - True → fetch_policy
+   - False → synthesize（跳过查政策，节省 RAG 开销）
+   ↓
+[Node 3] fetch_policy（条件性，仅 refundable=True 执行）
+   调 PolicyService.search_policy(query, top_k=3)
+   return {policy_docs}
+   ↓
+[Conditional 2] should_check_proof(refundable)?
+   - True → check_proof
+   - False → synthesize
+   ↓
+[Node 4] check_user_proof（条件性）
+   if "质量" in query and not user_proof → escalate_to_human=True, "需提供质量问题凭证"
+   return {escalate_to_human}
+   ↓
+[Conditional 3] should_escalate(escalate_to_human)?
+   - True → escalate
+   - False → synthesize
+   ↓
+[Node 5] escalate_to_human（不走 LLM）
+   return {final_answer: "您的情况需要人工客服..."}
+   ↓ OR ↓
+[Node 6] synthesize_answer（走 LLM）
+   拼 prompt（4 段：事实>政策>商品>历史）+ 调 qwen_chat(temperature=0.3)
+   return {final_answer: llm_reply}
+```
+
+**4 条路径覆盖**：
+1. **可退 + 正常问题** → fetch_order→judge→fetch_policy→check_proof→synthesize（5 Node + 1 LLM）
+2. **可退 + 质量问题无凭证** → fetch_order→judge→fetch_policy→check_proof→**escalate**（5 Node，0 LLM）
+3. **不可退（超过 7 天/已退款）** → fetch_order→judge→synthesize（3 Node，跳过 policy/proof）
+4. **订单不存在** → fetch_order→judge→synthesize（3 Node，judge 返回"订单不存在"）
+
+### Problem → Fix
+
+#### Problem 1：LangGraph stream_mode="updates" 是 per-node delta（最隐蔽）
+**症状**：测试 `meta["days_since_order"] == 3` 失败，实际是 None。
+**根因**：`refund_graph_app.stream(input, stream_mode="updates")` 每个 event 返回 `{node_name: node_return_value}`，**只含该 node 显式 return 的字段**。`fetch_order` 写了 `days_since_order` 到 state，但 `judge` 没显式 return 它，所以 `judge` 的 update event 里没有。
+**Fix**：`judge_basic_refundable` 在每个分支多 return `days_since_order`（pass-through）。
+**教训**：LangGraph stream update 跟 React state setter 一样是 partial delta，不是完整 state。要么 pass-through 字段，要么改用 `stream_mode="values"` 拿完整 state（但失去 delta 清晰性）。
+
+#### Problem 2：LangGraph stream event 包含哨兵节点
+**症状**：处理 `node_name == "__end__"` 时 KeyError。
+**根因**：LangGraph stream 在每个 super-step 起点 emit `{"__start__": ...}`，终点 emit `{"__end__": ...}`。
+**Fix**：循环里 `if node_name.startswith("__"): continue` 跳过哨兵。
+
+#### Problem 3：LangGraph 内部抛异常会中断整个 SSE 流
+**症状**：LangGraph 版的 `fetch_order` 如果 OrderTool 抛异常（比如 DB down），整个 refund_query 流程挂。
+**根因**：LangGraph 的 `.stream()` 会传播内部异常到调用方，没有内置 fallback。
+**Fix**：Synthesizer._handle_refund_v3 加 `try/except`，catch 后 `yield from _handle_refund_v2(...)` fallback 到 V2.x。**保险丝设计**：LangGraph 任何异常 → V2.x 接管 → 不影响线上。
+
+#### Problem 4：pydantic-settings 版本冲突
+**症状**：`pip install langgraph` 时提示 `langchain-community requires pydantic-settings>=2.4.0, but you have 2.3.4`。
+**根因**：langchain-community 0.3.0 升级了 pydantic-settings 要求（2.4.0+）。
+**Fix**：暂不升级（影响范围未评估，怕破坏现有 services）。LangGraph 0.2.76 跟 pydantic-settings 2.3.4 兼容，仅记录，V4 评估升级。
+
+#### Problem 5：synthesizer.py 的 import 顺序混乱
+**症状**：refactor 后 import 部分按字母序排，但 config 应该排在 core 模块最先。
+**Fix**：按 `core/ → services/ → tools/ → models/` 顺序分组，让 import 顺序反映模块依赖层级。
+
+### Architecture Role
+- **LangGraph 子图**：`refund_graph_app` 是 V3 引入的第一个 LangGraph StateGraph，作为"复杂路径"的代表
+- **Synthesizer 分派**：`run_stream` 在 refund_query 分支加环境变量 dispatch，是"框架切换"的接入口
+- **Fallback 保险丝**：`_handle_refund_v3` 内部 try/except 兜底到 `_handle_refund_v2`，是 V3 上线的安全网
+- **零侵入**：不动 IntentClassifier / OrderTool / PolicyService / qwen_chat，只在 synthesizer 层加分支
+- **测试分层**：单测 16 个（LangGraph 本身）+ 集成测试 9 个（Synthesizer+LangGraph+SSE 协议+Fallback）= 25 个全过
+
+### 演进路径更新
+- **V3 现状**：1 个 LangGraph 图（refund）+ 25 测试全过 + 状态图 PNG 可视化
+- **V3.1 计划**：智能导购图（多轮澄清 → 筛选 → 比价 → 推荐），复用相同 StateGraph 模式
+- **V4 计划**：人在回路（interrupt_before）+ Checkpoint（SqliteSaver）+ 跨服务编排（订单+支付+物流子图组合）
+
+### 反思
+**1. 「为什么不用 LangGraph」是错的命题**
+我之前回答"CLAUDE.md 禁用了所以不做"被指出来没有技术判断力。正确答案是：**评估过两个方案，业务复杂度到门槛才引入**。LangGraph 不是银弹，11 个固定模块继续 RAG+Tool 是对的；退款流程到 5-6 步 + 条件分支 + 升级路径，LangGraph 是对的。**框架成本要 < 自己写的成本才值得引入**。
+
+**2. 「fallback 设计」是渐进式升级的核心**
+V3 不破坏 V2.x：环境变量默认 false，V2.x 继续工作；验证 OK 后切 true；LangGraph 任何异常 → fallback 到 V2。这种"双轨并行 + 灰度切换 + 异常兜底"是复杂系统演进的标准模式，比"一次性重构"安全 10 倍。
+
+**3. 「stream_mode=updates vs values」是 LangGraph 关键设计选择**
+- values：完整 state，简单但失去 delta 清晰性，调试时不知道哪个 node 改了什么
+- updates：每步 delta，清晰但要注意 pass-through，否则下游看不到前置字段
+我选 updates（更能体现"Node 各自负责"），代价是要在 judge 里显式 pass-through days_since_order。**trade-off：清晰性 vs 字段冗余**。
+
+**4. 「单测 vs 集成测试」分层覆盖**
+- 单测（16 个）：只测 LangGraph 图本身 + Node 函数逻辑，mock 外部依赖（OrderTool/PolicyService/qwen_chat）
+- 集成测试（9 个）：测 Synthesizer + LangGraph 协同 + SSE 协议 + Fallback
+两层覆盖：LangGraph 改动不会破坏 Synthesizer，Synthesizer 改动不会破坏 LangGraph。**测试金字塔的实践：底层快、上层慢，分层 mock**。
+
+**5. 「JD 要求 vs 项目需要」的权衡**
+JD 普遍要求 LangGraph 是事实。**项目需求和简历表达是两回事**：项目内部该用什么用什么（11 个固定 + 1 个 LangGraph），简历要会写（V3 LangGraph 实战）。**不要为了简历硬塞框架（11 个固定模块不该用 LangGraph），也不要忽视市场需求（JD 初筛是硬门槛）**。
