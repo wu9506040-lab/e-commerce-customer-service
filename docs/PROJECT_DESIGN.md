@@ -143,8 +143,10 @@
 | 10 | **Policy Service** | 政策 RAG | 🚧 设计 | M2 |
 | 11 | **Tools Layer** | 函数调用层（非 agent）| 🚧 设计 | M2 |
 | 12 | **Response Synthesizer** | 多源融合 + 单一 LLM | 🚧 设计 | M4 |
-| 13 | Agent（多步推理）| 🚫 禁用 | — | V3+ |
+| 13 | Agent（全自主框架）| 🚫 禁用（多步由 LangGraph 处理）| — | V3+ |
 | 14 | Admin Portal | 商家后台 | ⏸ 后置 | — |
+| 15 | **Refund LangGraph** | 退款流程 StateGraph（6 Node + 条件分支 + 升级人工）| ✅ V3 | M2 升级 |
+| 16 | **复杂路径评估** | 智能导购 / 复杂售后 / 自动 SQL 等 V3+ LangGraph 候选 | ⏸ 规划 | V3.1+ |
 
 ### 模块依赖
 
@@ -164,10 +166,11 @@ Session ── Chat
 
 ### 不做的（YAGNI / Scope Lock）
 
-| 项 | 不做的理由 |
-|---|---|
-| Agent 框架（LangGraph / 自研 base）| 单步任务可靠，多步易错（CLAUDE.md §2）|
-| memory/ 独立层 | 现有 services/session.py + Redis 够用 |
+| 项 | 不做的理由 | V3 状态 |
+|---|---|---|
+| Agent 框架（全自主规划）| 单步任务可靠，多步易错（CLAUDE.md §2）| 🚫 仍禁用，V3 改用 LangGraph 处理复杂路径 |
+| LangGraph 全量替换 | 11 个固定模块 RAG+Tool 已够用，引入框架是浪费 | ⚠️ 只用于复杂路径（步骤 ≥ 4 + 条件分支 + 升级）|
+| memory/ 独立层 | 现有 services/session.py + Redis 够用 | — |
 | 多租户 | demo 单租户 |
 | 支付 | D7 不做（仅客服）|
 | 商家后台 | D6 不做 |
@@ -379,6 +382,9 @@ INTENT_RULES = [
 | **M3** | 路由层 | Intent Classifier（规则优先）+ 独立 /intent 端点 | ✅ 完成（2026-06-27）|
 | **M4** | 融合层 | Response Synthesizer + 端到端 SSE 集成到 /chat | ✅ 完成（2026-06-27）|
 | **M5** | 验收 | 4 类意图各 10 条测试用例 + 浏览器联调 | ✅ 完成（2026-06-27，平均 95.8% 通过）|
+| **V3** | 框架分层 | LangGraph 退款图（6 Node）+ Synthesizer env dispatch + Fallback + 25 测试 | ✅ 完成（2026-06-27）|
+| **V3.1** | 复杂路径扩展 | 智能导购 / 自动 SQL / 跨平台订单聚合 LangGraph 图 | ⏸ 规划 |
+| **V4** | 高级能力 | interrupt_before（人在回路）+ SqliteSaver + MCP 子图组合 | ⏸ 规划 |
 
 ### 现有基础（已交付）
 
@@ -459,6 +465,9 @@ INTENT_RULES = [
 | D8 | 模型降级 | 优雅降级（fallback FAQ）| 2026-06-26 |
 | D9 | 多语言 | 仅中文 | 2026-06-26 |
 | D10 | 数据合规 | 无要求（demo）| 2026-06-26 |
+| D11 | V3 LangGraph 引入 | 复杂路径用 LangGraph，固定路径继续 RAG+Tool（业务驱动）| 2026-06-27 |
+| D12 | 框架切换策略 | env 控制（USE_LANGGRAPH_REFUND），默认 false，灰度切换 | 2026-06-27 |
+| D13 | Fallback 兜底 | LangGraph 异常 → V2.x 接管（_handle_refund_v3 try/except）| 2026-06-27 |
 
 ### 讨论记录（按时间倒序）
 
@@ -473,6 +482,9 @@ INTENT_RULES = [
 | 2026-06-26 | 商品类目 | 3C 数码 |
 | 2026-06-26 | 数据存放 | docs/ecommerce_kb/ 本地保留 |
 | 2026-06-26 | 入库方式 | 复用 ingest_text + batch_ingest |
+| 2026-06-27 | V3 LangGraph 引入 | 评估 5 条升级路径，业务复杂度到门槛才引入（不盲从 JD）|
+| 2026-06-27 | 固定 vs 复杂分层 | 步骤 ≥ 4 + 条件分支 + 升级路径 → LangGraph；其他继续 RAG+Tool |
+| 2026-06-27 | 渐进式升级 | env 灰度 + try/except fallback，零侵入上线 |
 
 ---
 

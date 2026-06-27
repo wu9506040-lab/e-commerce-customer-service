@@ -40,3 +40,9 @@ bcrypt==4.2.1
 python-jose[cryptography]==3.3.0
 # OAuth2PasswordRequestForm 需要 form data
 python-multipart==0.0.20
+
+# =============================================================
+# V3 LangGraph（复杂路径编排）
+# =============================================================
+# LangGraph 0.2.x（与 langchain 0.3 兼容）
+langgraph>=0.2,<0.3

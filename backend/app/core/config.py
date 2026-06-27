@@ -55,5 +55,9 @@ class Settings(BaseSettings):
     # ---- 日志 ----
     LOG_LEVEL: str = "INFO"
 
+    # ---- V3 LangGraph 开关（默认关闭，需手动设 true 启用）----
+    # 控制 synthesizer._handle_refund 走 V2.x service 版还是 V3 LangGraph 版
+    USE_LANGGRAPH_REFUND: bool = False
+
 
 settings = Settings()
