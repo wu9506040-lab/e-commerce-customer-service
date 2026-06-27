@@ -1470,3 +1470,777 @@ server {
 ```
 
 **4 个易错点全避免**：location 尾斜杠、`$host` 剥端口、SSE buffer、auth 头透传。
+
+---
+
+## 16. M1 数据层：电商 Schema 升级 + Mock 种子（V2 升级第一站）
+
+**文件**：
+- 新增 `backend/app/models/product.py`、`backend/app/models/order.py`、`backend/app/models/refund.py`
+- 改 `backend/app/models/__init__.py`、`deploy/mysql/init/01_schema.sql`
+- 新增 `scripts/seed_ecommerce_data.py`
+
+### What
+为 V2 电商化升级建数据基座。3 张新表 + 1 张子表 + 完整状态机 + 5 订单 mock 数据：
+
+| 表 | 行数 | 关键字段 |
+|---|---|---|
+| products | 10 | sku / name / price / attributes(JSON) / review_text / stock |
+| orders | 5 | order_no / status(状态机) / total_amount / user_id |
+| order_items | 6-7 | order_id / product_id / sku(冗余) / product_name(冗余) / qty / unit_price / subtotal |
+| refunds | 1 | refund_no / order_id / reason / status / amount |
+
+### Why
+- V1 5 张表（users / conversations / messages / knowledge_documents / operation_logs）全是「基础设施表」，缺业务实体
+- V2 核心能力（商品 / 订单 / 退款）必须有结构化数据支撑，否则 RAG + Tool 都没东西可调用
+- 状态机用 Python Enum 约束，DB 存 VARCHAR(16)：避免 ENUM 类型难迁移（schema 演进痛点）
+- 冗余 `sku` + `product_name` 在 order_items：商品改名/下架后，订单历史仍可读（电商核心需求）
+
+### Tech
+- **SQLAlchemy 2.0**：`Mapped[T] + mapped_column()` 类型化声明，与 §10 风格一致
+- **状态机强约束**：业务层必须用 `OrderStatus.PAID.value` 写，禁止字符串硬编码
+- **JSON 字段**：`products.attributes`（动态属性：颜色/规格）、`products.review_text`（独立字段不入 RAG）
+- **逻辑外键**：按 CLAUDE.md §9 约定，所有外键用 BigInt 存 id，不建 DB 级 FK 约束（保留 `KEY ... (user_id, ...)` 索引）
+- **`Base.metadata.create_all` 幂等建表**：seed 脚本首调，已存在则跳过，演示阶段绕开手工 SQL 迁移
+
+### Flow（数据生命周期）
+
+```
+                          seed_ecommerce_data.py
+                                  │
+   ┌──────────────────────────────┼──────────────────────────────┐
+   ▼                              ▼                              ▼
+┌────────────────┐    ┌────────────────┐            ┌────────────────┐
+│ DELETE 清空    │    │ Base.create_all│            │ INSERT mock    │
+│ (子表→父表)    │    │ (幂等建表)      │            │ (10/5/6/1 行)  │
+└────────────────┘    └────────────────┘            └────────────────┘
+                                                         │
+                                                         ▼
+                                                ┌────────────────┐
+                                                │ status 分布验证 │
+                                                │ pending/paid/  │
+                                                │ shipped/deliv/ │
+                                                │ refunded  1:1  │
+                                                └────────────────┘
+```
+
+### Problem → Fix
+
+#### Problem 1：`relationship()` 要求 FK（最隐蔽）
+- **症状**：`sqlalchemy.exc.NoForeignKeysError: Could not determine join condition between parent/child tables on relationship Order.items`
+- **根因**：CLAUDE.md §9 禁 DB 级 FK，但 SQLAlchemy `relationship()` 需要 FK 才能推导 join 条件
+- **取舍**：删 `Order.items` 和 `OrderItem.order` 两个 relationship，靠 `order_id` 字段手动 JOIN
+  - 选了「不写 relationship」而非「加 ForeignKey 但不创建 DB 约束」——后者需要 `ForeignKey(...) + use_alter=True` 等魔法，可读性差
+  - 当前 5 订单数据量级，N+1 不是瓶颈；将来真要 ORM 联表再加 `primaryjoin` 表达式
+- **教训**：CLAUDE.md 的「禁 DB 级 FK」和 SQLAlchemy ORM 的便利有冲突，**取舍要明确写注释**
+
+#### Problem 2：Windows 主机解不到 Docker 容器名 `mysql`
+- **症状**：`socket.gaierror: [Errno 11001] getaddrinfo failed`，连接失败
+- **根因**：Docker 内部 DNS 只在容器网络生效，Windows 宿主机没装 docker-compose 的 service discovery
+- **Fix**：seed 脚本跑前 override `DATABASE_URL` 用 `127.0.0.1:3307`（端口映射，host→container）
+- **教训**：写进 feedback memory（`feedback_docker_mysql_localhost`），下次直接用
+
+#### Problem 3：表不存在导致 seed 失败
+- **症状**：第一次跑 seed 直接 `Table 'customer_service.refunds' doesn't exist`
+- **根因**：MySQL init 目录只在「数据卷为空」时跑一次，本项目 schema 是 V1.0 建的，新增表不会自动建
+- **Fix**：seed 脚本首调 `Base.metadata.create_all(bind=get_engine())` 幂等建表（已存在跳过）
+- **设计取舍**：写 Alembic 迁移太重（M1 是 demo 阶段、可重建），create_all 够用
+
+#### Problem 4：Python stdout 缓冲导致「看似无输出」
+- **症状**：`python seed.py` 退出码 0 但 `> seed.log 2>&1` 空文件
+- **根因**：Windows + Python 3.11 组合下，`logging.basicConfig` 默认行为有缓冲
+- **Fix**：调试用 `python -u`（强制无缓冲）或直接 docker exec mysql 验证数据落地（最终方案）
+
+#### Problem 5：docker exec 输出 `????` 中文乱码
+- **症状**：`docker exec mysql mysql -e "SELECT ..."` 商品名显示 `????`
+- **根因**：shell 默认 GBK 编码，MySQL 客户端不自动转 UTF-8
+- **Fix**：用 Python 直读（`PYTHONIOENCODING=utf-8`），数据本身是 UTF-8 正确存储的
+
+### Architecture Role
+属于 `models/` 层（数据实体定义）+ `scripts/`（运维脚本）。被未来模块消费：
+- **M2 Order Service**：用 `Order` / `OrderItem` 做订单查询（结构化，非 RAG）
+- **M2 Refund Service**：用 `Refund` + 调 Policy RAG 做退款复合路径
+- **M2 Product Service**：用 `Product` 做商品列表 + RAG 详情增强
+- **M3 Intent Classifier**：规则关键词 + refund/order/product 四分类
+- **M4 Response Synthesizer**：tool 结构化结果（订单状态、商品详情）作为高优先级事实
+
+### 演进路径更新
+- ✅ V1.0 ~ V1.2：14 业务模块 + 5 张基础设施表 + Auth + SSE + Vue3
+- ✅ **M1**：电商 4 张表 + 状态机 + mock 数据（当前进度）
+- ⏳ M2：Product / Order / Refund / Policy Service + Tools Layer
+- ⏳ M3：Intent Classifier（规则 + LLM 兜底）
+- ⏳ M4：Response Synthesizer 多源融合 + 端到端 SSE
+- ⏳ M5：4 类意图验收 40 用例 + 浏览器联调
+- ⏳ V3.0：Agent（CLAUDE.md §2 当前禁用）
+
+### 关键 SQL 验证记录
+
+```sql
+SELECT COUNT(*) FROM products WHERE deleted=0;     -- 10 ✅
+SELECT COUNT(*) FROM orders WHERE deleted=0;       -- 5 ✅
+SELECT COUNT(*) FROM order_items WHERE deleted=0;  -- 7 ✅
+SELECT COUNT(*) FROM refunds WHERE deleted=0;      -- 1 ✅
+
+SELECT order_no, status, total_amount FROM orders ORDER BY create_time;
+-- ORD20260601005 | refunded  | 698.00
+-- ORD20260615004 | delivered | 4299.00
+-- ORD20260622003 | shipped   | 1299.00
+-- ORD20260621002 | paid      | 6898.00
+-- ORD20260620001 | pending   | 899.00
+-- 状态机 5 个状态全覆盖（缺 completed，V2 可补）
+```
+
+### 反思
+- **YAGNI 验证**：`product_categories` 表本想做（类目树），评估后放弃——10 个商品用 `attributes.category` 字段足够，单独表 = 过度设计
+- **「演示可重建」权衡**：`shipping_addresses` / `logistics` 表也延后，service 层 mock 返回假数据足够端到端跑通
+- **relationship 取舍是当下最大设计决策**：删掉后失去 ORM 联表便利，但保留「禁 DB 级 FK」的项目一致性。**记下：M2 写 service 时如发现 N+1 严重，再加 `primaryjoin` 表达式回来**
+
+---
+
+## 17. M2 服务 + Tools 层（V2 第二站）
+
+**文件**：
+- 新增 `backend/app/tools/{__init__,order_tool,product_tool,refund_tool}.py`
+- 新增 `backend/app/services/{order_service,refund_service,policy_service}.py`
+
+### What
+把 §16 的数据层暴露成业务能力。**两层结构**：
+- **Tools 层（薄）**：纯 DB 查询 / mock，不调 LLM / 不做 RAG
+- **Services 层（厚）**：编排 tool + 跨源融合（如 refund = tool + policy RAG）
+
+### Why
+- **CLAUDE.md §6 原则**：「tool 函数只做 DB 查询，不调 LLM 不做 RAG」——把"决策"和"取数"拆开
+- **不引入 Agent 框架**：CLAUDE.md §2 禁 LangGraph，Tool 单步调用 + Service 编排足以覆盖电商客服 4 类意图
+- **越权防护放 Tool 层**：每个 Tool 方法都强制收 `user_id`，DB 查询自带 `WHERE user_id=?`，上层不会忘记
+
+### 接口矩阵
+
+| 类 | 方法 | 数据源 | 关键防护 |
+|---|---|---|---|
+| OrderTool | list_user_orders / get_order_by_no | MySQL orders | `WHERE user_id=?` |
+| OrderTool | get_order_items | MySQL order_items | order_id 已校验 |
+| OrderTool | get_logistics | mock | status→物流状态映射（5 状态全覆盖）|
+| ProductTool | get_by_sku / list_products / search_by_keyword | MySQL products | `WHERE status=1 AND deleted=0` |
+| RefundTool | list_user_refunds / get_refund_by_no | MySQL refunds + orders | `WHERE user_id=?` |
+| RefundTool | check_refundable | MySQL + 规则判断 | 7 天无理由规则封装 |
+| PolicyService | search_policy | Qdrant knowledge_base | V2.5 简化为全量搜，无 doc_type 过滤 |
+| OrderService | list_user_orders / get_order_detail | 编排 OrderTool | 复合 order+items+logistics |
+| RefundService | check_refundable_with_policy | 编排 RefundTool + PolicyService | 双源融合，synthesizable 标记 |
+
+### Flow（refund 复合路径 — V2 最有代表性的服务）
+
+```
+RefundService.check_refundable_with_policy(user_id, order_no, query)
+  │
+  ├─► RefundTool.check_refundable(user_id, order_no)
+  │     └─► 7 天无理由规则 + status 状态机 → {refundable, reason, days_since_order}
+  │
+  └─► PolicyService.search_policy(query, top_k=3)
+        └─► embed_text(query) → Qdrant top-3 → [{text, source, score}]
+  
+  return {
+    tool_result: {refundable, reason, ...},
+    policy_docs: [{text, source, score}, ...],
+    synthesizable: 至少一边有结果
+  }
+```
+
+### Tech
+- **同 Session 复用**：所有 Tool 方法用 `with with_safe_session(commit=False) as db`，读路径用 readonly session
+- **N+1 防护**：RefundTool.list_user_refunds 批量预取 order_no_map（1 次 orders 查询，避免 N 次）
+- **状态机映射**：OrderTool.get_logistics 用 dict 硬编码 6 种 status → (物流状态, 位置)
+- **policy 软过滤**：V2.5 因 KB 67 条全是政策、KB 没 doc_type 字段，**简化**为「全量搜 + 不后过滤」；等 V2.6 引入商品 KB 时再加 `doc_type=policy` 过滤
+
+### Problem → Fix
+
+#### Problem 1：QDRANT_URL 容器名错（最坑的运维 bug）
+- **症状**：PolicyService.search_policy 调 `httpx` POST 收到 **502 Bad Gateway**，但 `curl POST http://localhost:6333/...` 正常 400
+- **根因链**：
+  1. `deploy/docker-compose.yml:30` 写的是 `QDRANT_URL=http://qdrant:6333`（V0 早期占位名）
+  2. 实际容器名是 `customer-service-qdrant`（项目改名后未同步）
+  3. 容器内 POST 出去 → DNS 找不到 `qdrant` → 网关返 502
+  4. host 上 curl 走 `localhost:6333` 是端口映射，绕过了 DNS，所以"通"
+- **Fix**：`deploy/docker-compose.yml:30` 改 `QDRANT_URL=http://customer-service-qdrant:6333`，重建 API 镜像
+- **教训**：写 docker-compose 必须用**实际 container_name**，不用裸 service name；占位名长期不动 = 隐藏 bug
+
+#### Problem 2：policy_service collection 名错
+- **症状**：修完 #1 后，policy_service 改报 `Collection knowledge_base not found`
+- **根因**：policy_service.py 写死 `COLLECTION_NAME = "customer_service_kb"`（V0 占位），实际 Qdrant 只有 `knowledge_base`
+- **Fix**：改 `COLLECTION_NAME = "knowledge_base"`，删 `doc_type` 后过滤（KB 67 条全政策）
+- **教训**：collection 名是**数据契约**，改名前必须 grep 全仓库
+
+#### Problem 3：容器镜像未重建导致新文件不见
+- **症状**：修完配置后 `docker exec ls /app/app/services/policy_service.py` 报 No such file
+- **根因**：docker-compose `up -d` 默认**不重新 build**，只 restart 容器
+- **Fix**：`docker compose build api` 先重建镜像，再 `up -d`
+- **教训**：修改 Dockerfile COPY 的目录（`app/`）必须 `build`；只改 env 不需要 build
+
+#### Problem 4：MySQL container 名 mismatch（沿用 M1 教训）
+- 与 M1 Problem 2 同根因，复用 `feedback_docker_mysql_localhost` memory
+- seed 脚本 / smoke test 都用 `127.0.0.1:3307`，**第一次写对就再没踩**
+
+### Architecture Role
+
+```
+api/chat.py (M4 才有)
+  │
+  ▼
+services/synthesizer.py (M4)
+  │
+  ├──► OrderService ─────► OrderTool ─────► MySQL orders
+  ├──► RefundService ──┬──► RefundTool ────► MySQL refunds + orders
+  │                    └──► PolicyService ──► Qdrant knowledge_base
+  ├──► PolicyService ─────► Qdrant knowledge_base (复用)
+  └──► (M4 没用 ProductService，只用 ProductTool)
+              │
+              ▼
+       ProductTool ─────► MySQL products
+```
+
+属于 `services/` + `tools/` 双层架构（CLAUDE.md §6 分层扩展）：
+- **Tools 层（新增）**：业务能力的"原子操作"，封装 DB 查询 + 越权防护
+- **Services 层（现有）**：业务能力的"编排"，可组合 tool + RAG + LLM
+
+被未来模块消费：
+- **M3 Intent Classifier**：用 Tool 类名作为方法分派 hint（不直接调，但 entity 抽取后 service 层调）
+- **M4 Response Synthesizer**：4 路径分发都调 services 层
+- **M5 端到端测试**：每个 Tool 方法都跑过 smoke test
+
+### 演进路径更新
+- ✅ V1.0 ~ V1.2 + 全 Docker 部署 + M1 数据层
+- ✅ **M2**：3 Tools + 3 Services + 全量 smoke test 通过
+- ✅ **M3**：Intent Classifier + 独立 /intent 端点 + 10 用例 100%
+- ✅ **M4**：Response Synthesizer + 集成到 /chat + 10 用例 100%
+- ⏳ M5：浏览器联调（前端适配 V2 多源融合答案）
+- ⏳ V2.6-A/B/C：状态记忆 / Tool-first / 语义意图实验
+- ⏳ V3.0：Agent（CLAUDE.md §2 当前禁用）
+
+### 关键 smoke test 验证记录
+
+| Tool/Service | 验证场景 | 结果 |
+|---|---|---|
+| OrderTool.list_user_orders(user_id=1) | 5 笔订单按时间倒序 | ✅ |
+| OrderTool.get_logistics("ORD20260622003") | shipped→运输中/深圳转运中心 | ✅ |
+| ProductTool.get_by_sku("SKU001") | ZP1 ¥5999 SKU001 | ✅ |
+| ProductTool.search_by_keyword("耳机") | BP1 ¥899 | ✅ |
+| RefundTool.check_refundable(delivered 10d) | 不可退 + 7 天超期 | ✅ |
+| RefundTool.check_refundable(shipped) | 可退 + shipped | ✅ |
+| RefundTool.check_refundable(refunded) | 不可退 + 已退款 | ✅ |
+| PolicyService.search_policy("退货政策") | top-1: policy_return_main 0.738 | ✅ |
+| PolicyService.search_policy("退款多久到账") | top-1: policy_return_faq_03 0.883 | ✅ |
+
+### 反思
+
+- **Layer 拆分真的有用**：Tool 写完立刻能 smoke test（不依赖任何 service / LLM），开发速度比"service 内联 tool"快一倍以上
+- **mock 数据是负债也是资产**：物流 mock 当前足够 demo，但生产必须接真实快递 API（顺丰/菜鸟），记到 V3+ 路线图
+- **Service 编排复杂度待观察**：refund_service 同时调 2 个 tool + 1 个 RAG，单元测试将是挑战（需要 mock Qdrant / MySQL），M5 时补 pytest fixture
+- **配置 bug 是 devops 不是代码 bug**：M2 大半时间花在 Qdrant / collection / container name 上，**纯代码量只占 30%**——这条经验要写进 CLAUDE.md §7「环境问题速查」
+
+---
+
+## 18. M3 Intent Classifier（V2 第三站）
+
+**文件**：
+- 新增 `backend/app/schemas/intent.py`、`backend/app/services/intent_service.py`、`backend/app/api/intent.py`
+- 改 `backend/app/main.py`（挂 router）
+
+### What
+独立意图分类服务。4 类意图 + 3 级 fallback + 实体抽取：
+- **4 类意图**：`order_query` / `refund_query` / `product_query` / `policy_query`
+- **3 级 fallback**：规则（关键词+正则）→ LLM 兜底 → 默认 policy_query
+- **实体抽取**：自动识别 query 里的 `order_no`（ORD123）/ `sku`（ZP1/BP1/LP1）
+
+### Why
+- V1.2 时代所有 query 走统一 RAG pipeline，**无视意图差异**——商品咨询和物流查询用同一份 KB 召回，效率差
+- V2 架构（PROJECT_DESIGN.md §3）核心是「按意图分派」：order/refund 走 tool，product/policy 走 RAG
+- 规则优先避免 LLM 调用开销：**M3 验收 §9 要求 < 100ms**（规则命中时几乎无开销）
+
+### 接口
+
+```
+POST /intent/classify
+  请求：{"query": "...", "last_intent": "可选（V2.6 启用）"}
+  响应：{"intent": "order_query", "confidence": 1.0, "method": "rule",
+         "entities": {"order_no": "ORD001", "sku": null, "keywords": []}}
+```
+
+### Flow
+
+```
+IntentService.classify(query, last_intent=None)
+  │
+  ├─► rule_classify(query)
+  │     │
+  │     INTENT_RULES = [
+  │       ("refund_query",  [...r"我[要想要]?退款", r"能退吗", ...]),
+  │       ("policy_query",  [...r"7\s*天无理由", r"包邮", ...]),
+  │       ("order_query",   [...r"我的订单", r"物流", ...]),
+  │       ("product_query", [...r"多少钱", r"ZP\d", ...]),
+  │     ]
+  │     return {intent, confidence=1.0, method="rule"}  # 命中即返
+  │
+  ├─► llm_classify(query)  # 规则未命中
+  │     │
+  │     prompt = "你是电商客服意图分类器... 输出 JSON"
+  │     qwen_chat(temperature=0.1, max_tokens=80)
+  │     parse → {intent, confidence=0.0~1.0, method="llm"}
+  │
+  ├─► default {intent: "policy_query", confidence: 0.5, method: "default"}
+  │
+  └─► _extract_entities(query)
+        ORDER_NO_RE = \bORD\d{3,}\b
+        SKU_RE      = \b(?:ZP|BP|LP)\d{1,3}\b
+```
+
+### Tech
+- **规则顺序敏感**：refund 在前（语义最明确）→ policy（兜底）→ order → product，最后 product 默认包含 SKU 前缀
+- **few-shot prompt**：LLM 兜底时给 3 个示例（product / policy / order），提升分类准确率
+- **temperature=0.1**：分类任务要确定性，避免 LLM "创意发挥"
+- **JSON 强校验**：LLM 输出可能包 ``` 或解释文字，用 `re.search(r"\{[^{}]+\}", reply)` 提取首个 JSON 段
+- **正则大小写不敏感**：`re.IGNORECASE` 让用户写 "ord001" 也能抽到
+
+### 验证（10 用例 = 100%）
+
+| # | query | 期望 | 实测 | method | 延迟 |
+|---|-------|------|------|--------|------|
+| 1 | 我想退款 | refund_query | ✅ | rule | 14ms |
+| 2 | 已经签收 5 天了还能退货吗 | refund_query | ✅ | rule | 4ms |
+| 3 | 我的订单到哪了 | order_query | ✅ | rule | 3ms |
+| 4 | ORD123 发货了吗 | order_query | ✅ | rule + entity=ORD123 | 3ms |
+| 5 | 快递派送中吗 | order_query | ✅ | rule | 3ms |
+| 6 | ZP1 现在多少钱 | product_query | ✅ | rule + entity=ZP1 | 3ms |
+| 7 | BP1 的续航怎么样 | product_query | ✅ | rule + entity=BP1 | 4ms |
+| 8 | 你们这有没有手机 | product_query | ✅ | **llm** (0.90) | 2836ms |
+| 9 | 保修期多久 | policy_query | ✅ | **llm** (0.95) | 959ms |
+| 10 | 双十一有什么活动 | policy_query | ✅ | **llm** (0.95) | 1855ms |
+
+**规则命中 7 条 (3-27ms)，LLM 兜底 3 条 (1-3s)，全部正确**。验收标准 §8 ≥ 80% → 实际 100%。
+
+### Problem → Fix
+
+#### Problem 1：意图分类边界 — "退款"规则把 policy 误命中
+- **症状**：测试 "7 天无理由退货运费谁出" → refund_query（错）
+- **根因**：原 refund 规则含 `r"7\s*天无理由"`，命中"7 天无理由退货"
+- **设计取舍**：「7 天无理由退货运费谁出」是政策咨询，「我的订单 ORD123 7 天内能退吗」才是退款申请
+- **Fix**：refund 规则要求**明确个人语境**（"我要/想" + 退），把"7 天无理由"挪到 policy_query 规则
+- **反思**：规则冲突是**规则系统的本质难题**；V2.6-C 计划用 embedding 语义分类做 A/B 实验
+
+#### Problem 2：「ZP1 保修多久」被 r"保修"误命中 policy
+- **症状**：含 sku 的商品保修咨询 → policy_query（应该 product_query 优先）
+- **根因**：policy_query 规则含 `r"保修"`，匹配顺序在 product_query 前
+- **Fix**：从 policy_query 删 `r"保修" / r"质保"`，让纯"保修期多久"靠 LLM 兜底到 policy_query
+- **教训**：**规则顺序 + 规则内容**都要测试覆盖；10 用例发现 2 个边界 bug 算正常
+
+#### Problem 3：intent_service 没接进 /chat 的边界
+- **方案选择**：用户选"独立 /intent 端点"，不接 /chat（M3 不动现有 RAG 路径）
+- **为什么对**：M4 整合时一次性接入，避免 M3 改动冲击 V1.2 在线服务
+- **CLAUDE.md §5 Scope Lock** 体现：M3 只动 intent 三件套 + main.py 1 行 include_router
+
+### Architecture Role
+
+属于 `services/intent_service.py`（编排）+ `schemas/intent.py`（契约）+ `api/intent.py`（HTTP）。
+- 不在 CLAUDE.md §6 原始分层里（**新增 intent 子模块**），但符合"业务编排层"定位
+- 复用 `core/qwen.chat()` 做 LLM 兜底（与 RAG pipeline 同源）
+- 复用 `core/embedding.embed_text()`？**没有**——V2.5 阶段规则+LLM 够用，V2.6-C 才用 embedding 做语义分类
+
+被 M4 Synthesizer 消费：
+```python
+Synthesizer.run_stream(query, user_id, history)
+  ├─► IntentService.classify(query) → {intent, entities, method, confidence}
+  └─► if intent == "order_query": _handle_order(...)
+       elif intent == "refund_query": _handle_refund(...)
+       elif intent == "product_query": _handle_product(...)
+       else: _handle_policy(...)
+```
+
+### 反思
+
+- **规则 vs LLM 兜底是经典 tradeoff**：规则可控、可解释、快，但覆盖边界难写；LLM 通用但慢、要 API key
+- **3 级 fallback 设计合理**：rule → llm → default 既保性能（rule 命中时 < 100ms）又保覆盖（rule 漏了 LLM 兜底，再漏 default 不空响应）
+- **M3 故意独立端点是关键决策**：先验证分类准确率（100%），再让 M4 整合，避免 M4 调试时分不清"是分类错还是合成错"
+- **未来 V2.6-C 升级方向**：用 embedding 相似度替代 keyword 规则，可解决"边界冲突"问题；embedding 召回的"相似意图列表" + 阈值判断，理论上比正则准确率高
+
+---
+
+## 19. M4 Response Synthesizer + /chat 集成（V2 第四站）
+
+**文件**：
+- 新增 `backend/app/services/synthesizer.py`
+- 改 `backend/app/api/chat.py`（1 行替换 + meta 透传）
+- 新增 `deploy/tests/test_chat_e2e.py`
+
+### What
+**多源融合层** — 把 M2 service + M3 intent + V1.2 pipeline 整合成一个统一的 `/chat` 流式输出：
+1. **意图分类**（M3）：决定走哪条路径
+2. **按意图分派**：order/refund 走 tool，product 走 tool，policy 走 RAG
+3. **多源融合 prompt**：tool 数据 + policy RAG + history，按 §7 硬约束排序（tool > policy > product > history）
+4. **单 LLM 流式输出**：qwen stream_chat，SSE token/done
+5. **fallback 兜底**：分派异常 → V1.2 RAG pipeline（不破坏线上）
+
+### Why
+- V1.2 时代所有 query 走 `pipeline.run_stream(query, top_k=5)` — **无差别 RAG**，3-4s 内 80% 答案质量差
+- V2 架构的核心是「**正确的 query 走正确的路径**」：order 查 tool（毫秒级）、refund 查 tool+policy（融合）、product 查 DB、政策查 RAG
+- **单 LLM 原则**：所有路径最终都调 1 次 qwen stream_chat，prompt 不同但 LLM 不变；避免「每模块各自调 LLM」的成本 + 不一致风险
+- **fallback 兜底是新代码保护机制**：M4 是大改，V1.2 用户不能受影响；任何分派异常 → V1.2 RAG，用户体验不变
+
+### 架构位置（V2 最终态）
+
+```
+POST /chat (SSE)
+  │
+  ├─► load_history_with_fallback (V1.2 保留)
+  │
+  ├─► Synthesizer.run_stream(query, user_id, history)  ← M4 新增
+  │     │
+  │     ├─► IntentService.classify(query)            [M3]
+  │     │
+  │     ├─► 分派（4 路径 + 1 兜底）：
+  │     │     ├─ order_query   → OrderService + tool_block
+  │     │     ├─ refund_query  → RefundService + tool_block + policy_block
+  │     │     ├─ product_query → ProductTool + product_block + policy_block
+  │     │     ├─ policy_query  → PolicyService + policy_block
+  │     │     └─ 异常/兜底    → V1.2 rag_run_stream (不变)
+  │     │
+  │     ├─► _build_chat_prompt（§7 硬约束：tool > policy > product > history）
+  │     │
+  │     └─► qwen stream_chat → SSE (meta, token, done)
+  │
+  ├─► write-through Redis + MySQL + audit (V1.2 §11 保留)
+  │
+  └─► SSE response (text/event-stream)
+```
+
+### 关键代码片段
+
+```python
+# synthesizer.py 核心分发
+class Synthesizer:
+    @staticmethod
+    def run_stream(query, user_id, history):
+        intent_result = IntentService.classify(query)
+        try:
+            if intent_result["intent"] == "order_query":
+                yield from Synthesizer._handle_order(query, user_id, intent_result)
+            elif intent_result["intent"] == "refund_query":
+                yield from Synthesizer._handle_refund(query, user_id, intent_result)
+            elif intent_result["intent"] == "product_query":
+                yield from Synthesizer._handle_product(query, intent_result, history)
+            else:
+                yield from Synthesizer._handle_policy(query, intent_result, history)
+        except Exception as e:
+            # 兜底 → V1.2 RAG
+            logger.exception(f"synth.dispatch 异常 fallback 到 V1.2 RAG: {e}")
+            for event_type, data in v12_rag_run_stream(query, 5, history):
+                yield (event_type, data)
+
+# §7 prompt 硬约束（顺序固定）
+def _build_chat_prompt(*, intent, tool_block, policy_block, product_block, history_block, query):
+    sections = []
+    if tool_block:    sections.append(f"【事实陈述】(最高优先级)\n{tool_block}")
+    if policy_block:  sections.append(f"【政策依据】\n{policy_block}")
+    if product_block: sections.append(f"【商品知识】\n{product_block}")
+    if history_block: sections.append(f"【对话历史】\n{history_block}")
+    sections.append(f"问题：{query}")
+    return "\n\n".join(sections)
+```
+
+### 验证（M4 端到端 10/10 = 100%）
+
+| # | 意图 | query | 关键证据（节选） | 延迟 |
+|---|------|-------|------------------|------|
+| 1 | order_query | ORD20260622003 现在到哪了 | "运输中/深圳转运中心/SF20260622003" | 2.6s |
+| 2 | order_query | 我的订单有哪些 | 5 笔订单含 ORD 号/金额/状态 | 4.5s |
+| 3 | order_query | ORD20260615004 物流 | "已签收/北京海淀/SF20260615004" | 1.4s |
+| 4 | order_query | ORD20260620001 啥情况 | "待发货/BP1 ¥899" | 2.7s |
+| 5 | refund_query | ORD20260622003 能退吗 | "可退 + shipped 已签收 4 天 + 7 天政策条款" | 4.7s |
+| 6 | refund_query | ORD20260615004 还能退吗 | "不可退 + 已签收 10 天超 7 天 + 换货建议" | 3.3s |
+| 7 | product_query | ZP1 现在多少钱 | "¥5999.0 / SKU001" | 2.0s |
+| 8 | product_query | 你们这有什么耳机 | "BP1 ¥899 + 保修政策" | 5.5s |
+| 9 | product_query | ZP1 保修多久 | "1 年主机/6 月电池 + 范围说明" | 3.2s |
+| 10 | policy_query | 7 天无理由退货运费谁出 | "卖家/买家分别承担 + 首重 12 元" | 4.0s |
+
+**未登录 order_query 单独验证**：返回"请登录"模板，不报 500。
+
+### Problem → Fix（沿路修的 7 个 bug）
+
+| # | bug | 根因 | 修在哪 |
+|---|-----|------|--------|
+| 1 | Qdrant POST 502 | QDRANT_URL 容器名错 | deploy/docker-compose.yml:30 |
+| 2 | policy_service 找不到 collection | collection 名错 + 无 doc_type 过滤 | services/policy_service.py |
+| 3 | OrderService.list_user_orders() got unexpected keyword argument 'limit' | M2 服务签名不含 limit | services/synthesizer.py 调用点 |
+| 4 | "退货运费谁出"被 refund 规则误命中 | refund 含"7 天无理由" | services/intent_service.py 拆出 policy_query |
+| 5 | "ZP1 保修多久"被 r"保修" 误命中 policy | policy_query 规则在 product_query 前 | services/intent_service.py 删 r"保修" |
+| 6 | product_query 整句搜不到商品 | search_by_keyword 对长 query 噪音词干扰 | services/synthesizer.py 加 _search_by_keyword_window |
+| 7 | chat.py meta 丢 intent 字段 | V1.2 chat.py 只透传 contexts/scores | api/chat.py **meta |
+
+### 关键技术点
+
+#### 4.1 SKU 实体 vs MySQL SKU 不匹配
+- **现象**：M3 抽到 `sku=ZP1`，但 MySQL.products.sku = `SKU001`（不是 `ZP1`）
+- **决策**：商品查询走 ProductTool.search_by_keyword（名字 LIKE "ZP1" 命中 SKU001），不走精确 sku 查询
+- **代码**：
+  ```python
+  if sku:
+      exact = ProductTool.get_by_sku(sku)
+      if exact:
+          products = [exact]
+      else:
+          products = ProductTool.search_by_keyword(sku, limit=5)  # ZP1 → SKU001
+  ```
+- **未来**：V2.6-B 商品 ingest 进 KB 后，sku 实体可走 RAG（语义召回），不依赖 keyword
+
+#### 4.2 滑动窗口抽 query 实词（product_query 兜底）
+- **现象**：「你们这有什么耳机」整句搜 → 空 list（"你们"等噪音词干扰）
+- **解决**：滑动窗口抽 2-3 字实词（"耳机"）→ 命中 BP1
+- **代码**：
+  ```python
+  def _search_by_keyword_window(query, limit=5):
+      candidates = []
+      for size in (2, 3):
+          for i in range(len(query) - size + 1):
+              c = query[i:i + size]
+              if re.fullmatch(r"[\u4e00-\u9fff]+", c) and c not in seen:
+                  candidates.append(c)
+      for kw in reversed(candidates):  # 倒序查，尾巴词优先
+          ps = ProductTool.search_by_keyword(kw, limit=limit)
+          if ps: return ps
+      return []
+  ```
+- **反思**：当前不引 jieba 等分词库（避免依赖膨胀）；2-3 字滑窗对商品类目够用
+
+#### 4.3 meta 事件协议扩展（向后兼容）
+- V1.2 chat.py 只透传 `contexts` / `scores` 字段；M4 引入 `intent` / `entities` / `tool_result_preview`
+- **修法**：chat.py 改为 `{**data}` 全量透传，保证 V1.2 字段不变（write-through MySQL 还用 `contexts`），同时新字段对前端可见
+- **前端兼容性**：未来需要的话可在 Vue3 api.ts 加 `MetaEvent.intent` 等 typed 字段（V2.6+ 前端适配时做）
+
+#### 4.4 fallback 兜底的事务边界
+- **设计**：分派 try/except 包住，**只 catch Exception**，ValueError 不 catch（query 为空应该让上层 500）
+- **不破坏 V1.2**：fallback 路径走 `v12_rag_run_stream`，元事件格式与 V1.2 完全一致（contexts + scores）
+- **意义**：M4 上线初期如果某个 Tool 出问题，用户感知是"答案质量略降"而不是"全挂"
+
+### Architecture Role
+
+属于 `services/synthesizer.py`（V2 核心编排层）：
+- **CLAUDE.md §6 扩展**：在 `services/` 下新增 synthesizer（与 rag/pipeline 平级）
+- **不复用 V1.2 pipeline**：保留 `rag/pipeline.py` 作为 fallback，独立 synthesizer 走"分类 + 分派"
+- **跨模块集成**：同时调 IntentService (M3) + 各 Service (M2) + qwen stream_chat (V1.2)
+
+被消费：当前只被 `api/chat.py` 1 个调用方；未来可被：
+- **V2.6-A 状态记忆**：在 synthesizer 入口加 last_intent 参数，state 注入 prompt
+- **V2.6-B Tool-first**：强化 prompt 硬约束（已部分实现）
+- **V3.0 Agent**：synthesizer 可被 Agent tool 调用作为子任务
+
+### 反思
+
+- **M2 → M4 跨 3 个模块，调试总时长 1.5h**：7 个 bug 里 4 个是配置/集成层（QDRANT_URL / collection 名 / OrderService 签名 / meta 透传），3 个是规则边界（refund vs policy / product_query keyword）。**说明 V2 升级最大的成本在"老模块给新模块让路"的胶水代码**
+- **fallback 兜底是 MVP 必备**：M4 第一版没加 fallback，结果 #2 直接"建议登录 App 查看"——Tool 没数据 → LLM 瞎答。fallback 后用户体验至少不崩
+- **Prompt 硬约束的威力**：把"tool 数据必须优先"写进模板后，LLM 不再忽略结构化数据；之前测试发现 V1.2 时代 LLM 会完全无视 KB 召回（基于低分 context 瞎编），V2 用 tool 数据 + policy RAG 双源后答案明显稳定
+- **测试期望 vs 答案质量的鸿沟**：本次 e2e 测试 #4 #8 期望"含 pending / BP1"等关键词，但 LLM 答得"中文润色版"反而把这些词替换成"待发货 / ¥899"——**测试断言要更灵活**（断言语义而非字面）
+- **CLAUDE.md「最小修改原则」在 M4 反例**：要接 4 个 service + 改 chat.py + 加 synthesizer.py，单模块"最小"是不可能的；**正确理解是"不动无关代码"**——M4 没碰 RAG pipeline、没碰 MySQL schema、没碰 frontend
+
+### 演进路径更新
+- ✅ V1.0 ~ V1.2 + 全 Docker 部署
+- ✅ M1 数据层 + M2 服务层 + M3 路由层 + M4 融合层
+- ⏳ M5：浏览器联调（前端需适配 V2 多源答案 + intent 字段透传）
+- ⏳ V2.6-A 状态记忆：Redis session add current_state JSON
+- ⏳ V2.6-B Tool-first：synthesizer prompt 强化
+- ⏳ V2.6-C 语义意图：embedding classifier A/B 实验
+- ⏳ V3.0：Agent 工具链 + 商品 RAG ingest + 多轮指代
+
+---
+
+---
+
+## 9. M5 端到端验收 + 修复模块
+
+**文件**：`deploy/tests/test_m5_e2e.py`（新建）、`backend/app/services/synthesizer.py`（改）、`backend/app/services/intent_service.py`（改）
+
+### What
+实现 M5 端到端验收：4 类意图 × 10 用例 = 40 条，通过率门槛 ≥ 85%。首轮实测 77.5%，诊断失败根因后修复 3 处代码 + 1 处测试预期，最终 3 次平均 95.8% 稳过。
+
+### Why
+- PROJECT_DESIGN.md §8 验收标准是项目可演示/可讲解的硬指标
+- M5 通过意味着「用户问 → 意图路由 → 数据召回 → LLM 合成 → 答案」全链路在 4 类典型场景下都跑得通
+- 验收过程暴露 3 个真实 bug，正好是 V2.x 上线前必须修的
+
+### Tech Stack
+- **SSE 客户端**：urllib.request + 手动解析 `data:` 行（同 test_chat_e2e.py）
+- **JWT 复用**：admin JWT（user_id=1 名下 5 单全在），覆盖登录态所有用例
+- **判定标准**：每条同时满足 SSE 完整 + 意图正确 + 关键词命中 + latency < 5s
+- **结果统计**：分意图通过率 + 总通过率 + 失败用例汇总（CI 可直接 sys.exit）
+
+### Flow
+```
+test_m5_e2e.py main()
+  ↓
+遍历 40 CASES（query, login, expect_intent, must_contain_any, note）
+  ↓
+每条：call_chat(query, jwt) → /chat SSE → 收集 meta/token/done
+  ↓
+problems = []
+  ├─ SSE 异常 → +
+  ├─ intent 不符 → +
+  ├─ 关键词全部缺失 → +
+  └─ elapsed > 5s → +
+  ↓
+按意图分桶统计 → 输出表格 + 失败明细
+  ↓
+sys.exit(0 if pass_rate >= 0.85 else 1)
+```
+
+### 修复记录（首轮 77.5% → 最终 95.8%）
+
+#### 失败 9 条的归因（首轮诊断）
+
+| # | 问句 | 我第一诊断 | 实际根因 |
+|---|------|-----------|---------|
+| 5 | "ORD20260601005 退款进度" | 规则冲突 ❌ | **测试预期写错**：应预期 refund_query |
+| 18 | "退款的钱退到哪里" | 规则冲突 | LLM 兜底分类错（未登录 + 无规则匹配）|
+| 22 | "BP1 续航怎么样" | KB 缺失 ❌ | **路径问题**：`_handle_product` 只查 MySQL 不查 Qdrant，KB 里的 specs 从未读出 |
+| 25 | "SKU002 的配置" | KB 缺失 ❌ | 同上：MySQL 没 specs，KB 也没被读 |
+| 26,32,39 | 笔记本/保修/优惠券 | latency 超 | LLM 长答案无约束 |
+| 34 | "什么时候发货" | 规则冲突 | 「发货」抢匹配 → order_query |
+| 40 | "电池保修多久" | 规则冲突 | 「电池」抢匹配 → product_query |
+
+#### 实际修复（最小修改）
+
+**修 1（测试）**：`test_m5_e2e.py` #5 预期改 refund_query。**+1 条**。
+
+**修 2（`_handle_product` 加 KB RAG）**：
+- 原代码：`PolicyService.search_policy("保修政策", top_k=2)` — 用固定串只能召回保修
+- 改成：`PolicyService.search_policy(query, top_k=3)` + KB 结果合并进 product_block
+- 解决 #22 #25：续航/配置/电池容量等 specs 现在能从 KB 召回
+- 副作用：删除了冗余的 policy_block（product_query 不需要 policy 块）
+
+**修 3（Intent 规则加 policy 优先项）**：
+- policy_query 块新增 5 条：`什么时候发货 / 多久发货 / 发货时间 / 电池.*保修 / 保修多久 / 质保多久`
+- 顺序：policy_query 块在 order_query / product_query 之前 → 优先匹配
+- 解决 #34 #40
+
+**修 4（Synthesizer prompt 长度约束）**：
+- `SYSTEM_PROMPT_BASE` 加 `"回答控制在 200 字以内，不要长篇大论，先给结论再补充细节"`
+- 解决 #26 #32 #39：LLM 输出从 500-800 字降到 200-300 字
+- 副作用：所有路径（chat/order/refund/product/policy）受益
+
+#### 未做的（Dense 通道）
+
+`Intent Classifier 加 Dense 通道` 的原计划被规则补丁替代：
+- #34 #40 用精确规则覆盖（收益 80%，复杂度 0）
+- #18 是 LLM 兜底边角案例（短句+无登录+无明显关键词），Dense 也难救，留 V3
+
+#### 最终成绩
+
+| 指标 | 首轮 | 修复后 |
+|------|------|--------|
+| 总通过率 | 31/40 = 77.5% | **38.3/40 = 95.8%（3 次平均）** |
+| order_query | 9/10 = 90% | 9/9* = 100% |
+| refund_query | 9/10 = 90% | 10/11* = 90.9% |
+| product_query | 7/10 = 70% | **10/10 = 100%** |
+| policy_query | 6/10 = 60% | **10/10 = 100%** |
+| 最大 latency | 8269ms（#39）| 4043ms（#38）|
+
+*#5 从 order_query 改到 refund_query，分母调整
+
+### Problem → Fix
+- **诊断先于动手**：第一轮我把 9 条失败都归因为「规则顺序」，实际只有 4 条是；剩下 5 条分别是测试预期错（1）/ 路径 bug（2）/ LLM 长答案（3）。盲目改规则顺序是错误路线。
+- **数据驱动查根因**：直接打 Qdrant vs /chat 端点对比，发现 BP1 chunk 在 Qdrant 里有但 /chat 返回 sources=0 — 立刻定位到 `_handle_product` 不读 KB
+- **LLM 非确定性**：3 次跑波动 ±1 条，验收门槛设 85% 是合理的（防单次运气），目标 ≥ 95% 才有信心上线
+- **重启容器**：Dockerfile `COPY app/` 是 bake-in，改代码必须 `docker compose build api` + `up -d api`（约 30s）
+
+### Architecture Role
+- **test_m5_e2e.py**：M5 验收交付物，CI 可直接 `python deploy/tests/test_m5_e2e.py`，exit code 表验收结果
+- **3 处代码修复**：每处都是「最小修改 + 单一职责」：
+  - synthesizer.py `_handle_product` 加 KB RAG → 解决 KB specs 召回
+  - intent_service.py 加 5 条 policy 规则 → 解决规则顺序盲区
+  - synthesizer.py `SYSTEM_PROMPT_BASE` 加长度约束 → 解决 LLM 长答案
+- **未做的 Dense 通道**：保留为 V3 任务，PROJECT_DESIGN §3 已写「禁 Rerank / Dense 评估在 V3」
+
+---
+
+## 10. P1 性能压测 + A+B 修复模块
+
+**文件**：`deploy/tests/test_load_50users.py`（新建）、`deploy/tests/test_load_sweep.py`（新建）、`backend/app/core/qwen.py`（改）、`backend/app/services/synthesizer.py`（改）
+
+### What
+对 /chat 端点做 50 并发用户压测，发现 100% 错误率（429 RateLimitError）。诊断根因为「无并发控制 + 无 429 重试」，实施 A+B 最小修复：
+- **A**：synthesizer 加 `threading.Semaphore(10)` 限流 LLM 并发
+- **B**：qwen.chat / qwen.stream_chat 加 RateLimitError 指数退避重试（1s/2s/4s）
+
+修复后再次压测，错误率从 100% → 0%，但并发承载上限受上游 DashScope 限制。
+
+### Why
+- PROJECT_DESIGN §9 spec 写「并发 > 50 + P95 < 5s」，但只测过单用户
+- 单用户 M5 通过 ≠ 系统能撑 50 并发 — 必须真压测
+- 发现 50 并发下 100% 失败（429）后立即暴露架构 gap
+
+### Tech Stack
+- **压测工具**：Python `concurrent.futures.ThreadPoolExecutor`（Windows 兼容，无 wrk/ab 依赖）
+- **HTTP**：`requests` + `stream=True` + `iter_lines` 解 SSE
+- **限流**：`threading.Semaphore(10)`（10 路并发调 LLM，超出排队）
+- **重试**：指数退避 `wait = base * 2^attempt`，最大 3 次
+- **流式重试边界**：仅 retry 连接阶段（`create()`），不 retry 已开始的流（已 yield chunk 不可回退）
+
+### Flow
+
+#### 压测执行流
+```
+warmup (3 个 GET /chat 让 LLM/Qdrant 缓存热起来)
+  ↓
+ThreadPoolExecutor(n_users) 起 n 个线程
+  ↓
+每线程：one_query(query) → POST /chat (stream=True)
+  ↓
+解析 SSE：meta / token / done / error
+  ↓
+汇总 first_token_ms / total_ms / error
+  ↓
+P50/P95/P99 统计 + §9 对比
+```
+
+#### A+B 修复架构
+```
+请求进入 /chat
+  ↓
+Synthesizer.run_stream → _stream_llm
+  ↓
+with _LLM_SEMAPHORE (10):     ← A：限流
+  ↓
+  for chunk in qwen.stream_chat():
+      ↓
+      内部 retry loop (3 次指数退避)   ← B：429 重试
+      ↓
+      chunk yield
+  ↓
+yield ("done", ...)
+```
+
+### Problem → Fix
+- **测试设计先于结论**：原 50 users × 5 queries = 250 同时请求的负载模型过激。改 50 users × 1 query = 50 同时请求才符合 §9 spec 「并发 > 50」的字面含义
+- **错误类型是诊断信号**：从 429 → ReadTimeout 的变化说明限流被解决，剩下的是队列等待 + 客户端超时问题
+- **客户端 timeout 干扰诊断**：默认 30s 不足以看真实 P95，加到 60s 才能区分「系统慢」vs「客户端主动断」
+
+### Sweep 结果（5/10/20/30/50 并发，2026-06-27 实测）
+
+| 并发 | P95 总耗时 | 错误率 | §9 达标 |
+|------|-----------|--------|---------|
+| 5 | 3377ms | 0% | ✅ |
+| 10 | 8989ms | 0% | ❌ |
+| 20 | 46303ms | 0% | ❌ |
+| 30 | 28435ms | 0% | ❌ |
+| 50 | 65567ms | 0% | ❌ |
+
+**结论**：
+- ✅ A+B 修复彻底消除 429 错误（错误率全 0%）
+- ❌ §9 「> 50 并发 + P95 < 5s」在当前 DashScope 公共 tier 下**不可同时满足**
+- 📊 实测最大稳定并发（满足 §9 spec）= **5**
+
+### 提升路径（未做）
+- 升级 DashScope 到付费 tier（更高 QPM + 更高并发配额）
+- 加 LLM 结果缓存（相同 query 直接复用上次 answer）
+- 加 prompt 压缩（缩短 input → 减 token → 减响应时间）
+- 异步多 LLM provider 路由（不同 model 分流）
+
+### Architecture Role
+- `test_load_50users.py`：固定 50 并发的标准压测脚本（验收 §9 字面项）
+- `test_load_sweep.py`：扫 5/10/20/30/50 并发的甜点定位脚本（验收 §9 实际能力）
+- A+B 代码修复：跨 core（qwen）+ services（synthesizer）两个模块，按 CLAUDE.md §6 仍是「core 给 services 用接口」，未破坏分层
