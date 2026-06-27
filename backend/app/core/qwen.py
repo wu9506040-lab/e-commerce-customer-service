@@ -3,11 +3,15 @@
 
 使用 OpenAI 兼容协议调用 DashScope：
 https://dashscope.aliyuncs.com/compatible-mode/v1
+
+P1 修复：增加 429 限流自动重试 + 指数退避
 """
 import logging
+import time
 from typing import List, Dict, Optional, Generator
 
 from openai import OpenAI
+from openai import RateLimitError
 
 from app.core.config import settings
 
@@ -20,6 +24,10 @@ QWEN_MODEL = settings.QWEN_MODEL
 
 # 单例 client（避免每次请求都 new）
 _client: Optional[OpenAI] = None
+
+# §9 P1 重试配置：429 限流时指数退避，3 次重试（1s / 2s / 4s）
+_MAX_RETRIES = 3
+_BACKOFF_BASE = 1.0  # 秒
 
 
 def get_client() -> OpenAI:
@@ -40,6 +48,14 @@ def get_client() -> OpenAI:
     return _client
 
 
+def _is_rate_limit(e: Exception) -> bool:
+    """判断是否限流异常（含 429 状态码或 RateLimitError）"""
+    if isinstance(e, RateLimitError):
+        return True
+    msg = str(e)
+    return "429" in msg or "rate limit" in msg.lower() or "限流" in msg
+
+
 def chat(
     messages: List[Dict[str, str]],
     model: Optional[str] = None,
@@ -47,7 +63,7 @@ def chat(
     max_tokens: Optional[int] = None,
 ) -> Dict:
     """
-    调用千问 chat 端点
+    调用千问 chat 端点（带 429 限流自动重试）
 
     Args:
         messages: 消息列表 [{"role": "user", "content": "..."}]
@@ -57,6 +73,9 @@ def chat(
 
     Returns:
         {"reply": str, "model": str, "usage": dict}
+
+    Raises:
+        RateLimitError: 超过 _MAX_RETRIES 次重试仍 429
     """
     client = get_client()
     used_model = model or QWEN_MODEL
@@ -71,22 +90,36 @@ def chat(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    response = client.chat.completions.create(**kwargs)
+    last_error: Optional[Exception] = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(**kwargs)
+            reply = response.choices[0].message.content
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                "total_tokens": response.usage.total_tokens if response.usage else 0,
+            }
+            logger.info(f"qwen chat done: total_tokens={usage['total_tokens']} attempt={attempt + 1}")
+            return {
+                "reply": reply,
+                "model": used_model,
+                "usage": usage,
+            }
+        except Exception as e:
+            if _is_rate_limit(e) and attempt < _MAX_RETRIES:
+                wait = _BACKOFF_BASE * (2 ** attempt)  # 1s, 2s, 4s
+                logger.warning(
+                    f"qwen chat 429 retry: attempt={attempt + 1}/{_MAX_RETRIES + 1}, "
+                    f"waiting {wait}s, err={str(e)[:100]}"
+                )
+                time.sleep(wait)
+                last_error = e
+                continue
+            raise
 
-    reply = response.choices[0].message.content
-    usage = {
-        "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-        "completion_tokens": response.usage.completion_tokens if response.usage else 0,
-        "total_tokens": response.usage.total_tokens if response.usage else 0,
-    }
-
-    logger.info(f"qwen chat done: total_tokens={usage['total_tokens']}")
-
-    return {
-        "reply": reply,
-        "model": used_model,
-        "usage": usage,
-    }
+    # 走到这里说明所有重试都失败了
+    raise last_error if last_error else RuntimeError("qwen chat failed without exception")
 
 
 # =============================================================
@@ -98,10 +131,10 @@ def stream_chat(
     temperature: float = 0.7,
 ) -> Generator[str, None, None]:
     """
-    流式调用千问 chat 端点
+    流式调用千问 chat 端点（带 429 连接重试）
 
-    用 OpenAI SDK 的 stream=True，逐 chunk yield 文本片段。
-    供 services/rag/pipeline.run_stream() 调用，实现端到端流式输出。
+    注意：流式中途发生 429 无法直接 retry（已 yield 的 chunk 不可回退），
+    所以仅对 client.create() 阶段的 429 做指数退避重试。
 
     Args:
         messages: 消息列表 [{"role": "user", "content": "..."}]
@@ -116,12 +149,32 @@ def stream_chat(
 
     logger.info(f"qwen stream_chat: model={used_model}, messages={len(messages)}")
 
-    stream = client.chat.completions.create(
-        model=used_model,
-        messages=messages,
-        temperature=temperature,
-        stream=True,
-    )
+    # 仅 retry 连接阶段，不 retry 已开始的流
+    stream = None
+    last_error: Optional[Exception] = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            stream = client.chat.completions.create(
+                model=used_model,
+                messages=messages,
+                temperature=temperature,
+                stream=True,
+            )
+            break
+        except Exception as e:
+            if _is_rate_limit(e) and attempt < _MAX_RETRIES:
+                wait = _BACKOFF_BASE * (2 ** attempt)  # 1s, 2s, 4s
+                logger.warning(
+                    f"qwen stream_chat 429 retry: attempt={attempt + 1}/{_MAX_RETRIES + 1}, "
+                    f"waiting {wait}s, err={str(e)[:100]}"
+                )
+                time.sleep(wait)
+                last_error = e
+                continue
+            raise
+
+    if stream is None:
+        raise last_error if last_error else RuntimeError("qwen stream_chat failed to connect")
 
     chunk_count = 0
     for chunk in stream:

@@ -1,0 +1,476 @@
+"""
+Response Synthesizer - 多源融合层（M4 新增）
+
+按 PROJECT_DESIGN.md §3 + §7：
+- Intent Classifier 决定走哪条路径
+- 不同路径调不同 service / tool
+- 多源结果（tool + RAG + history）融合成一个 prompt 喂给单一 LLM
+- 流式输出
+
+设计约束（§7）：
+- 优先级：Tool 结构化数据 > 用户上下文 > Policy RAG > Product RAG > 对话历史
+- Tool 数据缺失 → fallback 到 V1.2 统一 RAG（不破坏线上）
+- 未登录用户 + order/refund 意图 → 不报错，返回「请登录」模板
+
+V2.5 范围（M4）：
+- 4 类意图分派
+- 单步（不做 Agent 多步）
+"""
+import logging
+import threading
+from typing import Any, Generator, Optional, Tuple
+
+from app.core.qwen import stream_chat as qwen_stream_chat
+from app.services.intent_service import IntentService
+from app.services.order_service import OrderService
+from app.services.policy_service import PolicyService
+from app.services.refund_service import RefundService
+from app.services.rag.pipeline import run_stream as v12_rag_run_stream
+from app.tools.product_tool import ProductTool
+from app.services.session_service import ANONYMOUS_USER_ID
+
+logger = logging.getLogger(__name__)
+
+# §9 并发控制：P1 压测发现 50 并发直接打 LLM 触发 DashScope 限流（429）
+# 用 semaphore 限流到 10 路并发，超出请求排队等待
+# 实测 DashScope qwen-plus 默认 ~60 QPM，10 并发是安全水位
+_LLM_SEMAPHORE = threading.Semaphore(10)
+
+
+# =============================================================
+# Prompt 模板（PROJECT_DESIGN §7 硬约束：tool > policy > product > history）
+# =============================================================
+SYSTEM_PROMPT_BASE = (
+    "你是一个专业的电商客服助手。"
+    "请严格基于以下【结构化数据】和【参考资料】回答用户问题。"
+    "如果信息不足，请直接回答「我不知道」并建议联系人工客服，不要编造。"
+    "回答要简洁、准确，必要时引用订单号、价格、政策条款编号。"
+    "回答控制在 200 字以内，不要长篇大论，先给结论再补充细节。"
+)
+
+# 模板：未登录 + 需要 user 上下文的意图
+NO_LOGIN_PROMPT = (
+    "用户尚未登录，无法查询个人订单/退款信息。"
+    "请礼貌引导用户登录后再来查询。"
+)
+
+# 模板：通用 chat 模板（order/refund 已有 tool_result 后用）
+def _build_chat_prompt(
+    *,
+    intent: str,
+    tool_block: str,
+    policy_block: str,
+    product_block: str,
+    history_block: str,
+    query: str,
+) -> str:
+    """组装 chat 模板（按 §7 优先级硬约束）"""
+    sections = []
+    if tool_block:
+        sections.append(f"【事实陈述】(最高优先级)\n{tool_block}")
+    if policy_block:
+        sections.append(f"【政策依据】\n{policy_block}")
+    if product_block:
+        sections.append(f"【商品知识】\n{product_block}")
+    if history_block:
+        sections.append(f"【对话历史】\n{history_block}")
+    if not sections:
+        sections.append("（无可用资料）")
+    sections.append(f"问题：{query}")
+    return "\n\n".join(sections)
+
+
+def _format_tool_result(intent: str, tool_result: Optional[dict]) -> str:
+    """把 tool 输出格式化成中文自然语言片段（供 LLM 引用）"""
+    if not tool_result:
+        return ""
+    # order_query: 列表 / 详情
+    if intent == "order_query":
+        if "orders" in tool_result:
+            orders = tool_result.get("orders", [])
+            if not orders:
+                return "用户当前没有订单。"
+            lines = [f"用户共有 {len(orders)} 笔订单："]
+            for o in orders:
+                lines.append(
+                    f"- 订单号 {o.get('order_no')} | 状态 {o.get('status')} | "
+                    f"金额 ¥{o.get('total_amount')} | 下单时间 {o.get('create_time')}"
+                )
+            return "\n".join(lines)
+        if "order" in tool_result:
+            o = tool_result.get("order", {})
+            items = tool_result.get("items", [])
+            logistics = tool_result.get("logistics", {})
+            lines = [
+                f"订单号 {o.get('order_no')} | 状态 {o.get('status')} | 金额 ¥{o.get('total_amount')}",
+                f"明细：{len(items)} 件商品",
+            ]
+            for it in items:
+                lines.append(f"  - {it.get('product_name')} × {it.get('qty')} = ¥{it.get('subtotal')}")
+            if logistics:
+                lines.append(
+                    f"物流：{logistics.get('status')} | 最新位置 {logistics.get('last_location')} | 单号 {logistics.get('logistics_no')}"
+                )
+            return "\n".join(lines)
+    # refund_query
+    if intent == "refund_query":
+        tr = tool_result.get("tool_result", tool_result) if "tool_result" in tool_result else tool_result
+        if tr.get("refundable") is not None:
+            reason = tr.get("reason", "")
+            return (
+                f"退款判断：{'可退' if tr['refundable'] else '不可退'} | 原因：{reason} | "
+                f"订单状态 {tr.get('order_status')} | 已签收 {tr.get('days_since_order')} 天"
+            )
+    return str(tool_result)
+
+
+def _format_policy_docs(docs: list[dict]) -> str:
+    """把 policy RAG 结果格式化"""
+    if not docs:
+        return ""
+    lines = []
+    for i, d in enumerate(docs, 1):
+        text = (d.get("text") or "").strip()
+        if text:
+            lines.append(f"[{i}] {text[:500]}{'...' if len(text) > 500 else ''}")
+    return "\n".join(lines)
+
+
+def _format_history(history: Optional[list[dict]]) -> str:
+    """复用 pipeline 风格的历史格式"""
+    if not history:
+        return ""
+    lines = []
+    for msg in history:
+        role = msg.get("role", "")
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            lines.append(f"用户：{content}")
+        elif role == "assistant":
+            lines.append(f"助手：{content}")
+    return "\n".join(lines)
+
+
+# =============================================================
+# Synthesizer 入口
+# =============================================================
+class Synthesizer:
+    """多源融合层（M4）"""
+
+    @staticmethod
+    def run_stream(
+        query: str,
+        user_id: Optional[int],
+        history: Optional[list[dict]] = None,
+    ) -> Generator[Tuple[str, Any], None, None]:
+        """
+        主入口：分类 → 分派 → 融合 → LLM 流式输出
+
+        Args:
+            query: 用户问题
+            user_id: 用户 ID（未登录为 ANONYMOUS_USER_ID = 0）
+            history: 多轮历史 [{"role":..., "content":...}]
+
+        Yields:
+            ("meta", {intent, entities, ...})
+            ("token", str)
+            ("done", {"answer": str})
+        """
+        if not query or not query.strip():
+            raise ValueError("query 不能为空")
+        query = query.strip()
+
+        # 1. 意图分类
+        intent_result = IntentService.classify(query)
+        intent = intent_result["intent"]
+        entities = intent_result["entities"]
+        logger.info(
+            f"synth.start: intent={intent} method={intent_result['method']} "
+            f"conf={intent_result['confidence']:.2f} user_id={user_id}"
+        )
+
+        # 2. 分派（按 intent 调用对应 service/tool）
+        try:
+            if intent == "order_query":
+                yield from Synthesizer._handle_order(query, user_id, intent_result)
+                return
+            elif intent == "refund_query":
+                yield from Synthesizer._handle_refund(query, user_id, intent_result)
+                return
+            elif intent == "product_query":
+                yield from Synthesizer._handle_product(query, intent_result, history)
+                return
+            else:  # policy_query
+                yield from Synthesizer._handle_policy(query, intent_result, history)
+                return
+        except Exception as e:
+            # 任何分派路径异常 → fallback 到 V1.2 统一 RAG
+            logger.exception(
+                f"synth.dispatch 异常，fallback 到 V1.2 RAG: intent={intent}, err={e}"
+            )
+            # 注意：fallback 不带 user_id（V1.2 pipeline 不接收 user_id）
+            for event_type, data in v12_rag_run_stream(query, 5, history):
+                yield (event_type, data)
+
+    # ---------- 各 intent 分派实现 ----------
+
+    @staticmethod
+    def _handle_order(
+        query: str, user_id: int, intent_result: dict
+    ) -> Generator[Tuple[str, Any], None, None]:
+        """order_query：调 OrderService"""
+        entities = intent_result["entities"]
+        order_no = entities.get("order_no")
+
+        if user_id == ANONYMOUS_USER_ID:
+            # 未登录 → 不报错，返回"请登录"
+            yield ("meta", {
+                "intent": "order_query",
+                "entities": entities,
+                "contexts": [],
+                "scores": [],
+            })
+            yield from Synthesizer._stream_simple(NO_LOGIN_PROMPT)
+            return
+
+        if order_no:
+            detail = OrderService.get_order_detail(user_id, order_no)
+            if not detail:
+                tool_block = f"订单 {order_no} 不存在或不属于当前用户。"
+            else:
+                tool_block = _format_tool_result("order_query", detail)
+        else:
+            # 无 order_no → 列最近订单（OrderService.list_user_orders 不支持 limit，按默认上限返回）
+            orders = OrderService.list_user_orders(user_id)
+            tool_block = _format_tool_result("order_query", {"orders": orders})
+
+        meta = {
+            "intent": "order_query",
+            "entities": entities,
+            "contexts": [],
+            "scores": [],
+            "tool_result_preview": tool_block[:200] if tool_block else "",
+        }
+        yield ("meta", meta)
+
+        prompt = _build_chat_prompt(
+            intent="order_query",
+            tool_block=tool_block,
+            policy_block="",
+            product_block="",
+            history_block="",
+            query=query,
+        )
+        yield from Synthesizer._stream_llm(prompt)
+
+    @staticmethod
+    def _handle_refund(
+        query: str, user_id: int, intent_result: dict
+    ) -> Generator[Tuple[str, Any], None, None]:
+        """refund_query：调 RefundService（复合 tool + policy）"""
+        entities = intent_result["entities"]
+        order_no = entities.get("order_no")
+
+        if user_id == ANONYMOUS_USER_ID:
+            yield ("meta", {
+                "intent": "refund_query",
+                "entities": entities,
+                "contexts": [],
+                "scores": [],
+            })
+            yield from Synthesizer._stream_simple(NO_LOGIN_PROMPT)
+            return
+
+        # 无 order_no：取最近一笔订单的 order_no
+        if not order_no:
+            recent = OrderService.list_user_orders(user_id)
+            recent = recent[:1] if recent else []
+            if recent:
+                order_no = recent[0]["order_no"]
+            else:
+                yield ("meta", {
+                    "intent": "refund_query",
+                    "entities": entities,
+                    "contexts": [],
+                    "scores": [],
+                })
+                yield from Synthesizer._stream_simple("用户当前没有订单，无法判断退款。请提供订单号。")
+                return
+
+        result = RefundService.check_refundable_with_policy(user_id, order_no, query)
+        tool_block = _format_tool_result("refund_query", result)
+        policy_docs = result.get("policy_docs", [])
+        policy_block = _format_policy_docs(policy_docs)
+
+        meta = {
+            "intent": "refund_query",
+            "entities": entities,
+            "contexts": [],
+            "scores": [],
+            "order_no": order_no,
+            "refundable": result.get("tool_result", {}).get("refundable"),
+            "policy_hits": len(policy_docs),
+        }
+        yield ("meta", meta)
+
+        prompt = _build_chat_prompt(
+            intent="refund_query",
+            tool_block=tool_block,
+            policy_block=policy_block,
+            product_block="",
+            history_block="",
+            query=query,
+        )
+        yield from Synthesizer._stream_llm(prompt)
+
+    @staticmethod
+    def _handle_product(
+        query: str, intent_result: dict, history: Optional[list[dict]]
+    ) -> Generator[Tuple[str, Any], None, None]:
+        """product_query：调 ProductTool + 补 policy"""
+        entities = intent_result["entities"]
+        sku = entities.get("sku")
+
+        # 1. 查商品
+        # 优先用 sku 实体精确查；查不到时回退到 keyword 搜（MySQL 里 SKU=SKU001，
+        # 但商品 name 包含 ZP1，所以 keyword="ZP1" 能命中 SKU001）
+        products = []
+        if sku:
+            exact = ProductTool.get_by_sku(sku)
+            if exact:
+                products = [exact]
+            else:
+                # SKU 实体（如 ZP1）不在 MySQL.sku 列里——keyword 搜名字
+                products = ProductTool.search_by_keyword(sku, limit=5)
+        if not products:
+            # query 整句搜（可能被噪音词干扰）→ 兜底滑动窗口抽 2-3 字实词再搜
+            products = ProductTool.search_by_keyword(query, limit=5)
+            if not products:
+                products = Synthesizer._search_by_keyword_window(query, limit=5)
+
+        # 格式化 product 块
+        if not products:
+            product_block = "未在数据库中找到相关商品。"
+        else:
+            lines = []
+            for p in products:
+                attrs = p.get("attributes") or {}
+                color = attrs.get("color", [])
+                lines.append(
+                    f"- SKU {p.get('sku')} | {p.get('name')} | ¥{p.get('price')} | "
+                    f"颜色 {color if isinstance(color, str) else '、'.join(color) if color else '—'} | "
+                    f"库存 {p.get('stock')}"
+                )
+            product_block = "\n".join(lines)
+
+        # 2. KB RAG 补 specs（M5 修复 #22 #25：续航/配置 在 KB 不在 MySQL）
+        kb_docs = PolicyService.search_policy(query, top_k=3)
+        kb_block = _format_policy_docs(kb_docs)
+        if kb_block:
+            if product_block and product_block != "未在数据库中找到相关商品。":
+                product_block = f"{product_block}\n\n【商品详细规格（来自知识库）】\n{kb_block}"
+            else:
+                product_block = f"未在数据库中找到相关商品。\n\n【知识库相关参考】\n{kb_block}"
+
+        meta = {
+            "intent": "product_query",
+            "entities": entities,
+            "contexts": [],
+            "scores": [],
+            "products_found": len(products),
+            "kb_hits": len(kb_docs),
+        }
+        yield ("meta", meta)
+
+        prompt = _build_chat_prompt(
+            intent="product_query",
+            tool_block="",
+            policy_block="",
+            product_block=product_block,
+            history_block=_format_history(history),
+            query=query,
+        )
+        yield from Synthesizer._stream_llm(prompt)
+
+    @staticmethod
+    def _handle_policy(
+        query: str, intent_result: dict, history: Optional[list[dict]]
+    ) -> Generator[Tuple[str, Any], None, None]:
+        """policy_query：纯 PolicyService RAG（最接近 V1.2 行为）"""
+        policy_docs = PolicyService.search_policy(query, top_k=5)
+        policy_block = _format_policy_docs(policy_docs)
+
+        meta = {
+            "intent": "policy_query",
+            "entities": intent_result["entities"],
+            "contexts": [],
+            "scores": [],
+            "policy_hits": len(policy_docs),
+        }
+        yield ("meta", meta)
+
+        if not policy_docs:
+            # 无相关 policy → LLM 用通用知识兜底
+            yield from Synthesizer._stream_llm(
+                f"参考资料：\n（未检索到相关政策）\n\n对话历史：\n{_format_history(history)}\n\n问题：{query}"
+            )
+            return
+
+        prompt = _build_chat_prompt(
+            intent="policy_query",
+            tool_block="",
+            policy_block=policy_block,
+            product_block="",
+            history_block=_format_history(history),
+            query=query,
+        )
+        yield from Synthesizer._stream_llm(prompt)
+
+    # ---------- LLM 流式辅助 ----------
+
+    @staticmethod
+    def _stream_llm(user_prompt: str) -> Generator[Tuple[str, Any], None, None]:
+        """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10）"""
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT_BASE},
+            {"role": "user", "content": user_prompt},
+        ]
+        full_answer = ""
+        # semaphore 包住整个流式调用：>10 并发时排队，超出请求首 token 延迟增大但不会 429
+        with _LLM_SEMAPHORE:
+            for chunk in qwen_stream_chat(messages, temperature=0.3):
+                full_answer += chunk
+                yield ("token", chunk)
+        yield ("done", {"answer": full_answer})
+
+    @staticmethod
+    def _search_by_keyword_window(query: str, limit: int = 5) -> list[dict]:
+        """
+        用滑动窗口（2-3 字）抽 query 里的实词，逐个调 ProductTool.search_by_keyword，
+        命中即返回。最坏情况下 N 次调用（N = 候选数）— 接受（小数据集，前缀检查会快速失败）
+        """
+        import re
+        seen = set()
+        candidates = []
+        for size in (2, 3):
+            for i in range(len(query) - size + 1):
+                c = query[i:i + size]
+                # 只保留纯中文字段
+                if re.fullmatch(r"[\u4e00-\u9fff]+", c) and c not in seen:
+                    seen.add(c)
+                    candidates.append(c)
+        # 按出现顺序（自然语言里关键词偏后）；倒序先查"尾巴词"
+        for kw in reversed(candidates):
+            ps = ProductTool.search_by_keyword(kw, limit=limit)
+            if ps:
+                logger.info(f"product keyword window 命中: kw='{kw}' → {len(ps)} 条")
+                return ps
+        return []
+
+    @staticmethod
+    def _stream_simple(text: str) -> Generator[Tuple[str, Any], None, None]:
+        """简单文本直接 yield（不走 LLM）— 仍按 token + done 协议，chat.py 通用累加逻辑可工作"""
+        yield ("token", text)
+        yield ("done", {"answer": text})
