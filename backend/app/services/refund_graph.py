@@ -37,6 +37,8 @@ class RefundState(TypedDict, total=False):
     order_no: str
     query: str
     user_proof: dict          # 可选：用户上传的凭证
+    history: list             # M9.5+：多轮对话历史 [{"role":..., "content":...}]
+    context_block: str        # M9.5：从商品/订单跳转携带的 context（已拼好的字符串）
 
     # Node 1 输出
     order_info: dict          # OrderTool 返回的订单 dict
@@ -202,13 +204,16 @@ def synthesize_answer(state: RefundState) -> RefundState:
     """
     Node 6: LLM 综合答案（走 Qwen 生成最终回答）
 
-    Prompt 优先级硬约束 + 反幻觉 4 条铁律（防止 LLM 胡编乱造 / 串单）：
+    Prompt 优先级硬约束 + 反幻觉 5 条铁律（防止 LLM 胡编乱造 / 串单 / 跑题）：
         1. 必须基于【事实陈述】回答，禁止编造订单号/状态/价格/日期
         2. 【事实陈述】与【政策依据】冲突时，以【事实陈述】为准
         3. 信息不足时直接告知用户，禁止推测
         4. 回答中出现的订单号必须与【事实陈述】中的 order_no 完全一致
+        5. 用户问的是"能不能退" → 必须正面回答（可以退 / 不能退 + 原因）
+           不能只复述订单基本信息或物流信息；不能确定就转人工
 
     字段注入：order_no 单独提出来强制注入（防止 LLM 从订单 dict 漏看）
+    多轮对话：history 注入，LLM 能基于上下文回答"那能退吗"类追问
     """
     # 1. 拼 policy 摘录（每条前 200 字，[1]/[2]/[3] 编号）
     policy_lines = []
@@ -218,7 +223,21 @@ def synthesize_answer(state: RefundState) -> RefundState:
             policy_lines.append(f"[{i}] {text}")
     policy_block = "\n".join(policy_lines) if policy_lines else "（无相关政策）"
 
-    # 2. 提取订单核心事实（避免把整个 dict 灌进 prompt 让 LLM 漏看关键字段）
+    # 2. 拼对话历史（M9.5+：多轮场景必传）
+    history = state.get("history") or []
+    history_lines = []
+    for msg in history[-6:]:  # 只取最近 6 条，避免 prompt 太长
+        role = msg.get("role", "")
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            history_lines.append(f"用户：{content}")
+        elif role == "assistant":
+            history_lines.append(f"客服：{content}")
+    history_block = "\n".join(history_lines) if history_lines else "（无历史对话）"
+
+    # 3. 提取订单核心事实（避免把整个 dict 灌进 prompt 让 LLM 漏看关键字段）
     order_info = state.get("order_info", {}) or {}
     order_no = order_info.get("order_no") or state.get("order_no") or "未知"
     order_status = _STATUS_ZH.get(order_info.get("status", ""), order_info.get("status", "未知"))
@@ -227,15 +246,19 @@ def synthesize_answer(state: RefundState) -> RefundState:
     reason = state.get("reason", "")
     days = state.get("days_since_order", 0)
     query = state.get("query", "")
+    context_block = state.get("context_block", "").strip()
 
-    # 3. 拼 prompt — 反幻觉 4 条铁律 + 字段显式注入
+    # 4. 拼 prompt — 反幻觉 5 条铁律 + 字段显式注入
+    context_section = f"\n【上下文】\n{context_block}\n" if context_block else ""
     prompt = (
         "你是专业的电商客服。请严格按以下规则回答：\n\n"
         "【硬约束 - 违反任何一条都视为错误回答】\n"
         "1. 必须基于【事实陈述】回答，不得编造订单号、状态、价格、日期\n"
         "2. 如果【事实陈述】与【政策依据】冲突，以【事实陈述】为准\n"
         "3. 如果【事实陈述】信息不足（如订单不存在），直接告知用户并请其提供订单号，禁止推测\n"
-        "4. 回答中出现的订单号必须与【事实陈述】中的 order_no 完全一致，禁止换单\n\n"
+        "4. 回答中出现的订单号必须与【事实陈述】中的 order_no 完全一致，禁止换单\n"
+        "5. 用户问【能不能退/能退款吗】时，必须在第一句明确回答【可以退】或【不能退 + 原因】，"
+        "禁止只复述订单基本信息；如系统事实明确，按事实回答；如事实不明，请转人工\n\n"
         "【事实陈述】(最高优先级)\n"
         f"订单号: {order_no}\n"
         f"订单状态: {order_status}\n"
@@ -245,11 +268,14 @@ def synthesize_answer(state: RefundState) -> RefundState:
         f"已下单 {days} 天\n\n"
         "【政策依据】\n"
         f"{policy_block}\n\n"
-        f"用户问题: {query}\n\n"
-        "回答："
+        f"{context_section}\n"
+        "【对话历史】(供多轮对话参考)\n"
+        f"{history_block}\n\n"
+        f"用户当前问题: {query}\n\n"
+        "回答（先给结论再补充细节，禁止编造）："
     )
 
-    # 4. 调 LLM — temperature=0.3 降低随机性
+    # 5. 调 LLM — temperature=0.3 降低随机性
     result = qwen_chat(
         [{"role": "user", "content": prompt}],
         temperature=0.3,
