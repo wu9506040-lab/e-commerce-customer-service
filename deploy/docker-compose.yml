@@ -37,6 +37,10 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # V3 LangGraph 开关（控制 synthesizer._handle_refund 走 V2 还是 V3）
       USE_LANGGRAPH_REFUND: ${USE_LANGGRAPH_REFUND:-false}
+      # JWT 鉴权（2026-06-28 轮换，不依赖 config.py 默认占位符）
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-24}
     volumes:
       - uploads_data:/app/uploads
       - logs_data:/app/logs
