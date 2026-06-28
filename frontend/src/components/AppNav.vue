@@ -127,7 +127,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
 
 <style scoped>
 .topbar {
-  height: var(--topbar-h);
+  height: 72px;
   background: var(--gray-0);
   border-bottom: var(--border);
   position: sticky;
@@ -149,17 +149,17 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
 .logo {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
 }
 .logo-mark {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   background: var(--jd-red);
   color: #fff;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -171,15 +171,15 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
   line-height: 1;
 }
 .logo-name {
-  font-size: 16px;
+  font-size: 20px;
   font-weight: 700;
   color: var(--gray-800);
 }
 .logo-en {
-  font-size: 9px;
+  font-size: 12px;
   color: var(--gray-500);
   letter-spacing: 1px;
-  margin-top: 2px;
+  margin-top: 3px;
 }
 
 /* 搜索 */
@@ -188,13 +188,13 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
   max-width: 500px;
   display: flex;
   border: 2px solid var(--jd-red);
-  height: 36px;
+  height: 44px;
 }
 .search input {
   flex: 1;
   border: none;
   outline: none;
-  padding: 0 var(--sp-3);
+  padding: 0 var(--sp-4);
   font-size: var(--fs-base);
   background: var(--gray-0);
   color: var(--gray-800);
@@ -203,16 +203,17 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
   color: var(--gray-500);
 }
 .search-btn {
-  width: 70px;
+  width: 84px;
   border: none;
   background: var(--jd-red);
   color: #fff;
   font-size: var(--fs-base);
+  font-weight: 500;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 6px;
 }
 .search-btn:hover {
   background: var(--jd-red-hover);
@@ -224,7 +225,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
 .nav-links {
   display: flex;
   align-items: center;
-  gap: var(--sp-5);
+  gap: var(--sp-6);
 }
 .nav-link {
   font-size: var(--fs-base);
@@ -239,7 +240,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
 .login-link { color: var(--gray-600); }
 .register-link {
   color: var(--jd-red);
-  font-weight: 500;
+  font-weight: 600;
 }
 
 /* 用户菜单 */
@@ -250,13 +251,13 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
   position: relative;
 }
 .avatar {
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: var(--jd-red);
   color: #fff;
   border: none;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   cursor: pointer;
   display: flex;
@@ -270,7 +271,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  width: 200px;
+  width: 220px;
   background: var(--gray-0);
   border: var(--border);
   box-shadow: var(--shadow-md);
@@ -282,22 +283,22 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
   margin: 0;
 }
 .dropdown-header {
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-4);
   background: var(--gray-50);
 }
 .dropdown-name {
-  font-size: var(--fs-base);
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--gray-800);
 }
 .dropdown-role {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--gray-500);
-  margin-top: 2px;
+  margin-top: 4px;
 }
 .dropdown-item {
   display: block;
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-4);
   font-size: var(--fs-base);
   color: var(--gray-700);
   cursor: pointer;

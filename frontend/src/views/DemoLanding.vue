@@ -257,12 +257,12 @@ function goShop(cat?: string) {
   100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
 }
 .hero-title {
-  font-size: 64px;
+  font-size: var(--fs-4xl);
   font-weight: 800;
-  margin: 0 0 var(--sp-3);
+  margin: 0 0 var(--sp-4);
   line-height: 1.1;
-  letter-spacing: 4px;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  letter-spacing: 6px;
+  text-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 .hero-sub {
   font-size: var(--fs-lg);
@@ -471,14 +471,14 @@ function goShop(cat?: string) {
   letter-spacing: -1px;
 }
 .metric-num small {
-  font-size: var(--fs-base);
+  font-size: var(--fs-lg);
   font-weight: 400;
   color: var(--gray-500);
   margin-left: 2px;
 }
 .metric-label {
-  margin-top: var(--sp-2);
-  font-size: var(--fs-sm);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-base);
   color: var(--gray-600);
 }
 .metrics-loading {
