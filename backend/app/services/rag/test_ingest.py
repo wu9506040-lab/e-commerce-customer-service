@@ -9,6 +9,10 @@ Ingest 端到端测试
 运行：
     docker exec customer-service-api python -m app.services.rag.test_ingest
 """
+# 这不是 pytest 测试，是手动跑的脚本（按文件 docstring 约定）
+# M7/M4/V3 重构移除了 pipeline.run()，pytest 自动按 test_*.py 收集会 ImportError
+__test__ = False
+
 import logging
 import sys
 
