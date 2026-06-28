@@ -14,6 +14,7 @@ from app.api.chat import router as chat_router
 from app.api.conversations import router as conversations_router  # §12 会话历史读取层
 from app.api.intent import router as intent_router  # M3 意图分类
 from app.api.middleware import RequestIdMiddleware, ResponseHeaderMiddleware  # M8
+from app.api.shop import router as shop_router  # 前端商品橱窗 + 我的订单（M9）
 from app.clients.mysql_client import close_engine, get_engine
 from app.clients.qdrant import _qdrant_breaker  # M8：metrics 用
 from app.core.config import settings
@@ -142,6 +143,7 @@ app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(conversations_router)  # §12
 app.include_router(intent_router)  # M3
+app.include_router(shop_router)  # 前端商品橱窗 + 我的订单
 
 
 # =============================================================

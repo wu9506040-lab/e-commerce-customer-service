@@ -41,6 +41,10 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 class ConversationListItem(BaseModel):
     """会话列表项"""
     session_id: str = Field(..., description="会话 ID")
+    title: Optional[str] = Field(
+        None, max_length=200,
+        description="会话标题（M9 自动生成：首条 user 消息前 20 字符）",
+    )
     last_message: Optional[str] = Field(
         None, max_length=2000,
         description="最后一条消息内容（assistant 回复，按 create_time 取最新）",
@@ -89,6 +93,21 @@ class DeleteResponse(BaseModel):
     """删除响应"""
     session_id: str
     message: str = "已删除"
+
+
+class TitleUpdateRequest(BaseModel):
+    """标题更新请求"""
+    title: str = Field(
+        ..., min_length=1, max_length=200,
+        description="新标题（1-200 字符）",
+    )
+
+
+class TitleUpdateResponse(BaseModel):
+    """标题更新响应"""
+    session_id: str
+    title: str
+    message: str = "标题已更新"
 
 
 # =============================================================
@@ -178,6 +197,7 @@ def list_conversations(
     items = [
         ConversationListItem(
             session_id=r.session_id,
+            title=r.title,
             last_message=last_msg_map.get(r.session_id),
             updated_at=r.last_message_at,
             message_count=r.message_count or 0,
@@ -374,3 +394,57 @@ def delete_conversation(
     )
 
     return DeleteResponse(session_id=session_id)
+
+
+# =============================================================
+# PATCH /conversations/{session_id} - 更新标题
+# =============================================================
+@router.patch(
+    "/{session_id}",
+    response_model=TitleUpdateResponse,
+    summary="更新会话标题",
+    description=(
+        "前端在首条消息发出后，自动用首条 user 消息的前 N 字符作标题。"
+        "需要登录且该会话属于当前用户。"
+    ),
+)
+def update_conversation_title(
+    payload: TitleUpdateRequest,
+    session_id: str = Path(..., min_length=1, max_length=64, description="会话 ID"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    更新会话标题
+
+    用途：M9 前端自动生成标题（首条 user 消息前 20 字符）。
+    仅修改 title 字段，不动 message_count / last_message_at。
+    """
+    # 1. 权限校验（同时确认存在性）
+    conv = db.execute(
+        select(Conversation).where(
+            Conversation.session_id == session_id,
+            Conversation.user_id == current_user.id,
+            Conversation.deleted == 0,
+        )
+    ).scalar_one_or_none()
+
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
+
+    # 2. 修剪 + 更新（前端可能传了首尾空白）
+    new_title = payload.title.strip()
+    if not new_title:
+        raise HTTPException(status_code=400, detail="标题不能为空")
+    if len(new_title) > 200:
+        new_title = new_title[:200]
+
+    conv.title = new_title
+    db.commit()
+
+    logger.info(
+        f"update_conversation_title: user={current_user.id}, "
+        f"session={session_id[:12]}..., title_len={len(new_title)}"
+    )
+
+    return TitleUpdateResponse(session_id=session_id, title=new_title)
