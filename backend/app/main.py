@@ -1,5 +1,7 @@
 """
 智能客服 Agent 系统 - FastAPI 后端入口
+
+M8：结构化日志 + Request ID 中间件 + /metrics 端点
 """
 import logging
 
@@ -10,17 +12,20 @@ from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.conversations import router as conversations_router  # §12 会话历史读取层
+from app.api.intent import router as intent_router  # M3 意图分类
+from app.api.middleware import RequestIdMiddleware, ResponseHeaderMiddleware  # M8
 from app.clients.mysql_client import close_engine, get_engine
+from app.clients.qdrant import _qdrant_breaker  # M8：metrics 用
 from app.core.config import settings
+from app.core.logging import setup_logging  # M8
 from app.models import Base  # 触发 ORM 注册（确保 create_all 找到所有表）
 
 # =============================================================
-# 日志配置
+# 日志配置（M8：结构化 JSON / text 双模式）
 # =============================================================
-logging.basicConfig(
-    level=settings.LOG_LEVEL,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# dev 环境用 text（人类可读），prod 用 json（日志聚合系统）
+LOG_FORMAT = "json" if settings.APP_ENV in ("prod", "production") else "text"
+setup_logging(level=settings.LOG_LEVEL, log_format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 # =============================================================
@@ -42,6 +47,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# =============================================================
+# M8 中间件（必须在 CORS 之后注册 — FastAPI 中间件执行顺序是 LIFO）
+# =============================================================
+# 注意：ResponseHeaderMiddleware 先注册（外层），RequestIdMiddleware 后注册（内层）
+# 实际请求流向：client → CORS → ResponseHeader → RequestId → router
+# 实际响应流向：router → RequestId（设 ContextVar）→ ResponseHeader（读 ContextVar 写头）
+app.add_middleware(ResponseHeaderMiddleware)
+app.add_middleware(RequestIdMiddleware)
 
 
 # =============================================================
@@ -100,9 +114,15 @@ async def health():
     except Exception as e:
         components["qdrant"] = {"status": "down", "error": str(e)[:100]}
 
+    # 注入断路器状态（M8）— 独立字段，不参与 overall 判定
+    circuit_breaker = {
+        "qdrant": _qdrant_breaker.stats(),
+    }
+
+    # 只统计 mysql / redis / qdrant 三个核心组件，circuit_breaker 是诊断信息
     overall = (
         "ok"
-        if all(c["status"] == "ok" for c in components.values())
+        if all(c["status"] == "ok" for c in (components["mysql"], components["redis"], components["qdrant"]))
         else "degraded"
     )
     return {
@@ -110,6 +130,7 @@ async def health():
         "env": settings.APP_ENV,
         "version": "0.2.0",
         "components": components,
+        "circuit_breaker": circuit_breaker,
     }
 
 
@@ -120,6 +141,33 @@ app.include_router(chat_router)
 app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(conversations_router)  # §12
+app.include_router(intent_router)  # M3
+
+
+# =============================================================
+# M8：/metrics 端点（业务指标 JSON 快照）
+# =============================================================
+@app.get(
+    "/metrics",
+    summary="业务指标快照（M8）",
+    description="返回 chat / rag / embedding / hit@K 等指标的 JSON 快照。不引入 Prometheus，纯内存实现。",
+)
+async def metrics_endpoint():
+    """
+    业务指标端点
+
+    返回字段：
+        uptime_seconds    - 服务启动时长
+        chat              - chat 调用数 / 意图分布 / 延迟分位数 / token 总量
+        rag               - Qdrant 搜索成功 / 降级 / 错误计数
+        embedding         - embedding 调用 / 重试 / 错误计数
+        circuit_breaker   - 断路器状态
+        hit_at_k          - 实时 hit@K（最近 100 次 RAG 检索窗口）
+    """
+    from app.services.metrics import metrics as metrics_singleton
+    return metrics_singleton.snapshot(
+        circuit_breaker_stats={"qdrant": _qdrant_breaker.stats()}
+    )
 
 
 # =============================================================
