@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <linearGradient id="bg4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0f9f0"/>
+      <stop offset="100%" stop-color="#d4e8d4"/>
+    </linearGradient>
+    <linearGradient id="phone4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2c4a3e"/>
+      <stop offset="100%" stop-color="#1a3029"/>
+    </linearGradient>
+    <filter id="shadow4"><feGaussianBlur in="SourceAlpha" stdDeviation="6"/><feOffset dy="5"/><feComponentTransfer><feFuncA type="linear" slope="0.3"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <rect width="600" height="600" fill="url(#bg4)"/>
+  <ellipse cx="300" cy="490" rx="100" ry="12" fill="#000" opacity="0.15"/>
+
+  <!-- 老人机：长方形 + 大按键 -->
+  <g filter="url(#shadow4)">
+    <!-- 主机身 -->
+    <rect x="215" y="100" width="170" height="380" rx="12" ry="12" fill="url(#phone4)" stroke="#0d1a14" stroke-width="1"/>
+    <!-- 屏幕 -->
+    <rect x="230" y="120" width="140" height="100" rx="6" ry="6" fill="#a8d8a0"/>
+    <text x="300" y="160" text-anchor="middle" fill="#0d1a14" font-family="system-ui" font-size="20" font-weight="700">138****8888</text>
+    <text x="300" y="190" text-anchor="middle" fill="#0d1a14" font-family="system-ui" font-size="11">已接通</text>
+
+    <!-- 12 个大按键 + 上下导航 -->
+    <!-- 上导航键（圆形方向键） -->
+    <circle cx="300" cy="252" r="22" fill="#3d5a4e" stroke="#0d1a14" stroke-width="1"/>
+    <path d="M300 240 L295 248 L305 248 Z" fill="#a8d8a0"/>
+    <path d="M300 264 L295 256 L305 256 Z" fill="#a8d8a0"/>
+    <path d="M288 252 L296 247 L296 257 Z" fill="#a8d8a0"/>
+    <path d="M312 252 L304 247 L304 257 Z" fill="#a8d8a0"/>
+    <circle cx="300" cy="252" r="6" fill="#a8d8a0"/>
+
+    <!-- 拨号键 -->
+    <rect x="232" y="290" width="32" height="22" rx="4" fill="#3d5a4e"/>
+    <rect x="284" y="290" width="32" height="22" rx="4" fill="#3d5a4e"/>
+    <rect x="336" y="290" width="32" height="22" rx="4" fill="#3d5a4e"/>
+
+    <rect x="232" y="320" width="32" height="22" rx="4" fill="#3d5a4e"/>
+    <rect x="284" y="320" width="32" height="22" rx="4" fill="#3d5a4e"/>
+    <rect x="336" y="320" width="32" height="22" rx="4" fill="#3d5a4e"/>
+
+    <rect x="232" y="350" width="32" height="22" rx="4" fill="#3d5a4e"/>
+    <rect x="284" y="350" width="32" height="22" rx="4" fill="#3d5a4e"/>
+    <rect x="336" y="350" width="32" height="22" rx="4" fill="#3d5a4e"/>
+
+    <rect x="232" y="380" width="32" height="22" rx="4" fill="#3d5a4e"/>
+    <rect x="284" y="380" width="32" height="22" rx="4" fill="#3d5a4e"/>
+    <rect x="336" y="380" width="32" height="22" rx="4" fill="#3d5a4e"/>
+
+    <!-- 拨号/挂断键 -->
+    <circle cx="260" cy="425" r="12" fill="#19be6b"/>
+    <path d="M254 425 Q260 419 266 425" stroke="#fff" stroke-width="2" fill="none"/>
+    <circle cx="340" cy="425" r="12" fill="#e1251b"/>
+    <path d="M334 425 L346 425" stroke="#fff" stroke-width="2"/>
+
+    <!-- 大喇叭标识（老人机标志） -->
+    <rect x="265" y="455" width="70" height="3" fill="#a8d8a0"/>
+    <rect x="275" y="463" width="50" height="2" fill="#a8d8a0"/>
+  </g>
+
+  <text x="300" y="540" text-anchor="middle" fill="#1a3029" font-family="system-ui" font-size="18" font-weight="600">智选科技 ZN2 老人机</text>
+  <text x="300" y="565" text-anchor="middle" fill="#666" font-family="system-ui" font-size="13">SKU004 · 4+64 · 大字大声长续航</text>
+</svg>

@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <linearGradient id="bg10" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0f0f5"/>
+      <stop offset="100%" stop-color="#d4d4e0"/>
+    </linearGradient>
+    <radialGradient id="mouse10" cx="0.4" cy="0.4" r="0.6">
+      <stop offset="0%" stop-color="#3a3a3a"/>
+      <stop offset="100%" stop-color="#0a0a0a"/>
+    </radialGradient>
+    <filter id="shadow10"><feGaussianBlur in="SourceAlpha" stdDeviation="8"/><feOffset dy="6"/><feComponentTransfer><feFuncA type="linear" slope="0.3"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <rect width="600" height="600" fill="url(#bg10)"/>
+  <ellipse cx="300" cy="470" rx="100" ry="14" fill="#000" opacity="0.15"/>
+
+  <!-- 鼠标：俯视 + 轻微透视 -->
+  <g filter="url(#shadow10)">
+    <!-- 主体（椭圆 + 矩形顶部） -->
+    <path d="M200 280 Q200 180 300 180 Q400 180 400 280 L400 420 Q400 470 300 470 Q200 470 200 420 Z" fill="url(#mouse10)" stroke="#000" stroke-width="1"/>
+
+    <!-- 左键分隔线 -->
+    <line x1="300" y1="195" x2="300" y2="290" stroke="#000" stroke-width="1.5"/>
+    <!-- 右键分隔线 -->
+    <line x1="298" y1="195" x2="298" y2="290" stroke="#000" stroke-width="0.5" opacity="0.5"/>
+
+    <!-- 滚轮 -->
+    <rect x="290" y="225" width="20" height="35" rx="6" fill="#1a1a1a" stroke="#000" stroke-width="1"/>
+    <rect x="293" y="230" width="14" height="3" rx="1" fill="#666"/>
+    <rect x="293" y="238" width="14" height="3" rx="1" fill="#666"/>
+    <rect x="293" y="246" width="14" height="3" rx="1" fill="#666"/>
+    <rect x="293" y="254" width="14" height="3" rx="1" fill="#666"/>
+
+    <!-- DPI 按钮（拇指位） -->
+    <rect x="380" y="320" width="14" height="22" rx="3" fill="#1a1a1a" stroke="#000" stroke-width="0.5"/>
+    <rect x="380" y="348" width="14" height="22" rx="3" fill="#1a1a1a" stroke="#000" stroke-width="0.5"/>
+
+    <!-- 侧裙凹槽 -->
+    <path d="M205 320 Q210 340 220 360" stroke="#000" stroke-width="1" fill="none" opacity="0.5"/>
+
+    <!-- 高光（鼠标顶部弧形光） -->
+    <path d="M240 200 Q300 195 360 200 Q345 210 300 210 Q255 210 240 200 Z" fill="#fff" opacity="0.08"/>
+
+    <!-- 底部脚贴指示（前/后） -->
+    <rect x="270" y="455" width="60" height="3" rx="1" fill="#fff" opacity="0.3"/>
+
+    <!-- DPI 指示灯 -->
+    <circle cx="300" cy="310" r="2" fill="#e1251b"/>
+  </g>
+
+  <text x="300" y="540" text-anchor="middle" fill="#0a0a0a" font-family="system-ui" font-size="18" font-weight="600">智选科技 MS1 无线鼠标</text>
+  <text x="300" y="565" text-anchor="middle" fill="#666" font-family="system-ui" font-size="13">SKU010 · 2.4G · 16000 DPI</text>
+</svg>

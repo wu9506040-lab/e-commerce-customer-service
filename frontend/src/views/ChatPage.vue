@@ -330,7 +330,7 @@ watch(
   flex: 1;
   display: flex;
   height: 100%;
-  background: white;
+  background: var(--gray-50);
   overflow: hidden;
 }
 .chat-main {
@@ -341,30 +341,30 @@ watch(
   height: 100%;
 }
 .loading-tip {
-  padding: 8px 20px;
+  padding: var(--sp-2) var(--sp-5);
   text-align: center;
-  color: #999;
-  font-size: 13px;
-  background: #fafafa;
-  border-bottom: 1px solid #f0f0f0;
+  color: var(--gray-500);
+  font-size: var(--fs-sm);
+  background: var(--gray-100);
+  border-bottom: var(--border);
   flex-shrink: 0;
 }
 .streaming-indicator {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px 20px;
-  background: #f5f3ff;
-  color: #6d28d9;
-  font-size: 13px;
-  border-top: 1px solid #e9d5ff;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-5);
+  background: var(--jd-red-light);
+  color: var(--jd-red);
+  font-size: var(--fs-sm);
+  border-top: 1px solid var(--jd-red);
   flex-shrink: 0;
 }
 .streaming-indicator .dot {
   display: inline-block;
   width: 6px;
   height: 6px;
-  background: #6d28d9;
+  background: var(--jd-red);
   border-radius: 50%;
   animation: bounce 1.2s ease-in-out infinite;
 }
@@ -383,11 +383,11 @@ watch(
   overflow: hidden;
 }
 .error-banner {
-  padding: 8px 20px;
-  background: #fef2f2;
-  color: #c33;
-  font-size: 13px;
-  border-top: 1px solid #fecaca;
+  padding: var(--sp-2) var(--sp-5);
+  background: var(--jd-red-light);
+  color: var(--jd-red-dark);
+  font-size: var(--fs-sm);
+  border-top: 1px solid var(--jd-red);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -396,10 +396,10 @@ watch(
 .error-banner .dismiss {
   background: none;
   border: none;
-  color: #c33;
+  color: var(--jd-red-dark);
   font-size: 18px;
   cursor: pointer;
-  padding: 0 4px;
+  padding: 0 var(--sp-1);
   line-height: 1;
 }
 </style>

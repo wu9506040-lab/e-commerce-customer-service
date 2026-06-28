@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <linearGradient id="bg7" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8f0f8"/>
+      <stop offset="100%" stop-color="#c9ddee"/>
+    </linearGradient>
+    <linearGradient id="tab7" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a4a4a"/>
+      <stop offset="100%" stop-color="#2a2a2a"/>
+    </linearGradient>
+    <linearGradient id="screen7" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e0f0ff"/>
+      <stop offset="100%" stop-color="#b0d4f0"/>
+    </linearGradient>
+    <filter id="shadow7"><feGaussianBlur in="SourceAlpha" stdDeviation="10"/><feOffset dy="8"/><feComponentTransfer><feFuncA type="linear" slope="0.3"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <rect width="600" height="600" fill="url(#bg7)"/>
+  <ellipse cx="300" cy="490" rx="200" ry="14" fill="#000" opacity="0.15"/>
+
+  <g filter="url(#shadow7)">
+    <!-- 平板（横向） -->
+    <rect x="100" y="160" width="400" height="280" rx="20" ry="20" fill="url(#tab7)" stroke="#000" stroke-width="1"/>
+    <!-- 屏幕 -->
+    <rect x="115" y="175" width="370" height="250" rx="10" ry="10" fill="url(#screen7)"/>
+
+    <!-- 屏幕内容 - 阅读视图 -->
+    <!-- 顶部状态栏 -->
+    <rect x="115" y="175" width="370" height="22" fill="#fff" opacity="0.95"/>
+    <text x="135" y="190" fill="#1a1a1a" font-family="system-ui" font-size="10" font-weight="600">9:41</text>
+    <rect x="455" y="184" width="14" height="8" rx="1" fill="none" stroke="#1a1a1a" stroke-width="0.5"/>
+    <rect x="457" y="186" width="8" height="4" fill="#19be6b"/>
+
+    <!-- 大标题 -->
+    <text x="300" y="240" text-anchor="middle" fill="#1a1a1a" font-family="system-ui" font-size="20" font-weight="700">新闻早班车</text>
+    <text x="300" y="258" text-anchor="middle" fill="#666" font-family="system-ui" font-size="10">2026年6月28日</text>
+
+    <!-- 内容区块 -->
+    <rect x="135" y="280" width="160" height="60" rx="4" fill="#fff" opacity="0.6"/>
+    <rect x="143" y="290" width="80" height="6" rx="2" fill="#333"/>
+    <rect x="143" y="304" width="120" height="4" rx="2" fill="#999"/>
+    <rect x="143" y="314" width="100" height="4" rx="2" fill="#999"/>
+    <rect x="143" y="324" width="110" height="4" rx="2" fill="#999"/>
+
+    <rect x="305" y="280" width="160" height="60" rx="4" fill="#fff" opacity="0.6"/>
+    <rect x="313" y="290" width="80" height="6" rx="2" fill="#333"/>
+    <rect x="313" y="304" width="120" height="4" rx="2" fill="#999"/>
+    <rect x="313" y="314" width="100" height="4" rx="2" fill="#999"/>
+    <rect x="313" y="324" width="110" height="4" rx="2" fill="#999"/>
+
+    <!-- 大图占位 -->
+    <rect x="135" y="350" width="330" height="60" rx="4" fill="#e1251b" opacity="0.7"/>
+    <text x="300" y="385" text-anchor="middle" fill="#fff" font-family="system-ui" font-size="12" font-weight="600">618 大促 · 全场满 300 减 50</text>
+  </g>
+
+  <text x="300" y="540" text-anchor="middle" fill="#1a1a1a" font-family="system-ui" font-size="18" font-weight="600">智选科技 PT1 平板</text>
+  <text x="300" y="565" text-anchor="middle" fill="#666" font-family="system-ui" font-size="13">SKU007 · 8+256 · 学习办公</text>
+</svg>

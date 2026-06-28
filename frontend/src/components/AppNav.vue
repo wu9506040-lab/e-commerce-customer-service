@@ -1,16 +1,25 @@
 <script setup lang="ts">
-// 全局顶栏 - logo + 导航 + 用户菜单
-import { ref, onMounted, computed } from 'vue';
-import { useRouter, useRoute } from 'vue-router';
+/**
+ * 顶栏（京东红电商风）
+ * - 左：logo「智选客服」+ 红色装饰
+ * - 中：搜索框（可输入回车跳转 /shop）
+ * - 右：商品/客服/关于 + 我的订单/头像菜单
+ */
+import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { getMe, logout } from '../api';
 import type { User } from '../types';
 
-const router = useRouter();
 const route = useRoute();
+const router = useRouter();
+
 const user = ref<User | null>(null);
 const menuOpen = ref(false);
+const searchText = ref('');
 
-async function refreshUser() {
+const showSearch = computed(() => route.name === 'shop' || route.name === 'home');
+
+async function loadUser() {
   try {
     user.value = await getMe();
   } catch {
@@ -18,23 +27,24 @@ async function refreshUser() {
   }
 }
 
-onMounted(refreshUser);
+function toggleMenu() {
+  menuOpen.value = !menuOpen.value;
+}
 
-// 监听路由变化时刷新 user（处理刚登录/登出的情况）
-router.afterEach(() => {
-  refreshUser();
-});
+function closeMenu(e: MouseEvent) {
+  const target = e.target as HTMLElement;
+  if (!target.closest('.user-menu')) menuOpen.value = false;
+}
 
-const navLinks = [
-  { name: 'demo', label: '首页', show: 'always' as const },
-  { name: 'shop', label: '商品', show: 'always' as const },
-  { name: 'chat', label: '客服', show: 'loggedIn' as const },
-  { name: 'profile', label: '我的', show: 'loggedIn' as const },
-];
+function go(path: string) {
+  router.push(path);
+  menuOpen.value = false;
+}
 
-const visibleLinks = computed(() =>
-  navLinks.filter((l) => l.show === 'always' || user.value),
-);
+function onSearch() {
+  const q = searchText.value.trim();
+  router.push({ name: 'shop', query: q ? { q } : {} });
+}
 
 async function onLogout() {
   await logout();
@@ -43,216 +53,261 @@ async function onLogout() {
   router.push('/demo');
 }
 
-function goLogin() {
-  router.push({ name: 'login', query: { redirect: route.fullPath } });
-}
-
-function goRegister() {
-  router.push({ name: 'login', query: { redirect: route.fullPath, tab: 'register' } });
-}
-
-// 用户首字母（用于头像占位）
-const avatarLetter = computed(() => {
-  const name = user.value?.display_name || user.value?.username || '?';
-  return name.charAt(0).toUpperCase();
+onMounted(() => {
+  loadUser();
+  document.addEventListener('click', closeMenu);
 });
+onUnmounted(() => document.removeEventListener('click', closeMenu));
 </script>
 
 <template>
-  <header class="app-nav">
-    <div class="nav-inner">
+  <header class="topbar">
+    <div class="topbar-inner">
       <!-- Logo -->
-      <router-link to="/" class="logo">
-        <span class="logo-icon">🤖</span>
-        <span class="logo-text">智选客服</span>
-      </router-link>
-
-      <!-- 主导航 -->
-      <nav class="nav-links">
-        <router-link
-          v-for="link in visibleLinks"
-          :key="link.name"
-          :to="{ name: link.name }"
-          class="nav-link"
-          active-class="active"
-        >
-          {{ link.label }}
-        </router-link>
-      </nav>
-
-      <!-- 用户区 -->
-      <div class="user-area">
-        <template v-if="user">
-          <div class="user-menu" @click.stop="menuOpen = !menuOpen">
-            <div class="avatar">{{ avatarLetter }}</div>
-            <span class="username">{{ user.display_name || user.username }}</span>
-            <span class="caret">▾</span>
-            <div v-if="menuOpen" class="dropdown" @click.stop>
-              <router-link to="/profile" class="dropdown-item" @click="menuOpen = false">
-                个人中心
-              </router-link>
-              <button class="dropdown-item" @click="onLogout">退出登录</button>
-            </div>
-          </div>
-        </template>
-        <template v-else>
-          <button class="btn-ghost" @click="goLogin">登录</button>
-          <button class="btn-primary" @click="goRegister">注册</button>
-        </template>
+      <div class="logo" @click="router.push(user ? '/chat' : '/demo')">
+        <div class="logo-mark">智</div>
+        <div class="logo-text">
+          <span class="logo-name">智选客服</span>
+          <span class="logo-en">ZHIXUAN</span>
+        </div>
       </div>
+
+      <!-- 搜索框（仅在 /shop 等商品页显示） -->
+      <div v-if="showSearch" class="search">
+        <input
+          v-model="searchText"
+          type="text"
+          placeholder="搜索 商品 / 订单 / 政策"
+          @keyup.enter="onSearch"
+        />
+        <button class="search-btn" @click="onSearch">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <circle cx="7" cy="7" r="5" stroke="#fff" stroke-width="1.5"/>
+            <line x1="11" y1="11" x2="14" y2="14" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          搜索
+        </button>
+      </div>
+      <div v-else class="spacer"></div>
+
+      <!-- 右侧 -->
+      <nav class="nav-links">
+        <a v-if="user" class="nav-link" @click="go('/shop')">商品</a>
+        <a v-if="user" class="nav-link" @click="go('/chat')">客服</a>
+        <a class="nav-link" @click="go('/demo')">关于</a>
+
+        <div class="user-area">
+          <template v-if="user">
+            <div class="user-menu">
+              <button class="avatar" @click="toggleMenu">
+                {{ (user.display_name || user.username).charAt(0).toUpperCase() }}
+              </button>
+              <div v-if="menuOpen" class="dropdown">
+                <div class="dropdown-header">
+                  <div class="dropdown-name">{{ user.display_name || user.username }}</div>
+                  <div class="dropdown-role">{{ user.role === 'admin' ? '管理员' : '普通用户' }}</div>
+                </div>
+                <hr/>
+                <a class="dropdown-item" @click="go('/profile')">个人中心</a>
+                <a class="dropdown-item" @click="go('/chat')">我的对话</a>
+                <hr/>
+                <a class="dropdown-item danger" @click="onLogout">退出登录</a>
+              </div>
+            </div>
+          </template>
+          <template v-else>
+            <a class="nav-link login-link" @click="go('/login')">登录</a>
+            <a class="nav-link register-link" @click="go('/login?tab=register')">注册</a>
+          </template>
+        </div>
+      </nav>
     </div>
   </header>
 </template>
 
 <style scoped>
-.app-nav {
-  background: white;
-  border-bottom: 1px solid #e5e7eb;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+.topbar {
+  height: var(--topbar-h);
+  background: var(--gray-0);
+  border-bottom: var(--border);
   position: sticky;
   top: 0;
   z-index: 100;
   flex-shrink: 0;
 }
-.nav-inner {
-  max-width: 1280px;
+.topbar-inner {
+  max-width: var(--content-max);
+  height: 100%;
   margin: 0 auto;
-  padding: 0 24px;
-  height: 56px;
+  padding: 0 var(--sp-6);
   display: flex;
   align-items: center;
-  gap: 32px;
+  gap: var(--sp-8);
 }
+
+/* Logo */
 .logo {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 17px;
+  gap: var(--sp-2);
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.logo-mark {
+  width: 36px;
+  height: 36px;
+  background: var(--jd-red);
+  color: #fff;
+  font-size: 20px;
   font-weight: 700;
-  color: #1f2937;
-}
-.logo-icon {
-  font-size: 22px;
-}
-.logo-text {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-.nav-links {
-  display: flex;
-  gap: 4px;
-  flex: 1;
-}
-.nav-link {
-  padding: 8px 14px;
-  border-radius: 6px;
-  font-size: 14px;
-  color: #6b7280;
-  transition: all 0.15s;
-}
-.nav-link:hover {
-  background: #f3f4f6;
-  color: #1f2937;
-}
-.nav-link.active {
-  background: #eef2ff;
-  color: #4f46e5;
-  font-weight: 500;
-}
-.user-area {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+}
+.logo-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+}
+.logo-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gray-800);
+}
+.logo-en {
+  font-size: 9px;
+  color: var(--gray-500);
+  letter-spacing: 1px;
+  margin-top: 2px;
+}
+
+/* 搜索 */
+.search {
+  flex: 1;
+  max-width: 500px;
+  display: flex;
+  border: 2px solid var(--jd-red);
+  height: 36px;
+}
+.search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-base);
+  background: var(--gray-0);
+  color: var(--gray-800);
+}
+.search input::placeholder {
+  color: var(--gray-500);
+}
+.search-btn {
+  width: 70px;
+  border: none;
+  background: var(--jd-red);
+  color: #fff;
+  font-size: var(--fs-base);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.search-btn:hover {
+  background: var(--jd-red-hover);
+}
+
+.spacer { flex: 1; }
+
+/* 右侧导航 */
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+}
+.nav-link {
+  font-size: var(--fs-base);
+  color: var(--gray-700);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.nav-link:hover {
+  color: var(--jd-red);
+}
+.login-link { color: var(--gray-600); }
+.register-link {
+  color: var(--jd-red);
+  font-weight: 500;
+}
+
+/* 用户菜单 */
+.user-area {
+  position: relative;
 }
 .user-menu {
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 12px 4px 4px;
-  border-radius: 24px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.user-menu:hover {
-  background: #f3f4f6;
 }
 .avatar {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: var(--jd-red);
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
-  font-weight: 600;
 }
-.username {
-  font-size: 14px;
-  color: #1f2937;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.caret {
-  font-size: 10px;
-  color: #9ca3af;
+.avatar:hover {
+  background: var(--jd-red-hover);
 }
 .dropdown {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 8px);
   right: 0;
-  min-width: 160px;
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  padding: 4px;
+  width: 200px;
+  background: var(--gray-0);
+  border: var(--border);
+  box-shadow: var(--shadow-md);
+  z-index: 200;
+}
+.dropdown hr {
+  border: none;
+  border-top: var(--border);
+  margin: 0;
+}
+.dropdown-header {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--gray-50);
+}
+.dropdown-name {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--gray-800);
+}
+.dropdown-role {
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
+  margin-top: 2px;
 }
 .dropdown-item {
   display: block;
-  width: 100%;
-  text-align: left;
-  padding: 8px 12px;
-  font-size: 14px;
-  color: #1f2937;
-  background: none;
-  border: none;
-  border-radius: 4px;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-base);
+  color: var(--gray-700);
   cursor: pointer;
 }
 .dropdown-item:hover {
-  background: #f3f4f6;
+  background: var(--gray-50);
+  color: var(--jd-red);
 }
-.btn-ghost {
-  padding: 6px 14px;
-  background: white;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 14px;
-  color: #1f2937;
-  cursor: pointer;
-}
-.btn-ghost:hover {
-  background: #f9fafb;
-  border-color: #9ca3af;
-}
-.btn-primary {
-  padding: 6px 14px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.btn-primary:hover {
-  opacity: 0.92;
+.dropdown-item.danger:hover {
+  background: var(--jd-red-light);
+  color: var(--jd-red-dark);
 }
 </style>

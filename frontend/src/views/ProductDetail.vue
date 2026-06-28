@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
- * 商品详情页（M9 新增）
- * 大图 + 名称 + 价格 + 描述 + 属性表 + 问客服按钮
+ * 商品详情页（京东风）
+ * 左侧大图 + 右侧名称/价格/规格/描述/CTA
+ * 京东风格：1px 边框 + 表格化规格 + 红价格 + 红 CTA
  */
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getProduct } from '../api';
+import { getProduct, listProducts } from '../api';
 import type { Product } from '../types';
 import ProductCard from '../components/ProductCard.vue';
 
@@ -29,10 +30,29 @@ async function load() {
   }
 }
 
-onMounted(load);
-watch(sku, load);
+// 相关推荐（同类别其它商品）
+const related = ref<Product[]>([]);
+async function loadRelated() {
+  if (!product.value) return;
+  try {
+    const data = await listProducts({ limit: 50 });
+    related.value = data.products
+      .filter((p) => p.sku !== product.value!.sku)
+      .slice(0, 4);
+  } catch {
+    /* 静默 */
+  }
+}
 
-// 属性表：把 attributes dict 转成 [{key, value}]
+onMounted(async () => {
+  await load();
+  if (product.value) await loadRelated();
+});
+watch(sku, async () => {
+  await load();
+  if (product.value) await loadRelated();
+});
+
 const attributeRows = computed(() => {
   if (!product.value?.attributes) return [];
   return Object.entries(product.value.attributes).map(([key, value]) => ({
@@ -48,35 +68,69 @@ function onAsk() {
     query: { q: `${product.value.sku} 怎么样` },
   });
 }
+function openProduct(s: string) {
+  router.push({ name: 'product-detail', params: { sku: s } });
+}
 </script>
 
 <template>
   <main class="detail-page">
     <div class="detail-inner">
-      <button class="back-btn" @click="router.back()">← 返回</button>
+      <!-- 面包屑 -->
+      <nav class="breadcrumb">
+        <a @click="router.push('/shop')">商品</a>
+        <span class="sep">/</span>
+        <span>{{ product?.name || '加载中…' }}</span>
+      </nav>
 
       <div v-if="loading" class="loading-state">
         <div class="spinner"></div>
         <p>商品加载中…</p>
       </div>
-      <div v-else-if="error" class="error-state">⚠️ {{ error }}</div>
+      <div v-else-if="error" class="error-state">{{ error }}</div>
       <div v-else-if="product" class="detail-grid">
+        <!-- 左：商品图 -->
         <div class="left">
-          <ProductCard :product="product" density="detail" @ask="onAsk" />
+          <div class="cover">
+            <img :src="product.cover_url" :alt="product.name" />
+          </div>
+          <div class="thumbs">
+            <div class="thumb active"><img :src="product.cover_url" /></div>
+            <div class="thumb"><img :src="product.cover_url" /></div>
+            <div class="thumb"><img :src="product.cover_url" /></div>
+            <div class="thumb"><img :src="product.cover_url" /></div>
+          </div>
         </div>
+
+        <!-- 右：商品信息 -->
         <div class="right">
           <h1>{{ product.name }}</h1>
-          <div class="price-line">
-            <span class="price">¥{{ product.price.toLocaleString('zh-CN') }}</span>
-            <span class="stock">📦 库存 {{ product.stock }} 件</span>
+          <div class="badges">
+            <span class="badge">自营</span>
+            <span class="badge">7 天无理由退换</span>
+            <span class="badge">正品保障</span>
           </div>
 
+          <!-- 价格区 -->
+          <div class="price-box">
+            <div class="price-label">智 选 价</div>
+            <div class="price-line">
+              <span class="price-symbol">¥</span>
+              <span class="price-num">{{ product.price.toLocaleString('zh-CN') }}</span>
+              <span class="stock-tag" :class="{ low: product.stock < 5 && product.stock > 0, out: product.stock === 0 }">
+                {{ product.stock > 0 ? (product.stock < 5 ? `仅剩 ${product.stock} 件` : `库存 ${product.stock} 件`) : '无货' }}
+              </span>
+            </div>
+          </div>
+
+          <!-- 描述 -->
           <p v-if="product.description" class="description">
             {{ product.description }}
           </p>
 
+          <!-- 规格参数 -->
           <div v-if="attributeRows.length" class="attrs">
-            <h3>规格参数</h3>
+            <div class="attrs-title">规格参数</div>
             <table>
               <tbody>
                 <tr v-for="row in attributeRows" :key="row.key">
@@ -87,12 +141,37 @@ function onAsk() {
             </table>
           </div>
 
+          <!-- CTA -->
           <div class="actions">
-            <button class="ask-btn" @click="onAsk">💬 问问客服</button>
+            <button class="ask-btn-primary" @click="onAsk">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="M21 12a9 9 0 11-9-9 9 9 0 019 9z" stroke="currentColor" stroke-width="2"/>
+                <path d="M9 10h.01M15 10h.01M9 14c1 1 2 1.5 3 1.5s2-.5 3-1.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              咨询客服
+            </button>
+            <button class="ask-btn-secondary">加入清单</button>
             <span class="hint">登录后即可对话，AI 客服 24h 在线</span>
           </div>
         </div>
       </div>
+
+      <!-- 相关推荐 -->
+      <section v-if="related.length" class="related">
+        <div class="related-title">看了又看</div>
+        <div class="related-grid">
+          <div
+            v-for="p in related"
+            :key="p.sku"
+            class="related-item"
+            @click="openProduct(p.sku)"
+          >
+            <div class="related-cover"><img :src="p.cover_url" /></div>
+            <div class="related-name">{{ p.name }}</div>
+            <div class="related-price">¥{{ p.price.toLocaleString('zh-CN') }}</div>
+          </div>
+        </div>
+      </section>
     </div>
   </main>
 </template>
@@ -101,135 +180,301 @@ function onAsk() {
 .detail-page {
   flex: 1;
   overflow-y: auto;
-  background: white;
+  background: var(--gray-50);
 }
 .detail-inner {
-  max-width: 1100px;
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding: 24px;
+  padding: var(--sp-4) var(--sp-6);
 }
-.back-btn {
-  margin-bottom: 16px;
-  padding: 6px 14px;
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #4b5563;
+
+/* 面包屑 */
+.breadcrumb {
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
+  margin-bottom: var(--sp-3);
+}
+.breadcrumb a {
+  color: var(--gray-600);
   cursor: pointer;
 }
-.back-btn:hover {
-  background: #f9fafb;
+.breadcrumb a:hover {
+  color: var(--jd-red);
 }
+.breadcrumb .sep {
+  margin: 0 var(--sp-2);
+}
+
+/* 主区 */
 .detail-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-  gap: 40px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-6);
+  background: var(--gray-0);
+  border: var(--border);
+  padding: var(--sp-6);
 }
 @media (max-width: 768px) {
   .detail-grid {
     grid-template-columns: 1fr;
   }
 }
+
+/* 左图 */
+.cover {
+  width: 100%;
+  aspect-ratio: 1;
+  background: var(--gray-50);
+  border: var(--border);
+}
+.cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.thumbs {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.thumb {
+  width: 60px;
+  height: 60px;
+  border: 1px solid var(--gray-200);
+  cursor: pointer;
+  padding: 2px;
+  background: var(--gray-50);
+}
+.thumb.active {
+  border-color: var(--jd-red);
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 右信息 */
 .right h1 {
-  margin: 0 0 16px;
-  font-size: 24px;
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-xl);
   font-weight: 600;
-  color: #1f2937;
+  color: var(--gray-800);
   line-height: 1.4;
+}
+.badges {
+  display: flex;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--jd-red-light);
+  color: var(--jd-red);
+  font-size: var(--fs-xs);
+  border: 1px solid var(--jd-red);
+}
+
+.price-box {
+  background: var(--jd-red-light);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+.price-label {
+  font-size: var(--fs-xs);
+  color: var(--jd-red);
+  margin-bottom: var(--sp-1);
 }
 .price-line {
   display: flex;
   align-items: baseline;
-  gap: 16px;
-  padding: 16px 0;
-  border-top: 1px solid #f3f4f6;
-  border-bottom: 1px solid #f3f4f6;
+  gap: var(--sp-2);
 }
-.price {
-  font-size: 32px;
-  font-weight: 700;
-  color: #dc2626;
-}
-.stock {
-  font-size: 13px;
-  color: #6b7280;
-}
-.description {
-  margin: 20px 0;
-  color: #4b5563;
-  line-height: 1.7;
-  font-size: 14px;
-}
-.attrs {
-  margin: 20px 0;
-}
-.attrs h3 {
-  margin: 0 0 12px;
-  font-size: 15px;
+.price-symbol {
+  font-size: var(--fs-lg);
+  color: var(--jd-red);
   font-weight: 600;
-  color: #1f2937;
+}
+.price-num {
+  font-size: 32px;
+  color: var(--jd-red);
+  font-weight: 700;
+}
+.stock-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--gray-0);
+  color: var(--jd-red);
+  font-size: var(--fs-xs);
+  border: 1px solid var(--jd-red);
+}
+.stock-tag.low {
+  background: #fff3e0;
+  color: #ff8800;
+  border-color: #ff8800;
+}
+.stock-tag.out {
+  background: var(--gray-100);
+  color: var(--gray-500);
+  border-color: var(--gray-300);
+}
+
+.description {
+  margin: 0 0 var(--sp-4);
+  color: var(--gray-700);
+  line-height: 1.7;
+  font-size: var(--fs-base);
+}
+
+.attrs {
+  margin: 0 0 var(--sp-4);
+}
+.attrs-title {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--gray-800);
+  margin-bottom: var(--sp-2);
+  padding-bottom: var(--sp-2);
+  border-bottom: var(--border);
 }
 .attrs table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .attrs th {
   width: 100px;
   text-align: left;
-  padding: 10px 12px;
-  background: #f9fafb;
-  color: #6b7280;
-  font-weight: 500;
-  border: 1px solid #f3f4f6;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--gray-50);
+  color: var(--gray-600);
+  font-weight: 400;
+  border: 1px solid var(--gray-200);
 }
 .attrs td {
-  padding: 10px 12px;
-  color: #1f2937;
-  border: 1px solid #f3f4f6;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--gray-800);
+  border: 1px solid var(--gray-200);
 }
+
 .actions {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-top: 24px;
+  gap: var(--sp-3);
+  padding-top: var(--sp-4);
+  border-top: var(--border);
 }
-.ask-btn {
-  padding: 12px 28px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+.ask-btn-primary {
+  padding: 12px 32px;
+  background: var(--jd-red);
+  color: #fff;
   border: none;
-  border-radius: 8px;
-  font-size: 15px;
-  font-weight: 500;
+  font-size: var(--fs-md);
   cursor: pointer;
-  transition: transform 0.15s, box-shadow 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
-.ask-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.3);
+.ask-btn-primary:hover {
+  background: var(--jd-red-hover);
+}
+.ask-btn-secondary {
+  padding: 12px 24px;
+  background: var(--gray-0);
+  color: var(--jd-red);
+  border: 1px solid var(--jd-red);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+.ask-btn-secondary:hover {
+  background: var(--jd-red-light);
 }
 .hint {
-  font-size: 13px;
-  color: #9ca3af;
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
 }
+
+/* 相关推荐 */
+.related {
+  margin-top: var(--sp-4);
+  background: var(--gray-0);
+  border: var(--border);
+  padding: var(--sp-4) var(--sp-6);
+}
+.related-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--gray-800);
+  margin-bottom: var(--sp-3);
+  padding-bottom: var(--sp-2);
+  border-bottom: 2px solid var(--jd-red);
+  display: inline-block;
+}
+.related-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-3);
+}
+@media (max-width: 768px) {
+  .related-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.related-item {
+  cursor: pointer;
+  border: var(--border);
+  transition: border-color 0.15s;
+}
+.related-item:hover {
+  border-color: var(--jd-red);
+}
+.related-cover {
+  aspect-ratio: 1;
+  background: var(--gray-50);
+}
+.related-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.related-name {
+  padding: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--gray-800);
+  height: 40px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.related-price {
+  padding: 0 var(--sp-2) var(--sp-2);
+  font-size: var(--fs-md);
+  color: var(--jd-red);
+  font-weight: 700;
+}
+
+/* States */
 .loading-state, .error-state {
+  background: var(--gray-0);
+  border: var(--border);
   text-align: center;
   padding: 80px 20px;
-  color: #9ca3af;
+  color: var(--gray-500);
 }
 .error-state {
-  color: #b91c1c;
+  color: var(--jd-red);
 }
 .spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid #e5e7eb;
-  border-top-color: #667eea;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--gray-200);
+  border-top-color: var(--jd-red);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  margin: 0 auto 12px;
+  margin: 0 auto var(--sp-3);
 }
 @keyframes spin {
   to { transform: rotate(360deg); }

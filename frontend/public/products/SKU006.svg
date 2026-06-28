@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <linearGradient id="bg6" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f5f0f8"/>
+      <stop offset="100%" stop-color="#e2d4ee"/>
+    </linearGradient>
+    <linearGradient id="watch6" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1a1a"/>
+      <stop offset="100%" stop-color="#0a0a0a"/>
+    </linearGradient>
+    <filter id="shadow6"><feGaussianBlur in="SourceAlpha" stdDeviation="6"/><feOffset dy="5"/><feComponentTransfer><feFuncA type="linear" slope="0.25"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <rect width="600" height="600" fill="url(#bg6)"/>
+  <ellipse cx="300" cy="500" rx="120" ry="12" fill="#000" opacity="0.12"/>
+
+  <g filter="url(#shadow6)">
+    <!-- 上表带 -->
+    <path d="M255 100 L255 200 L345 200 L345 100 Q345 95 340 95 L260 95 Q255 95 255 100 Z" fill="url(#watch6)"/>
+    <!-- 表带横向纹理 -->
+    <line x1="260" y1="130" x2="340" y2="130" stroke="#333" stroke-width="1"/>
+    <line x1="260" y1="150" x2="340" y2="150" stroke="#333" stroke-width="1"/>
+    <line x1="260" y1="170" x2="340" y2="170" stroke="#333" stroke-width="1"/>
+
+    <!-- 下表带 -->
+    <path d="M255 400 L255 500 Q255 505 260 505 L340 505 Q345 505 345 500 L345 400 Z" fill="url(#watch6)"/>
+    <line x1="260" y1="430" x2="340" y2="430" stroke="#333" stroke-width="1"/>
+    <line x1="260" y1="450" x2="340" y2="450" stroke="#333" stroke-width="1"/>
+    <line x1="260" y1="470" x2="340" y2="470" stroke="#333" stroke-width="1"/>
+
+    <!-- 表盘主体（圆角矩形） -->
+    <rect x="210" y="195" width="180" height="220" rx="32" ry="32" fill="url(#watch6)" stroke="#000" stroke-width="1"/>
+
+    <!-- 屏幕（圆形显示区域） -->
+    <rect x="225" y="215" width="150" height="180" rx="22" ry="22" fill="#000"/>
+    <circle cx="300" cy="305" r="75" fill="#0d1421"/>
+    <!-- 时间显示 -->
+    <text x="300" y="295" text-anchor="middle" fill="#fff" font-family="system-ui" font-size="32" font-weight="300">09:41</text>
+    <text x="300" y="315" text-anchor="middle" fill="#19be6b" font-family="system-ui" font-size="10" font-weight="600">周三 6月28日</text>
+    <!-- 心率 -->
+    <text x="265" y="345" text-anchor="middle" fill="#e1251b" font-family="system-ui" font-size="11">♥ 72</text>
+    <!-- 步数 -->
+    <text x="335" y="345" text-anchor="middle" fill="#4a90e2" font-family="system-ui" font-size="11">👣 8,234</text>
+
+    <!-- 侧边按钮（数码表冠） -->
+    <rect x="390" y="265" width="6" height="30" rx="2" fill="#444" stroke="#222" stroke-width="0.5"/>
+    <rect x="390" y="305" width="6" height="20" rx="2" fill="#444" stroke="#222" stroke-width="0.5"/>
+    <!-- 左边按钮 -->
+    <rect x="204" y="285" width="6" height="20" rx="2" fill="#444" stroke="#222" stroke-width="0.5"/>
+  </g>
+
+  <text x="300" y="555" text-anchor="middle" fill="#0d1421" font-family="system-ui" font-size="18" font-weight="600">智选科技 WS1 智能手表</text>
+  <text x="300" y="580" text-anchor="middle" fill="#666" font-family="system-ui" font-size="13">SKU006 · 健康监测</text>
+</svg>

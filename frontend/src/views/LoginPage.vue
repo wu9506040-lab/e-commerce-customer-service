@@ -96,8 +96,8 @@ onMounted(() => {
   <div class="auth-page">
     <div class="auth-card">
       <div class="brand">
-        <span class="brand-icon">🤖</span>
-        <h1>智选电商客服</h1>
+        <div class="brand-mark">智</div>
+        <h1>智选客服</h1>
         <p class="brand-sub">RAG + LangGraph · 多意图智能客服</p>
       </div>
 
@@ -106,19 +106,19 @@ onMounted(() => {
           :class="['tab', { active: tab === 'login' }]"
           @click="switchTab('login')"
         >
-          登录
+          账号登录
         </button>
         <button
           :class="['tab', { active: tab === 'register' }]"
           @click="switchTab('register')"
         >
-          注册
+          新用户注册
         </button>
       </div>
 
       <form v-if="tab === 'login'" @submit.prevent="onLogin" class="form">
-        <label>
-          <span class="label">用户名</span>
+        <div class="field">
+          <label>用户名</label>
           <input
             v-model="username"
             placeholder="请输入用户名"
@@ -126,9 +126,9 @@ onMounted(() => {
             required
             :disabled="loading"
           />
-        </label>
-        <label>
-          <span class="label">密码</span>
+        </div>
+        <div class="field">
+          <label>密码</label>
           <input
             v-model="password"
             type="password"
@@ -137,19 +137,19 @@ onMounted(() => {
             required
             :disabled="loading"
           />
-        </label>
+        </div>
         <button type="submit" class="btn-submit" :disabled="loading">
-          {{ loading ? '登录中…' : '登录' }}
+          {{ loading ? '登录中…' : '登 录' }}
         </button>
         <p class="alt-action">
-          还没账号？
+          还没有账号？
           <a href="#" @click.prevent="switchTab('register')">立即注册</a>
         </p>
       </form>
 
       <form v-else @submit.prevent="onRegister" class="form">
-        <label>
-          <span class="label">用户名 <em>*</em></span>
+        <div class="field">
+          <label>用户名 <em>*</em></label>
           <input
             v-model="username"
             placeholder="3-20 位字母数字下划线"
@@ -157,9 +157,9 @@ onMounted(() => {
             required
             :disabled="loading"
           />
-        </label>
-        <label>
-          <span class="label">密码 <em>*</em></span>
+        </div>
+        <div class="field">
+          <label>密码 <em>*</em></label>
           <input
             v-model="password"
             type="password"
@@ -168,9 +168,9 @@ onMounted(() => {
             required
             :disabled="loading"
           />
-        </label>
-        <label>
-          <span class="label">确认密码 <em>*</em></span>
+        </div>
+        <div class="field">
+          <label>确认密码 <em>*</em></label>
           <input
             v-model="passwordConfirm"
             type="password"
@@ -179,13 +179,13 @@ onMounted(() => {
             required
             :disabled="loading"
           />
-        </label>
-        <label>
-          <span class="label">昵称（可选）</span>
+        </div>
+        <div class="field">
+          <label>昵称（可选）</label>
           <input v-model="displayName" placeholder="显示用" :disabled="loading" />
-        </label>
-        <label>
-          <span class="label">邮箱（可选）</span>
+        </div>
+        <div class="field">
+          <label>邮箱（可选）</label>
           <input
             v-model="email"
             type="email"
@@ -193,7 +193,7 @@ onMounted(() => {
             autocomplete="email"
             :disabled="loading"
           />
-        </label>
+        </div>
         <button type="submit" class="btn-submit" :disabled="loading">
           {{ loading ? '注册中…' : '注册并登录' }}
         </button>
@@ -203,7 +203,7 @@ onMounted(() => {
         </p>
       </form>
 
-      <p v-if="error" class="error-msg">⚠️ {{ error }}</p>
+      <p v-if="error" class="error-msg">{{ error }}</p>
     </div>
 
     <p class="footer-tip">© 2026 智选电商 · 智能客服系统</p>
@@ -217,140 +217,161 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px 20px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  padding: var(--sp-10) var(--sp-5);
+  background: var(--gray-50);
 }
 .auth-card {
   width: 100%;
-  max-width: 420px;
-  background: white;
-  border-radius: 16px;
-  padding: 40px 36px 32px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08);
+  max-width: 380px;
+  background: var(--gray-0);
+  border: var(--border);
+  padding: var(--sp-8) var(--sp-8) var(--sp-6);
 }
+
+/* Brand */
 .brand {
   text-align: center;
-  margin-bottom: 28px;
+  margin-bottom: var(--sp-6);
+  padding-bottom: var(--sp-5);
+  border-bottom: var(--border);
 }
-.brand-icon {
-  font-size: 40px;
-  display: block;
-  margin-bottom: 8px;
+.brand-mark {
+  width: 48px;
+  height: 48px;
+  background: var(--jd-red);
+  color: #fff;
+  font-size: 26px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto var(--sp-2);
 }
 .brand h1 {
-  margin: 0 0 6px;
-  font-size: 22px;
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-lg);
   font-weight: 700;
-  color: #1f2937;
+  color: var(--gray-800);
 }
 .brand-sub {
   margin: 0;
-  font-size: 13px;
-  color: #9ca3af;
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
 }
+
+/* Tabs */
 .tabs {
   display: flex;
-  background: #f3f4f6;
-  border-radius: 8px;
-  padding: 4px;
-  margin-bottom: 24px;
+  margin-bottom: var(--sp-5);
+  border-bottom: var(--border);
 }
 .tab {
   flex: 1;
-  padding: 8px 0;
-  font-size: 14px;
-  font-weight: 500;
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-base);
   background: none;
   border: none;
-  border-radius: 6px;
-  color: #6b7280;
+  color: var(--gray-600);
   cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
   transition: all 0.15s;
 }
 .tab.active {
-  background: white;
-  color: #4f46e5;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  color: var(--jd-red);
+  border-bottom-color: var(--jd-red);
+  font-weight: 500;
 }
+.tab:hover:not(.active) {
+  color: var(--gray-800);
+}
+
+/* Form */
 .form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-3);
 }
-label {
+.field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-1);
 }
-.label {
-  font-size: 13px;
-  color: #4b5563;
-  font-weight: 500;
+.field label {
+  font-size: var(--fs-sm);
+  color: var(--gray-700);
 }
-.label em {
-  color: #ef4444;
+.field label em {
+  color: var(--jd-red);
   font-style: normal;
+  margin-left: 2px;
 }
-input {
-  padding: 10px 12px;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  font-size: 14px;
+.field input {
+  padding: var(--sp-3);
+  border: 1px solid var(--gray-300);
+  font-size: var(--fs-base);
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s;
+  background: var(--gray-0);
 }
-input:focus {
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+.field input:focus {
+  border-color: var(--jd-red);
 }
-input:disabled {
-  background: #f9fafb;
+.field input:disabled {
+  background: var(--gray-100);
   cursor: not-allowed;
 }
+
+/* Submit */
 .btn-submit {
-  margin-top: 6px;
-  padding: 11px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  background: var(--jd-red);
+  color: #fff;
   border: none;
-  border-radius: 8px;
-  font-size: 15px;
+  font-size: var(--fs-md);
   font-weight: 500;
   cursor: pointer;
-  transition: opacity 0.15s;
+  letter-spacing: 4px;
 }
 .btn-submit:hover:not(:disabled) {
-  opacity: 0.92;
+  background: var(--jd-red-hover);
 }
 .btn-submit:disabled {
-  opacity: 0.5;
+  background: var(--gray-400);
   cursor: not-allowed;
 }
+
+/* Alt action */
 .alt-action {
-  margin: 4px 0 0;
+  margin: var(--sp-2) 0 0;
   text-align: center;
-  font-size: 13px;
-  color: #6b7280;
+  font-size: var(--fs-sm);
+  color: var(--gray-600);
 }
 .alt-action a {
-  color: #4f46e5;
+  color: var(--jd-red);
   font-weight: 500;
+  cursor: pointer;
 }
 .alt-action a:hover {
   text-decoration: underline;
 }
+
+/* Error */
 .error-msg {
-  margin: 12px 0 0;
-  padding: 8px 12px;
-  background: #fef2f2;
-  color: #b91c1c;
-  border-radius: 6px;
-  font-size: 13px;
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--jd-red-light);
+  color: var(--jd-red-dark);
+  border: 1px solid var(--jd-red);
+  font-size: var(--fs-sm);
   text-align: center;
 }
+
 .footer-tip {
-  margin-top: 24px;
-  font-size: 12px;
-  color: #9ca3af;
+  margin-top: var(--sp-5);
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
 }
 </style>

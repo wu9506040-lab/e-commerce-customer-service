@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 消息内嵌卡片（M9 新增）
+ * 消息内嵌卡片（京东风）
  * 在 assistant 消息下方，根据 msg.intent + msg.entities 自动渲染：
  * - product_query + sku → ProductCard mini
  * - order_query / refund_query + order_no → OrderCard mini
@@ -65,6 +65,19 @@ watch(
   { immediate: true },
 );
 
+// intent 中文映射
+const intentLabel = (intent: string): string => {
+  const map: Record<string, string> = {
+    product_query: '商品咨询',
+    order_query: '订单查询',
+    refund_query: '退款咨询',
+    policy_query: '政策问答',
+    greeting: '问候',
+    chitchat: '闲聊',
+  };
+  return map[intent] ?? intent;
+};
+
 // 应不应该渲染卡片
 const shouldRenderCard = () => {
   return !!(props.message.intent && props.message.entities);
@@ -93,14 +106,13 @@ const shouldRenderCard = () => {
 
     <!-- tool_result_preview 折叠面板 -->
     <details v-if="message.tool_result_preview" class="preview-details">
-      <summary>📋 查看工具调用预览</summary>
+      <summary>查看工具调用预览</summary>
       <pre>{{ message.tool_result_preview }}</pre>
     </details>
 
-    <!-- intent 徽章 -->
+    <!-- intent 徽章（京东风：扁平红章） -->
     <div class="intent-badge">
-      <span class="badge-label">意图</span>
-      <span class="badge-value">{{ message.intent }}</span>
+      <span class="badge-value">{{ intentLabel(message.intent ?? '') }}</span>
       <span v-if="message.entities?.sku" class="badge-entity">SKU {{ message.entities.sku }}</span>
       <span v-if="message.entities?.order_no" class="badge-entity">{{ message.entities.order_no }}</span>
     </div>
@@ -109,30 +121,35 @@ const shouldRenderCard = () => {
 
 <style scoped>
 .message-card {
-  margin-top: 8px;
+  margin-top: var(--sp-2);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 .preview-details {
-  font-size: 12px;
-  color: #4b5563;
-  background: #f9fafb;
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid #f3f4f6;
+  font-size: var(--fs-xs);
+  color: var(--gray-600);
+  background: var(--gray-50);
+  padding: var(--sp-2) var(--sp-3);
+  border: var(--border);
 }
 .preview-details summary {
   cursor: pointer;
   user-select: none;
+  font-weight: 500;
+  color: var(--gray-700);
+}
+.preview-details summary:hover {
+  color: var(--jd-red);
 }
 .preview-details pre {
-  margin: 6px 0 0;
-  padding: 8px;
-  background: white;
-  border-radius: 4px;
-  font-size: 11px;
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2);
+  background: var(--gray-0);
+  border: var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 120px;
@@ -144,25 +161,20 @@ const shouldRenderCard = () => {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  color: #6b7280;
+  font-size: var(--fs-xs);
   padding: 2px 0;
 }
-.badge-label {
-  font-weight: 500;
-}
 .badge-value {
-  padding: 2px 8px;
-  background: #eef2ff;
-  color: #4f46e5;
-  border-radius: 10px;
+  padding: 1px 8px;
+  background: var(--jd-red);
+  color: #fff;
   font-weight: 500;
 }
 .badge-entity {
-  padding: 2px 8px;
-  background: #f3f4f6;
-  color: #4b5563;
-  border-radius: 10px;
-  font-family: ui-monospace, monospace;
+  padding: 1px 8px;
+  background: var(--gray-50);
+  color: var(--gray-700);
+  border: 1px solid var(--gray-300);
+  font-family: var(--font-mono);
 }
 </style>
