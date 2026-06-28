@@ -138,3 +138,96 @@ CREATE TABLE `operation_logs` (
   KEY `idx_logs_user_time`  (`user_id`, `create_time`),
   KEY `idx_logs_action_time` (`action`, `create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作审计日志';
+
+-- =============================================================
+-- 6. products - 商品主表（M1 电商升级）
+-- 入 RAG：name + description
+-- 不入 RAG：review_text（V2.x 独立字段，防噪音）
+-- attributes 用 JSON 存颜色/规格等动态属性
+-- =============================================================
+DROP TABLE IF EXISTS `products`;
+CREATE TABLE `products` (
+  `id`           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT                  COMMENT '主键',
+  `sku`          VARCHAR(50)  NOT NULL                                    COMMENT '业务编号 SKU001-SKU010',
+  `name`         VARCHAR(200) NOT NULL                                    COMMENT '商品名',
+  `description`  TEXT         DEFAULT NULL                                COMMENT '商品详情（入 RAG）',
+  `price`        DECIMAL(10,2) NOT NULL                                   COMMENT '售价',
+  `attributes`   JSON         DEFAULT NULL                                COMMENT '动态属性 JSON（颜色/规格）',
+  `review_text`  TEXT         DEFAULT NULL                                COMMENT '用户评价（V2.x 不入 RAG）',
+  `stock`        INT          NOT NULL DEFAULT 0                          COMMENT '库存',
+  `status`       TINYINT      NOT NULL DEFAULT 1                          COMMENT '状态: 0=下架 / 1=在售',
+  `create_time`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted`      TINYINT      NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_products_sku` (`sku`),
+  KEY `idx_products_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='商品表';
+
+-- =============================================================
+-- 7. orders - 订单主表
+-- 状态机: pending → paid → shipped → delivered → completed
+--                                         ↘ refunded（任意阶段可发起）
+-- 业务编号 order_no 唯一，业务层展示用
+-- =============================================================
+DROP TABLE IF EXISTS `orders`;
+CREATE TABLE `orders` (
+  `id`            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT                COMMENT '主键',
+  `order_no`      VARCHAR(32)  NOT NULL                                  COMMENT '业务编号 ORD20260620001',
+  `user_id`       BIGINT UNSIGNED NOT NULL                               COMMENT '所属用户 ID（逻辑外键 → users.id）',
+  `status`        VARCHAR(16)  NOT NULL DEFAULT 'pending'                COMMENT '状态: pending/paid/shipped/delivered/completed/refunded',
+  `total_amount`  DECIMAL(10,2) NOT NULL DEFAULT 0                       COMMENT '订单总额',
+  `address_id`    BIGINT UNSIGNED DEFAULT NULL                           COMMENT '收货地址 ID（V2 暂 NULL）',
+  `create_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted`       TINYINT      NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_orders_order_no` (`order_no`),
+  KEY `idx_orders_user_status_time` (`user_id`, `status`, `create_time` DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
+
+-- =============================================================
+-- 8. order_items - 订单明细
+-- 冗余 sku + product_name：商品改名/下架后订单历史仍可读
+-- =============================================================
+DROP TABLE IF EXISTS `order_items`;
+CREATE TABLE `order_items` (
+  `id`            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT              COMMENT '主键',
+  `order_id`      BIGINT UNSIGNED NOT NULL                             COMMENT '所属订单 ID（逻辑外键 → orders.id）',
+  `product_id`    BIGINT UNSIGNED NOT NULL                             COMMENT '商品 ID（逻辑外键 → products.id）',
+  `sku`           VARCHAR(50)  NOT NULL                                COMMENT '冗余 SKU（商品改名后订单仍可读）',
+  `product_name`  VARCHAR(200) NOT NULL                                COMMENT '冗余商品名',
+  `qty`           INT          NOT NULL DEFAULT 1                      COMMENT '数量',
+  `unit_price`    DECIMAL(10,2) NOT NULL                               COMMENT '下单单价',
+  `subtotal`      DECIMAL(10,2) NOT NULL                               COMMENT '小计 = qty * unit_price',
+  `create_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted`       TINYINT      NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  KEY `idx_order_items_order` (`order_id`),
+  KEY `idx_order_items_product` (`product_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单明细表';
+
+-- =============================================================
+-- 9. refunds - 退款表
+-- 状态机: pending → approved → completed
+--                  → rejected（终态）
+-- =============================================================
+DROP TABLE IF EXISTS `refunds`;
+CREATE TABLE `refunds` (
+  `id`           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT                COMMENT '主键',
+  `refund_no`    VARCHAR(32)  NOT NULL                                  COMMENT '业务编号 RF20260605001',
+  `order_id`     BIGINT UNSIGNED NOT NULL                               COMMENT '所属订单 ID（逻辑外键 → orders.id）',
+  `user_id`      BIGINT UNSIGNED NOT NULL                               COMMENT '申请人 ID（逻辑外键 → users.id）',
+  `reason`       VARCHAR(500) NOT NULL                                  COMMENT '退款原因',
+  `status`       VARCHAR(16)  NOT NULL DEFAULT 'pending'                COMMENT '状态: pending/approved/rejected/completed',
+  `amount`       DECIMAL(10,2) NOT NULL                                 COMMENT '退款金额',
+  `remark`       TEXT         DEFAULT NULL                              COMMENT '审核备注',
+  `create_time`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted`      TINYINT      NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_refunds_refund_no` (`refund_no`),
+  KEY `idx_refunds_order` (`order_id`),
+  KEY `idx_refunds_user_status` (`user_id`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='退款表';
