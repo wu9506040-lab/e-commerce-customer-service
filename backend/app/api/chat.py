@@ -42,7 +42,7 @@ from app.services.synthesizer import Synthesizer
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="", tags=["chat"])
+router = APIRouter(prefix="/api", tags=["chat"])
 
 # M7：heartbeat 间隔（秒）—— 30s 是 nginx 默认 proxy_read_timeout（60s）的一半
 SSE_HEARTBEAT_INTERVAL = 30.0
@@ -141,7 +141,11 @@ async def chat(
         # 把 Synthesizer.run_stream 包装成 async iterator
         # （它原本是同步 generator，用 to_thread 异步化）
         from app.services.synthesizer import Synthesizer as _S
-        sync_iter = iter(_S.run_stream(payload.query, user_id, history))
+        # M9.5：把 sku/order_no context 传给 synthesizer（让 LLM 知道当前商品/订单）
+        sync_iter = iter(_S.run_stream(
+            payload.query, user_id, history,
+            sku=payload.sku, order_no=payload.order_no,
+        ))
 
         try:
             while True:

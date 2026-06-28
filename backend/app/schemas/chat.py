@@ -26,6 +26,19 @@ class ChatRequest(BaseModel):
         description="会话 ID（传 None 则创建新会话）",
         examples=["a1b2c3d4e5f6..."],
     )
+    # M9.5：从商品详情/订单卡片跳过来时携带 context（后端注入 prompt）
+    sku: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="当前商品 SKU（从 /shop/:sku 跳转携带）",
+        examples=["ZP1"],
+    )
+    order_no: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="当前订单号（从订单卡片跳转携带）",
+        examples=["ORD20260622003"],
+    )
 
 
 class ChatResponse(BaseModel):

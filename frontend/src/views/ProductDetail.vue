@@ -63,9 +63,14 @@ const attributeRows = computed(() => {
 
 function onAsk() {
   if (!product.value) return;
+  // M9.5：把 sku 一起带过去 → chat 后端注入【当前商品】到 prompt
+  // 这样 AI 不会再问"您问的是哪款"，直接基于商品信息回答
   router.push({
     name: 'chat',
-    query: { q: `${product.value.sku} 怎么样` },
+    query: {
+      q: `${product.value.sku} 怎么样`,
+      sku: product.value.sku,
+    },
   });
 }
 function openProduct(s: string) {

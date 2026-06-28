@@ -165,9 +165,10 @@ async function setAutoTitle(sessionId: string, firstUserText: string) {
 }
 
 // =============================================================
-// 发送消息（SSE 流式）
+// 发送消息（SSE 流式 + M9.5 context 透传）
+// ctx: { sku?, orderNo? } —— 从 /shop/:sku 或订单卡片跳转过来时携带
 // =============================================================
-async function sendMessage(text: string) {
+async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string }) {
   if (streaming.value) return;
   if (!text.trim()) return;
 
@@ -191,7 +192,7 @@ async function sendMessage(text: string) {
   const isFirstUserMessage = !startSessionId; // 新会话（无 sid）才设标题
 
   try {
-    for await (const event of streamChat(text, startSessionId ?? undefined)) {
+    for await (const event of streamChat(text, startSessionId ?? undefined, ctx)) {
       switch (event.type) {
         case 'meta':
           capturedMeta = event;
@@ -267,17 +268,22 @@ watch(
   },
 );
 
-// 监听 ?q= 自动发问
+// 监听 ?q= 自动发问（M9.5：同时提取 ?sku= / ?order_no= context）
+// 关键：immediate: true —— 路由跳转时 ChatPage 是新挂载，初始 query 就该触发
+// 否则用户从商品详情跳过来时不会自动发问
 watch(
-  () => route.query.q,
-  async (q) => {
+  () => [route.query.q, route.query.sku, route.query.order_no],
+  async ([q, sku, orderNo]) => {
     if (q && typeof q === 'string' && !streaming.value) {
-      // 清掉 query 避免重复发
+      const ctx: { sku?: string; orderNo?: string } = {};
+      if (typeof sku === 'string' && sku) ctx.sku = sku;
+      if (typeof orderNo === 'string' && orderNo) ctx.orderNo = orderNo;
+      // 清掉 query 避免重复发（在 sendMessage 之后清，避免 watch 重入时丢失 context）
+      await sendMessage(q, Object.keys(ctx).length ? ctx : undefined);
       router.replace({ query: {} });
-      await sendMessage(q);
     }
   },
-  { immediate: false },
+  { immediate: true },
 );
 </script>
 

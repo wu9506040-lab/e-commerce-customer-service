@@ -5,6 +5,7 @@
  * density: list（默认，列表用）/ mini（消息内）
  */
 import { ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import type { OrderSummary, OrderDetail } from '../types';
 import { getOrderDetail } from '../api';
 
@@ -15,6 +16,19 @@ const props = withDefaults(
   }>(),
   { density: 'list' },
 );
+
+const router = useRouter();
+
+// M9.5：跳到 chat 时携带 order_no → 后端注入【当前订单】到 prompt
+function askAboutOrder() {
+  router.push({
+    name: 'chat',
+    query: {
+      q: `${props.order.order_no} 现在什么状态`,
+      order_no: props.order.order_no,
+    },
+  });
+}
 
 // mini 模式下自动展开 detail
 const detail = ref<OrderDetail | null>(null);
@@ -81,6 +95,11 @@ function formatTime(iso: string | null | undefined): string {
       </div>
       <div class="order-row time">
         <span>下单时间 {{ formatTime(order.create_time) }}</span>
+      </div>
+      <div class="order-actions">
+        <button class="ask-btn" @click="askAboutOrder" type="button">
+          咨询客服
+        </button>
       </div>
     </template>
 
@@ -156,6 +175,26 @@ function formatTime(iso: string | null | undefined): string {
 .order-row.time {
   color: var(--gray-500);
   font-size: var(--fs-xs);
+}
+.order-actions {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--gray-200);
+  display: flex;
+  justify-content: flex-end;
+}
+.ask-btn {
+  padding: 6px 14px;
+  background: var(--jd-red-light);
+  color: var(--jd-red);
+  border: 1px solid var(--jd-red);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ask-btn:hover {
+  background: var(--jd-red);
+  color: #fff;
 }
 .amount {
   font-size: var(--fs-md);

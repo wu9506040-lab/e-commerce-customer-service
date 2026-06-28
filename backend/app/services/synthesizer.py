@@ -57,6 +57,60 @@ NO_LOGIN_PROMPT = (
     "请礼貌引导用户登录后再来查询。"
 )
 
+
+def _build_context_block(sku: Optional[str], order_no: Optional[str], user_id: Optional[int]) -> str:
+    """M9.5：构建从商品/订单跳转携带的 context 信息（注入 LLM prompt）
+
+    让 LLM 知道用户当前在问哪个商品/哪个订单，避免"您问的是哪款"反问。
+
+    Returns:
+        多行字符串，每行一个 context 段；无 context 时返回空串。
+    """
+    lines = []
+    # 商品 context
+    if sku:
+        try:
+            products = ProductTool.list_products(category=None, limit=100)
+            product = next((p for p in products if p.get("sku") == sku), None)
+            if product:
+                attrs = product.get("attributes") or {}
+                attrs_str = "、".join(f"{k}={v}" for k, v in attrs.items()) if isinstance(attrs, dict) else ""
+                lines.append(
+                    f"【当前商品】SKU={product['sku']} | 名称={product['name']} | "
+                    f"价格=¥{product['price']} | 库存={product.get('stock', '?')}"
+                    + (f" | 规格={attrs_str}" if attrs_str else "")
+                )
+            else:
+                lines.append(f"【当前商品】SKU={sku}（未在售/已下架）")
+        except Exception as e:
+            logger.warning(f"加载商品 context 失败 sku={sku}: {e}")
+            lines.append(f"【当前商品】SKU={sku}")
+
+    # 订单 context（必须登录且属于本人）
+    if order_no and user_id and user_id != ANONYMOUS_USER_ID:
+        try:
+            order = OrderService.get_order_detail(user_id, order_no)
+            if order:
+                items = order.get("items", [])
+                items_str = "、".join(f"{it['product_name']}×{it['qty']}" for it in items[:3])
+                if len(items) > 3:
+                    items_str += f" 等{len(items)}件"
+                logi = order.get("logistics") or {}
+                logi_str = ""
+                if logi:
+                    logi_str = f" | 物流={logi.get('logistics_no', '?')} ({logi.get('status', '')}@{logi.get('last_location', '')})"
+                lines.append(
+                    f"【当前订单】订单号={order_no} | 状态={order.get('status', '?')} | "
+                    f"商品={items_str} | 金额=¥{order.get('total_amount', '?')}{logi_str}"
+                )
+            else:
+                lines.append(f"【当前订单】订单号={order_no}（不存在或不属于当前用户）")
+        except Exception as e:
+            logger.warning(f"加载订单 context 失败 order_no={order_no}: {e}")
+            lines.append(f"【当前订单】订单号={order_no}")
+
+    return "\n".join(lines)
+
 # 模板：通用 chat 模板（order/refund 已有 tool_result 后用）
 def _build_chat_prompt(
     *,
@@ -66,9 +120,16 @@ def _build_chat_prompt(
     product_block: str,
     history_block: str,
     query: str,
+    context_block: str = "",
 ) -> str:
-    """组装 chat 模板（按 §7 优先级硬约束）"""
+    """组装 chat 模板（按 §7 优先级硬约束）
+
+    M9.5：context_block（来自 sku/order_no 跳转）作为最高优先级注入
+    """
     sections = []
+    if context_block:
+        # M9.5：context（用户当前在看的商品/订单）放在最前面，LLM 第一时间知道是哪款/哪个订单
+        sections.append(f"【当前场景】(M9.5 用户跳转 context)\n{context_block}")
     if tool_block:
         sections.append(f"【事实陈述】(最高优先级)\n{tool_block}")
     if policy_block:
@@ -167,6 +228,8 @@ class Synthesizer:
         query: str,
         user_id: Optional[int],
         history: Optional[list[dict]] = None,
+        sku: Optional[str] = None,
+        order_no: Optional[str] = None,
     ) -> Generator[Tuple[str, Any], None, None]:
         """
         主入口：分类 → 分派 → 融合 → LLM 流式输出
@@ -175,6 +238,8 @@ class Synthesizer:
             query: 用户问题
             user_id: 用户 ID（未登录为 ANONYMOUS_USER_ID = 0）
             history: 多轮历史 [{"role":..., "content":...}]
+            sku: 当前商品 SKU（M9.5：从 /shop/:sku 跳转携带，注入 prompt 让 LLM 知道是哪款）
+            order_no: 当前订单号（M9.5：从 OrderCard 跳转携带，注入 prompt 让 LLM 知道是哪个订单）
 
         Yields:
             ("meta", {intent, entities, ...})
@@ -184,6 +249,15 @@ class Synthesizer:
         if not query or not query.strip():
             raise ValueError("query 不能为空")
         query = query.strip()
+
+        # M9.5：预加载 context（商品/订单详情），后续注入 LLM prompt
+        context_block = _build_context_block(sku, order_no, user_id)
+        if context_block:
+            logger.info(
+                f"synth.context: sku={sku} order_no={order_no} "
+                f"context_len={len(context_block)} user_id={user_id}",
+                extra={"intent": "context"},
+            )
 
         # 1. 意图分类
         intent_result = IntentService.classify(query)
@@ -200,25 +274,26 @@ class Synthesizer:
         try:
             if intent == "order_query":
                 metrics.inc_chat(intent, v3_engine="-")  # M8
-                yield from Synthesizer._handle_order(query, user_id, intent_result)
+                # M9.5：传 order_no 让 order_query 优先用跳转来的订单
+                yield from Synthesizer._handle_order(query, user_id, intent_result, order_no=order_no, context_block=context_block)
                 return
             elif intent == "refund_query":
                 # V3 开关：USE_LANGGRAPH_REFUND=true 时走 LangGraph 版
                 if settings.USE_LANGGRAPH_REFUND:
                     logger.info("refund_query → LangGraph V3", extra={"intent": intent})
                     metrics.inc_chat(intent, v3_engine="v3")  # M8
-                    yield from Synthesizer._handle_refund_v3(query, user_id, intent_result)
+                    yield from Synthesizer._handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block)
                 else:
                     metrics.inc_chat(intent, v3_engine="v2")  # M8
-                    yield from Synthesizer._handle_refund_v2(query, user_id, intent_result)
+                    yield from Synthesizer._handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block)
                 return
             elif intent == "product_query":
                 metrics.inc_chat(intent, v3_engine="-")  # M8
-                yield from Synthesizer._handle_product(query, intent_result, history)
+                yield from Synthesizer._handle_product(query, intent_result, history, sku=sku, context_block=context_block)
                 return
             else:  # policy_query
                 metrics.inc_chat(intent, v3_engine="-")  # M8
-                yield from Synthesizer._handle_policy(query, intent_result, history)
+                yield from Synthesizer._handle_policy(query, intent_result, history, context_block=context_block)
                 return
         except Exception as e:
             # 任何分派路径异常 → fallback 到 V1.2 统一 RAG
@@ -234,11 +309,14 @@ class Synthesizer:
 
     @staticmethod
     def _handle_order(
-        query: str, user_id: int, intent_result: dict
+        query: str, user_id: int, intent_result: dict,
+        order_no: Optional[str] = None,
+        context_block: str = "",
     ) -> Generator[Tuple[str, Any], None, None]:
         """order_query：调 OrderService"""
         entities = intent_result["entities"]
-        order_no = entities.get("order_no")
+        # M9.5：优先用 context 传来的 order_no（用户从订单卡片跳转），其次 intent 抽取
+        effective_order_no = order_no or entities.get("order_no")
 
         if user_id == ANONYMOUS_USER_ID:
             # 未登录 → 不报错，返回"请登录"
@@ -251,10 +329,10 @@ class Synthesizer:
             yield from Synthesizer._stream_simple(NO_LOGIN_PROMPT)
             return
 
-        if order_no:
-            detail = OrderService.get_order_detail(user_id, order_no)
+        if effective_order_no:
+            detail = OrderService.get_order_detail(user_id, effective_order_no)
             if not detail:
-                tool_block = f"订单 {order_no} 不存在或不属于当前用户。"
+                tool_block = f"订单 {effective_order_no} 不存在或不属于当前用户。"
             else:
                 tool_block = _format_tool_result("order_query", detail)
         else:
@@ -278,12 +356,15 @@ class Synthesizer:
             product_block="",
             history_block="",
             query=query,
+            context_block=context_block,
         )
         yield from Synthesizer._stream_llm(prompt)
 
     @staticmethod
     def _handle_refund_v2(
-        query: str, user_id: int, intent_result: dict
+        query: str, user_id: int, intent_result: dict,
+        order_no: Optional[str] = None,
+        context_block: str = "",
     ) -> Generator[Tuple[str, Any], None, None]:
         """refund_query V2.x：调 RefundService（复合 tool + policy）
 
@@ -295,7 +376,8 @@ class Synthesizer:
             截止 2026-06-28：chat_e2e #5/#6 已用 V3 路径通过。
         """
         entities = intent_result["entities"]
-        order_no = entities.get("order_no")
+        # M9.5：优先用 context 传来的 order_no（用户从订单卡片跳转退款）
+        effective_order_no = order_no or entities.get("order_no")
 
         if user_id == ANONYMOUS_USER_ID:
             yield ("meta", {
@@ -308,11 +390,11 @@ class Synthesizer:
             return
 
         # 无 order_no：取最近一笔订单的 order_no
-        if not order_no:
+        if not effective_order_no:
             recent = OrderService.list_user_orders(user_id)
             recent = recent[:1] if recent else []
             if recent:
-                order_no = recent[0]["order_no"]
+                effective_order_no = recent[0]["order_no"]
             else:
                 yield ("meta", {
                     "intent": "refund_query",
@@ -323,7 +405,7 @@ class Synthesizer:
                 yield from Synthesizer._stream_simple("用户当前没有订单，无法判断退款。请提供订单号。")
                 return
 
-        result = RefundService.check_refundable_with_policy(user_id, order_no, query)
+        result = RefundService.check_refundable_with_policy(user_id, effective_order_no, query)
         tool_block = _format_tool_result("refund_query", result)
         policy_docs = result.get("policy_docs", [])
         policy_block = _format_policy_docs(policy_docs)
@@ -333,7 +415,7 @@ class Synthesizer:
             "entities": entities,
             "contexts": [],
             "scores": [],
-            "order_no": order_no,
+            "order_no": effective_order_no,
             "refundable": result.get("tool_result", {}).get("refundable"),
             "policy_hits": len(policy_docs),
         }
@@ -346,12 +428,15 @@ class Synthesizer:
             product_block="",
             history_block="",
             query=query,
+            context_block=context_block,
         )
         yield from Synthesizer._stream_llm(prompt)
 
     @staticmethod
     def _handle_refund_v3(
-        query: str, user_id: int, intent_result: dict
+        query: str, user_id: int, intent_result: dict,
+        order_no: Optional[str] = None,
+        context_block: str = "",
     ) -> Generator[Tuple[str, Any], None, None]:
         """refund_query V3：走 LangGraph refund_graph_app.stream()
 
@@ -365,9 +450,12 @@ class Synthesizer:
         - fetch_policy Node → 仅 log，不 yield meta
         - synthesize / escalate Node → yield token（final_answer 作为整体 token）
         - done 事件由 api/chat.py 统一处理（write-through）
+
+        M9.5：context_block 透传给 LangGraph state，让 synthesize_answer 节点能看到订单 context
         """
         entities = intent_result["entities"]
-        order_no = entities.get("order_no")
+        # M9.5：优先用 context 传来的 order_no（用户从订单卡片跳转退款）
+        effective_order_no = order_no or entities.get("order_no")
 
         # 1. 鉴权（与 V2 一致）
         if user_id == ANONYMOUS_USER_ID:
@@ -382,11 +470,11 @@ class Synthesizer:
             return
 
         # 2. order_no 兜底（与 V2 一致）
-        if not order_no:
+        if not effective_order_no:
             recent = OrderService.list_user_orders(user_id)
             recent = recent[:1] if recent else []
             if recent:
-                order_no = recent[0]["order_no"]
+                effective_order_no = recent[0]["order_no"]
             else:
                 yield ("meta", {
                     "intent": "refund_query",
@@ -404,8 +492,9 @@ class Synthesizer:
             for event in refund_graph_app.stream(
                 {
                     "user_id": user_id,
-                    "order_no": order_no,
+                    "order_no": effective_order_no,
                     "query": query,
+                    "context_block": context_block,  # M9.5：注入 context 让 synthesize 看得到
                 },
                 stream_mode="updates",  # 每步返回 {node_name: state_update}
             ):
@@ -420,7 +509,7 @@ class Synthesizer:
                             "entities": entities,
                             "contexts": [],
                             "scores": [],
-                            "order_no": order_no,
+                            "order_no": effective_order_no,
                             "v3_engine": "langgraph",
                             "refundable": state_update.get("refundable"),
                             "reason": state_update.get("reason"),
@@ -429,7 +518,7 @@ class Synthesizer:
                         meta_emitted = True
                     elif node_name == "fetch_policy":
                         logger.info(
-                            f"refund_v3 fetch_policy: order={order_no} "
+                            f"refund_v3 fetch_policy: order={effective_order_no} "
                             f"hits={len(state_update.get('policy_docs', []))}"
                         )
                     elif node_name in ("synthesize", "escalate"):
@@ -440,7 +529,7 @@ class Synthesizer:
                                 "entities": entities,
                                 "contexts": [],
                                 "scores": [],
-                                "order_no": order_no,
+                                "order_no": effective_order_no,
                                 "v3_engine": "langgraph",
                             })
                             meta_emitted = True
@@ -454,29 +543,32 @@ class Synthesizer:
         except Exception as e:
             # LangGraph 挂了 → fallback 到 V2（保险丝）
             logger.exception(
-                f"LangGraph refund 图执行失败，fallback 到 V2: order={order_no} err={e}"
+                f"LangGraph refund 图执行失败，fallback 到 V2: order={effective_order_no} err={e}"
             )
-            yield from Synthesizer._handle_refund_v2(query, user_id, intent_result)
+            yield from Synthesizer._handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block)
 
     @staticmethod
     def _handle_product(
-        query: str, intent_result: dict, history: Optional[list[dict]]
+        query: str, intent_result: dict, history: Optional[list[dict]],
+        sku: Optional[str] = None,
+        context_block: str = "",
     ) -> Generator[Tuple[str, Any], None, None]:
         """product_query：调 ProductTool + 补 policy"""
         entities = intent_result["entities"]
-        sku = entities.get("sku")
+        # M9.5：优先用 context 传来的 sku（用户从商品详情跳转）
+        effective_sku = sku or entities.get("sku")
 
         # 1. 查商品
         # 优先用 sku 实体精确查；查不到时回退到 keyword 搜（MySQL 里 SKU=SKU001，
         # 但商品 name 包含 ZP1，所以 keyword="ZP1" 能命中 SKU001）
         products = []
-        if sku:
-            exact = ProductTool.get_by_sku(sku)
+        if effective_sku:
+            exact = ProductTool.get_by_sku(effective_sku)
             if exact:
                 products = [exact]
             else:
                 # SKU 实体（如 ZP1）不在 MySQL.sku 列里——keyword 搜名字
-                products = ProductTool.search_by_keyword(sku, limit=5)
+                products = ProductTool.search_by_keyword(effective_sku, limit=5)
         if not products:
             # query 整句搜（可能被噪音词干扰）→ 兜底滑动窗口抽 2-3 字实词再搜
             products = ProductTool.search_by_keyword(query, limit=5)
@@ -524,12 +616,14 @@ class Synthesizer:
             product_block=product_block,
             history_block=_format_history(history),
             query=query,
+            context_block=context_block,
         )
         yield from Synthesizer._stream_llm(prompt)
 
     @staticmethod
     def _handle_policy(
-        query: str, intent_result: dict, history: Optional[list[dict]]
+        query: str, intent_result: dict, history: Optional[list[dict]],
+        context_block: str = "",
     ) -> Generator[Tuple[str, Any], None, None]:
         """policy_query：纯 PolicyService RAG（最接近 V1.2 行为）"""
         policy_docs = PolicyService.search_policy(query, top_k=5)
@@ -545,9 +639,10 @@ class Synthesizer:
         yield ("meta", meta)
 
         if not policy_docs:
-            # 无相关 policy → LLM 用通用知识兜底
+            # 无相关 policy → LLM 用通用知识兜底（也带 context 让 LLM 知道用户场景）
+            ctx_section = f"\n\n【当前场景】\n{context_block}" if context_block else ""
             yield from Synthesizer._stream_llm(
-                f"参考资料：\n（未检索到相关政策）\n\n对话历史：\n{_format_history(history)}\n\n问题：{query}"
+                f"参考资料：\n（未检索到相关政策）{ctx_section}\n\n对话历史：\n{_format_history(history)}\n\n问题：{query}"
             )
             return
 
@@ -558,6 +653,7 @@ class Synthesizer:
             product_block="",
             history_block=_format_history(history),
             query=query,
+            context_block=context_block,
         )
         yield from Synthesizer._stream_llm(prompt)
 
