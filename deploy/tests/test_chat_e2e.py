@@ -32,7 +32,7 @@ BASE = "http://localhost:8000"
 # 从容器里拿一个 admin JWT（user_id=1，5 单全在他名下）
 ADMIN_JWT = os.environ.get(
     "TEST_JWT",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiaWF0IjowLCJleHAiOjk5OTk5OTk5OTl9.FFI_p8_HU8nprdYak5OiqXsLQv7XyewoJ-SbGGgzh6M",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwiaWF0IjowLCJleHAiOjk5OTk5OTk5OTksInJvbGUiOiJhZG1pbiJ9.jcCYBqdWOsCWA9ZIMY3d2sy0seLngVs_LfTIuS3bslQ",
 )
 
 # (query, login, expect_intent, must_contain_text)
