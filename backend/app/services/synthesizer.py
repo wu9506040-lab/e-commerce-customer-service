@@ -23,6 +23,7 @@ from typing import Any, Generator, Optional, Tuple
 from app.core.config import settings
 from app.core.qwen import stream_chat as qwen_stream_chat
 from app.services.intent_service import IntentService
+from app.services.metrics import metrics  # M8
 from app.services.order_service import OrderService
 from app.services.policy_service import PolicyService
 from app.services.refund_graph import refund_graph_app  # V3 LangGraph 版
@@ -188,34 +189,42 @@ class Synthesizer:
         intent_result = IntentService.classify(query)
         intent = intent_result["intent"]
         entities = intent_result["entities"]
+        # M8：intent 用 extra 显式带（避免 ContextVar 跨 thread context 不可 reset 的问题）
         logger.info(
             f"synth.start: intent={intent} method={intent_result['method']} "
-            f"conf={intent_result['confidence']:.2f} user_id={user_id}"
+            f"conf={intent_result['confidence']:.2f} user_id={user_id}",
+            extra={"intent": intent},
         )
 
         # 2. 分派（按 intent 调用对应 service/tool）
         try:
             if intent == "order_query":
+                metrics.inc_chat(intent, v3_engine="-")  # M8
                 yield from Synthesizer._handle_order(query, user_id, intent_result)
                 return
             elif intent == "refund_query":
                 # V3 开关：USE_LANGGRAPH_REFUND=true 时走 LangGraph 版
                 if settings.USE_LANGGRAPH_REFUND:
-                    logger.info("refund_query → LangGraph V3")
+                    logger.info("refund_query → LangGraph V3", extra={"intent": intent})
+                    metrics.inc_chat(intent, v3_engine="v3")  # M8
                     yield from Synthesizer._handle_refund_v3(query, user_id, intent_result)
                 else:
+                    metrics.inc_chat(intent, v3_engine="v2")  # M8
                     yield from Synthesizer._handle_refund_v2(query, user_id, intent_result)
                 return
             elif intent == "product_query":
+                metrics.inc_chat(intent, v3_engine="-")  # M8
                 yield from Synthesizer._handle_product(query, intent_result, history)
                 return
             else:  # policy_query
+                metrics.inc_chat(intent, v3_engine="-")  # M8
                 yield from Synthesizer._handle_policy(query, intent_result, history)
                 return
         except Exception as e:
             # 任何分派路径异常 → fallback 到 V1.2 统一 RAG
             logger.exception(
-                f"synth.dispatch 异常，fallback 到 V1.2 RAG: intent={intent}, err={e}"
+                f"synth.dispatch 异常，fallback 到 V1.2 RAG: intent={intent}, err={e}",
+                extra={"intent": intent},
             )
             # 注意：fallback 不带 user_id（V1.2 pipeline 不接收 user_id）
             for event_type, data in v12_rag_run_stream(query, 5, history):
@@ -558,6 +567,8 @@ class Synthesizer:
             for chunk in qwen_stream_chat(messages, temperature=0.3):
                 full_answer += chunk
                 yield ("token", chunk)
+        # M8：粗估 token 数（中文 ~1 char ≈ 1.5 token；这里简化为 char 数）
+        metrics.record_answer_tokens(len(full_answer))
         yield ("done", {"answer": full_answer})
 
     @staticmethod
@@ -588,4 +599,5 @@ class Synthesizer:
     def _stream_simple(text: str) -> Generator[Tuple[str, Any], None, None]:
         """简单文本直接 yield（不走 LLM）— 仍按 token + done 协议，chat.py 通用累加逻辑可工作"""
         yield ("token", text)
+        metrics.record_answer_tokens(len(text))  # M8
         yield ("done", {"answer": text})
