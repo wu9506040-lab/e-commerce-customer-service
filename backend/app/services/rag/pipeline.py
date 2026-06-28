@@ -12,6 +12,7 @@ RAG Pipeline - 检索增强生成的编排层
     query → embed → qdrant.search → context 组装 → prompt → qwen LLM → answer
 
 §14 起：提供 run_stream() 流式版本（供 /chat SSE 输出）
+M8：埋点 retrieve_hits + hit@K（用"检索到结果"作为命中代理标志）
 """
 import logging
 from typing import Dict, List, Any, Optional, Generator, Tuple
@@ -19,6 +20,7 @@ from typing import Dict, List, Any, Optional, Generator, Tuple
 from app.core.embedding import embed_text
 from app.core.qwen import chat as qwen_chat, stream_chat as qwen_stream_chat
 from app.clients.qdrant import search as qdrant_search
+from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +143,15 @@ def run_stream(
     hits = qdrant_search(query_vec, top_k=top_k)
     contexts = [_extract_text(h.get("payload") or {}) for h in hits]
     scores = [float(h.get("score") or 0.0) for h in hits]
+
+    # M8：埋点 + hit@K 记录
+    metrics.record_retrieve_hits(len(hits))
+    if hits:
+        # 线上无 gold label，用"检索到结果"作为命中代理：rank=1 表示 top-1 命中
+        metrics.record_hit_at_k(1)
+    else:
+        # 未命中（断路器开路 / 无结果）
+        metrics.record_hit_at_k(0)
 
     yield ("meta", {"contexts": contexts, "scores": scores})
     logger.info(f"rag stream retrieve: hits={len(hits)}")
