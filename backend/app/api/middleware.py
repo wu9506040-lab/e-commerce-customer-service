@@ -30,7 +30,7 @@ from app.core.context import (
 logger = logging.getLogger(__name__)
 
 # 不记日志的路径（健康检查 / 监控 / OpenAPI）
-_SKIP_LOG_PATHS = {"/health", "/metrics", "/docs", "/openapi.json", "/redoc"}
+_SKIP_LOG_PATHS = {"/health", "/api/metrics", "/docs", "/openapi.json", "/redoc"}
 # Header 名
 REQUEST_ID_HEADER = "X-Request-Id"
 

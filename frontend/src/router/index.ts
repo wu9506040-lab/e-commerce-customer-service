@@ -21,7 +21,7 @@ import {
   type RouteRecordRaw,
 } from 'vue-router';
 
-import { getMe } from '../api';
+import { getMe, isAuthed } from '../api';
 
 const routes: RouteRecordRaw[] = [
   // 默认重定向
@@ -29,7 +29,8 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     redirect: () => {
       // 未登录去 /demo，已登录去 /shop
-      return document.cookie.includes('cs_token') ? '/shop' : '/demo';
+      // 注：不能用 document.cookie 判断，cookie 是 httpOnly JS 读不到
+      return isAuthed.value === true ? '/shop' : '/demo';
     },
   },
 
@@ -101,14 +102,15 @@ export const router = createRouter({
 // 路由守卫：未登录拦截 + 已登录重定向
 // =============================================================
 router.beforeEach(async (to: RouteLocationNormalized) => {
-  // 仅在首次加载时检查登录态（不每次都调 /auth/me）
-  // 用 cookie 是否存在做粗判断，真正鉴权由后端做
-  const hasCookie = document.cookie.includes('cs_token');
+  // 首次加载时探测登录态（httpOnly Cookie 不可被 document.cookie 读取，必须调 API）
+  if (isAuthed.value === null) {
+    await getMe();
+  }
 
-  if (to.meta.requiresAuth && !hasCookie) {
+  if (to.meta.requiresAuth && !isAuthed.value) {
     return { name: 'login', query: { redirect: to.fullPath } };
   }
-  if (to.meta.guestOnly && hasCookie) {
+  if (to.meta.guestOnly && isAuthed.value) {
     return { name: 'shop' };
   }
 

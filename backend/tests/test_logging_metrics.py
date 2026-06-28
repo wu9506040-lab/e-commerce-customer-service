@@ -465,7 +465,7 @@ class TestRequestIdMiddleware:
         assert resp.json()["rid"] == incoming
 
     def test_access_log_skips_health_metrics(self):
-        """/health 和 /metrics 不写访问日志"""
+        """/health 和 /api/metrics 不写访问日志"""
         from fastapi.testclient import TestClient
 
         app = self._build_app()
@@ -474,11 +474,11 @@ class TestRequestIdMiddleware:
         async def health():
             return {"status": "ok"}
 
-        @app.get("/metrics")
+        @app.get("/api/metrics")
         async def metrics():
             return {}
 
-        @app.get("/chat")
+        @app.get("/api/chat")
         async def chat():
             return {"ok": True}
 
@@ -490,13 +490,13 @@ class TestRequestIdMiddleware:
         logging.getLogger().addHandler(handler)
 
         client.get("/health")
-        client.get("/metrics")
-        client.get("/chat")
+        client.get("/api/metrics")
+        client.get("/api/chat")
 
         log_content = log_stream.getvalue()
-        assert "GET /chat 200" in log_content
+        assert "GET /api/chat 200" in log_content
         assert "GET /health 200" not in log_content
-        assert "GET /metrics 200" not in log_content
+        assert "GET /api/metrics 200" not in log_content
 
 
 # =============================================================

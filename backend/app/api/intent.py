@@ -20,7 +20,7 @@ from app.services.intent_service import IntentService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/intent", tags=["intent"])
+router = APIRouter(prefix="/api/intent", tags=["intent"])
 
 
 @router.post(

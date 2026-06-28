@@ -43,7 +43,7 @@ from app.services.rag.knowledge import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # 入库慢（embed + upsert），给 60s
 INGEST_TIMEOUT = 60.0

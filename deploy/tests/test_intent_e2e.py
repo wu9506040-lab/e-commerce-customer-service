@@ -39,7 +39,7 @@ CASES = [
 def call_intent(query: str) -> dict:
     body = json.dumps({"query": query}).encode("utf-8")
     req = urllib.request.Request(
-        f"{BASE}/intent/classify",
+        f"{BASE}/api/intent/classify",
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",

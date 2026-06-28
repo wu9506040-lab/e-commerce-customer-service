@@ -9,16 +9,13 @@
  */
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { getMetrics, type MetricsSnapshot } from '../api';
+import { getMetrics, type MetricsSnapshot, isAuthed } from '../api';
 
 const router = useRouter();
 const metrics = ref<MetricsSnapshot | null>(null);
 const loading = ref(true);
 
-const isLoggedIn = computed(() => {
-  if (typeof document === 'undefined') return false;
-  return document.cookie.includes('cs_token');
-});
+const isLoggedIn = computed(() => isAuthed.value === true);
 
 // 4 类意图卡片（京东红强调）
 const capabilities = [

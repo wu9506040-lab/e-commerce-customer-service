@@ -37,7 +37,7 @@ def one_query(q):
     err = None
     try:
         with requests.post(
-            f"{BASE}/chat",
+            f"{BASE}/api/chat",
             json={"query": q},
             cookies={"cs_token": ADMIN_JWT},
             stream=True,
@@ -73,7 +73,7 @@ def run_concurrent(n):
     print(f"\n--- {n} 并发用户 ---")
     # warmup
     try:
-        requests.post(f"{BASE}/chat", json={"query": "你好"}, cookies={"cs_token": ADMIN_JWT}, timeout=30)
+        requests.post(f"{BASE}/api/chat", json={"query": "你好"}, cookies={"cs_token": ADMIN_JWT}, timeout=30)
     except Exception:
         pass
 
