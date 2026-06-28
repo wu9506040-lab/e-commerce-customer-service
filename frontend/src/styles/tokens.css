@@ -45,14 +45,15 @@
                'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
-  --fs-xs:   12px;
-  --fs-sm:   13px;
-  --fs-base: 15px;
-  --fs-md:   17px;
-  --fs-lg:   19px;
-  --fs-xl:   22px;
-  --fs-2xl:  26px;
-  --fs-3xl:  36px;
+  --fs-xs:   14px;
+  --fs-sm:   15px;
+  --fs-base: 18px;
+  --fs-md:   20px;
+  --fs-lg:   22px;
+  --fs-xl:   26px;
+  --fs-2xl:   32px;
+  --fs-3xl:   48px;
+  --fs-4xl:   72px;
 
   /* ============================================================
    * 间距（4px 栅格）
@@ -81,8 +82,8 @@
   /* ============================================================
    * 布局
    * ============================================================ */
-  --topbar-h:    60px;
-  --sidebar-w:   200px;
-  --convlist-w:  260px;
+  --topbar-h:    72px;
+  --sidebar-w:   220px;
+  --convlist-w:  280px;
   --content-max: 1200px;
 }
