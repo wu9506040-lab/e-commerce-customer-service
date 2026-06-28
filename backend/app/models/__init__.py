@@ -10,6 +10,9 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.operation_log import OperationLog
+from app.models.product import Product
+from app.models.order import Order, OrderItem, OrderStatus
+from app.models.refund import Refund, RefundStatus
 
 __all__ = [
     "Base",
@@ -18,4 +21,10 @@ __all__ = [
     "Message",
     "KnowledgeDocument",
     "OperationLog",
+    "Product",
+    "Order",
+    "OrderItem",
+    "OrderStatus",
+    "Refund",
+    "RefundStatus",
 ]

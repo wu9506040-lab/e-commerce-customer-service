@@ -27,7 +27,7 @@ services:
       # 缓存
       REDIS_URL: redis://redis:6379/0
       # 向量库
-      QDRANT_URL: http://qdrant:6333
+      QDRANT_URL: http://customer-service-qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION}
       # 文件上传/日志
       UPLOAD_DIR: /app/uploads
@@ -35,6 +35,8 @@ services:
       # 应用
       APP_ENV: ${APP_ENV:-dev}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # V3 LangGraph 开关（控制 synthesizer._handle_refund 走 V2 还是 V3）
+      USE_LANGGRAPH_REFUND: ${USE_LANGGRAPH_REFUND:-false}
     volumes:
       - uploads_data:/app/uploads
       - logs_data:/app/logs
