@@ -1,0 +1,142 @@
+[
+  {
+    "name": "delivered-直接问",
+    "query": "ORD20260628004 能退货吗",
+    "order_no": "ORD20260628004",
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": true,
+    "answer": "订单号 ORD20260628004 已签收 3 天，在 7 天无理由退货期限内，订单状态为“已签收”，商品未激活且配件齐全的情况下，支持退货。\n\n请您确保商品完好、配件齐全、未激活（如为电子产品），可通过以下方式申请：\n\n方式 1（推荐）：登录 App →「我的订单」→ 选择订单 ORD20260628004 → 申请退款 → 选择退货原因 → 提交  \n方式 2：联系在线客服，提供订单号 ORD20260628004，由客服协助提交\n\n退款将在仓库验收商品后 1-7 个工作日原路退回，请注意查收。"
+  },
+  {
+    "name": "delivered-如何申请",
+    "query": "ORD20260628004 怎么退",
+    "order_no": "ORD20260628004",
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": true,
+    "answer": "订单号：ORD20260628004 已签收，当前在7天无理由退货期限内，商品符合退货条件，可以申请退款。\n\n您可通过以下方式申请退货退款：\n\n方式 1（推荐）：  \n打开App →「我的订单」→ 找到订单 ORD20260628004 → 点击「申请退款」→ 选择“7天无理由退货”→ 提交申请\n\n方式 2：  \n联系在线客服，提供订单号 ORD20260628004，由客服协助提交退款申请\n\n提交后，客服将在1-3个工作日内审核，审核通过且仓库验收商品无误后，款项将在1-7个工作日原路退回您的支付账户。\n\n请确保商品完好、配件齐全、未激活使用。"
+  },
+  {
+    "name": "delivered-无order",
+    "query": "我想退刚签收的那单",
+    "order_no": null,
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": null,
+    "answer": "请提供要查询退款的订单号（格式示例：ORD20260628004）。"
+  },
+  {
+    "name": "refunded-已退过",
+    "query": "ORD20260628006 能再退一次吗",
+    "order_no": "ORD20260628006",
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": false,
+    "answer": "订单号 ORD20260628006 已退款，无法重复申请退款。"
+  },
+  {
+    "name": "pending-未支付",
+    "query": "ORD20260628001 能退吗",
+    "order_no": "ORD20260628001",
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": true,
+    "answer": "订单号 ORD20260628001 当前状态为「待支付」，可以发起退款申请。您可通过以下方式操作：\n\n方式 1（推荐）：App「我的订单」→ 选择订单 → 申请退款 → 选择原因 → 提交  \n方式 2：联系在线客服 → 提供订单号 → 客服协助提交\n\n由于该订单尚未支付，退款流程将直接生效，无需等待仓库验收。"
+  },
+  {
+    "name": "paid-已支付未发货",
+    "query": "ORD20260628002 还能退吗",
+    "order_no": "ORD20260628002",
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": true,
+    "answer": "订单号 ORD20260628002 当前状态为「已支付」，支持退款申请。  \n\n根据政策，该订单已下单1天，仍在7天无理由退货期内，只要商品完好、配件齐全且未激活，即可办理退货。  \n\n您可通过以下方式申请：  \n1. 【推荐】登录App →「我的订单」→ 选择订单 ORD20260628002 → 申请退款 → 按提示操作  \n2. 联系在线客服，提供订单号 ORD20260628002，由客服协助提交  \n\n退款将在仓库验收商品后1-7个工作日原路退回。  \n\n如手机已激活，则不支持7天无理由退货，但若出现性能故障，可在15天内申请换货。"
+  },
+  {
+    "name": "shipped-运输中",
+    "query": "ORD20260628003 能退吗",
+    "order_no": "ORD20260628003",
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": true,
+    "answer": "订单号 ORD20260628003 当前状态为“运输中”，支持退款申请。您可在 App「我的订单」中选择该订单，提交退款申请。客服将在 1-3 个工作日内审核，审核通过后款项将原路退回。\n\n如需协助，可提供订单号，我们将进一步帮助您处理。"
+  },
+  {
+    "name": "completed-已完成",
+    "query": "ORD20260628005 可以退吗",
+    "order_no": "ORD20260628005",
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": true,
+    "answer": "订单号 ORD20260628005 当前状态为「已完成」，支持退款申请。\n\n虽然该订单已下单13天，超过7天无理由退货期限，但根据【事实陈述】，此订单仍可发起退款，以实际订单信息为准。\n\n建议您通过以下方式操作：\n方式 1（推荐）：打开App →「我的订单」→ 找到订单 ORD20260628005 → 申请退款 → 按提示提交  \n方式 2：提供订单号，由客服协助您提交退款申请\n\n退款将在仓库验收商品后1-7个工作日原路退回，请确保商品完好、配件齐全、未激活使用。"
+  },
+  {
+    "name": "policy-退货流程",
+    "query": "怎么申请退款",
+    "order_no": null,
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": null,
+    "answer": "请提供要查询退款的订单号（格式示例：ORD20260628004）。"
+  },
+  {
+    "name": "policy-运费",
+    "query": "7天无理由退货运费谁出",
+    "order_no": null,
+    "ok": true,
+    "reason": "OK",
+    "intent": "policy_query",
+    "refundable": null,
+    "answer": "7天无理由退货运费由**买家承担**。\n\n根据【智选科技 退换货完整规则】，7天无理由退货属于买家主观原因（如不喜欢、买错等），需买家自行承担运费（首重12元，超出按快递标准）。若订单勾选了运费险，保险公司会按规则赔付部分运费（最高25元），但需先垫付再申请。  \n\n> 注：商品质量问题或卖家发错货的，运费由卖家承担。"
+  },
+  {
+    "name": "user-reported-已签收单",
+    "query": "ORD20260615004 能退款吗",
+    "order_no": null,
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": false,
+    "answer": "订单号 ORD20260615004 已签收，由于已超过7天无理由退货期限，目前无法办理退款。"
+  },
+  {
+    "name": "user-reported-未支付单",
+    "query": "ORD20260620001 能退吗",
+    "order_no": null,
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": true,
+    "answer": "订单号 ORD20260620001 当前状态为「待支付」，可以发起退款申请。您可通过App「我的订单」页面选择该订单，提交退款申请，或联系在线客服协助处理。"
+  },
+  {
+    "name": "anti-hallucination-不带订单号",
+    "query": "我想退个货，能退吗",
+    "order_no": null,
+    "ok": true,
+    "reason": "OK",
+    "intent": "refund_query",
+    "refundable": null,
+    "answer": "请提供要查询退款的订单号（格式示例：ORD20260628004）。"
+  },
+  {
+    "name": "anti-mixup-指定订单号必须出现在答案里",
+    "query": "ORD20260628004 退货运费谁出",
+    "order_no": null,
+    "ok": true,
+    "reason": "OK",
+    "intent": "policy_query",
+    "refundable": null,
+    "answer": "ORD20260628004 退货运费由谁承担，取决于退货原因：\n\n- **商品质量问题 / 卖家发错货**：卖家承担运费，可联系客服获取寄件码包邮寄回。  \n- **买家主观原因（不喜欢、买错等）**：买家先垫付运费，若下单时购买了运费险，保险公司最高赔付25元；未购买则自行承担。\n\n请根据实际退货原因判断。建议先在App申请退款，选择原因后系统会提示相应运费规则。"
+  }
+]
