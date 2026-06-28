@@ -1,50 +1,40 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import LoginForm from './components/LoginForm.vue';
-import ChatPage from './components/ChatPage.vue';
-import { getMe, login as apiLogin, logout as apiLogout } from './api';
-import type { User } from './types';
-
-const user = ref<User | null>(null);
-const initializing = ref(true);
-
-onMounted(async () => {
-  try {
-    user.value = await getMe();
-  } catch (e) {
-    console.error('getMe failed:', e);
-  } finally {
-    initializing.value = false;
-  }
-});
-
-async function onLogin(username: string, password: string) {
-  user.value = await apiLogin(username, password);
-}
-
-async function onLogout() {
-  await apiLogout();
-  user.value = null;
-}
+import { RouterView } from 'vue-router';
+import AppNav from './components/AppNav.vue';
 </script>
 
 <template>
   <div class="app-root">
-    <div v-if="initializing" class="splash">加载中…</div>
-    <LoginForm v-else-if="!user" @login="onLogin" />
-    <ChatPage v-else :user="user" @logout="onLogout" />
+    <AppNav />
+    <RouterView />
   </div>
 </template>
 
-<style scoped>
-.app-root {
-  height: 100%;
+<style>
+/* 全局样式（Vite 默认全局） */
+* {
+  box-sizing: border-box;
 }
-.splash {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+html, body, #app {
+  margin: 0;
+  padding: 0;
   height: 100%;
-  color: #999;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color: #333;
+  background: #f7f8fa;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button {
+  font-family: inherit;
+}
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 </style>

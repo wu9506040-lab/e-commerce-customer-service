@@ -2879,3 +2879,64 @@ M8 是 V1.x → V2.0 生产化的最后一块拼图：
 
 **简历写法**：
 > "为 RAG 客服系统加可观测性：Request ID 中间件实现全链路日志追踪（ContextVar + 双 Middleware 透传），结构化 JSON 日志 + 业务指标埋点（chat / RAG / embedding / hit@K），新增 `/metrics` 端点 + 30 个单元测试，覆盖 5 个业务模块（合成器 / 检索 / 嵌入 / 客户端 / API）"
+
+---
+
+## 9. M9 前端升级 - 从 demo 到电商产品
+
+**模块**：frontend（M9 全量重构）/ backend/app/api/shop.py / backend/app/api/conversations.py (PATCH)
+
+### What
+把"最小可运行 demo"（1174 行 / 6 组件 / 一个聊天框）升级成"接近真实电商客服产品"的全栈前端：路由化、注册 + 登录、商品橱窗 + 详情、个人中心、会话管理、消息卡片嵌入、演示模式首页。后端补 4 个公开端点 + 1 个 PATCH 改标题。
+
+### Why
+- 当前前端给外部访问者（面试官 / GitHub demo）只看到「套了紫色 logo 的聊天框」，完全感受不到「电商客服」定位
+- 用户 5 点痛点：UI 不真实、历史记录没意义、没有注册、只有一个聊天界面、没有展示平台
+- 真实电商客服（京东 / 淘宝小蜜 / Shopify Chat）都有：商品上下文、订单上下文、个人中心、注册流程、悬浮 CTA
+
+### Tech Stack
+- **新增依赖**：vue-router 4.6.4（路由化）
+- **新增组件**：AppNav / ProductCard (3 density) / OrderCard (2 density) / MessageCard
+- **新增视图**：LoginPage / DemoLanding / ShopPage / ProductDetail / ChatPage / ProfilePage
+- **后端**：FastAPI 4 个新端点 (`/products` `/products/{sku}` `/orders/my` `/orders/{order_no}`) + 1 个 PATCH (`/conversations/{sid}`)
+- **类型系统**：TypeScript + vue-tsc 严格模式
+- **图片**：3 tier fallback (Unsplash → dummyimage → SVG 渐变)，最终用 dummyimage 占位图（类目色 + SKU 文字）
+
+### Flow
+1. 用户访问 `/demo`（未登录也可看）→ 看到 hero + 能力卡片 + 指标 + CTA
+2. 点「注册」→ `/login?tab=register` → 注册成功自动登录 → 跳 `/shop`
+3. 商品橱窗选品 → 点「问问客服」→ 跳 `/chat?q=SKUxxx+怎么样` → 自动发问
+4. 流式 SSE 返回 → assistant 消息下方自动渲染 ProductCard / OrderCard（按 intent）
+5. 侧边栏自动按「今天/昨天/本周/更早」分组，hover 出 × 删单条，顶部一键清空
+6. 顶栏头像菜单 → 个人中心 → 看到订单列表 + 统计 + 退出
+
+### Problem → Fix
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| npm run build 报 `hit@1` 属性语法错 | TS 不允许 `@` 在 identifier | 改用 `'hit@1'` 字符串 key |
+| npm run build 报 `OrderDetail` 在 api.ts 未导出 | 误从 api.ts import，应该从 types.ts | 改 import source |
+| npm run build 报 DemoLanding `document` not found | Vue 模板不暴露 `document` 全局 | 改用 computed 包装 |
+| `/products` 返回 404 | Dockerfile COPY 烘入 image，未重启不生效 | `docker compose build api && up -d api` |
+| PATCH 内联中文 body 解析失败 | Windows bash 中文编码（已知问题） | `--data-binary @file` 走文件 |
+| 老 ChatPage / LoginForm 没人引用但存在 | M9 已迁到 views/ | 加 `@deprecated` 注释保留作历史 |
+
+### 关键设计决策
+| 决策 | 选择 | 原因 |
+|------|------|------|
+| 状态管理 | 不上 Pinia | 小项目 composable + ref 足够，引入会增加复杂度 |
+| 商品图 | dummyimage 渐变 + SKU 文字 | Unsplash SSL 失败 + Picsum 随机图不像产品 |
+| 卡片密度 | ProductCard 3 密度 / OrderCard 2 密度 | 橱窗 / 详情 / 消息内复用同一组件 |
+| 自动标题 | 前端 PATCH 覆盖后端默认 200 字 | 后端默认存 first_query[:200]，UI 显示应≤20 字 |
+| 消息卡片 | 追加到气泡下方，不替换正文 | 用户先看 LLM 答得对不对，卡片辅助理解 |
+
+### Scope Lock 放宽理由
+按 CLAUDE.md §5「单次只允许改一个模块」，但用户明确说「全做」。
+实际操作：分 9 阶段（基础设施 → 后端 API → 注册 → 卡片 → 会话管理 → 个人中心 → 橱窗 → demo 首页 → 构建），仍按模块顺序推进，最后一次性提交。
+
+### Role
+M9 是 V1.x → V2.0 商业化的最后一块：
+- M1-M5 = 后端核心能力（RAG / 意图 / 多意图 / 退款 / 性能）
+- M6-M8 = 后端生产化（V3 LangGraph + 可观测 + JWT）
+- **M9 = 前端从 demo 到产品**
+
+后端从「能跑」升级到「能生产」，前端从「能演示」升级到「能给客户用」。

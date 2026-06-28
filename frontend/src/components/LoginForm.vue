@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** @deprecated M9 升级：已迁移到 src/views/LoginPage.vue（含注册 tab）。本文件保留仅作历史参考。 */
 import { ref } from 'vue';
 
 const emit = defineEmits<{

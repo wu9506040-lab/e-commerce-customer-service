@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** @deprecated M9 升级：已迁移到 src/views/ChatPage.vue（路由感知版）。本文件保留仅作历史参考。 */
 import { ref, onMounted } from 'vue';
 import ConversationList from './ConversationList.vue';
 import MessageList from './MessageList.vue';
