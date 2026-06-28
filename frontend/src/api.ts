@@ -17,9 +17,20 @@ import type {
   StreamEvent,
   User,
 } from './types';
+import { ref, type Ref } from 'vue';
 
-/** API 基础路径（同源，Vite 代理转发） */
-const API = '';
+/** API 基础路径（企业级 /api/ 前缀分层，与 SPA 路由空间隔离） */
+const API = '/api';
+
+/**
+ * 登录态缓存（解决 httpOnly Cookie 不可被 document.cookie 读取的问题）
+ *
+ * 设计：API 层维护唯一可信的登录状态。
+ * - 初始 null：未知（路由守卫首次调 /auth/me 探测）
+ * - true：已登录（login/register 成功后置 true，getMe 返回有效用户）
+ * - false：未登录（getMe 返回 401 或 logout 后）
+ */
+export const isAuthed: Ref<boolean | null> = ref(null);
 
 /** 统一 fetch 包装：带 cookie + JSON */
 async function http<T>(
@@ -61,6 +72,7 @@ export async function login(
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: form.toString(),
   });
+  isAuthed.value = true;  // 同步登录态
   return data.user;
 }
 
@@ -71,19 +83,26 @@ export async function register(payload: RegisterPayload): Promise<User> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  isAuthed.value = true;  // 同步登录态（注册接口不返 cookie，由调用方再 login）
   return data.user;
 }
 
 export async function logout(): Promise<void> {
   await http<{ message: string }>('/auth/logout', { method: 'POST' });
+  isAuthed.value = false;  // 同步登出态
 }
 
-/** 获取当前登录用户，未登录返回 null */
+/** 获取当前登录用户，未登录返回 null；同时更新 isAuthed 缓存 */
 export async function getMe(): Promise<User | null> {
   const res = await fetch(`${API}/auth/me`, { credentials: 'include' });
-  if (res.status === 401) return null;
+  if (res.status === 401) {
+    isAuthed.value = false;
+    return null;
+  }
   if (!res.ok) throw new Error(`getMe failed: ${res.status}`);
-  return res.json();
+  const user = (await res.json()) as User;
+  isAuthed.value = true;
+  return user;
 }
 
 // =============================================================
@@ -181,9 +200,16 @@ export async function getMetrics(): Promise<MetricsSnapshot> {
 // =============================================================
 // Chat - SSE 流式（核心）
 // =============================================================
+/**
+ * 流式对话（M9.5：支持 sku/order_no context 透传）
+ * - 从 /shop/:sku 跳转带 ?sku=ZP1 → 后端注入【当前商品】到 prompt
+ * - 从订单卡片跳转带 ?order_no=ORD... → 后端注入【当前订单】到 prompt
+ * - 用户追问时会带当前 session_id（后端可继续注入同 context）
+ */
 export async function* streamChat(
   query: string,
   sessionId?: string,
+  opts?: { sku?: string; orderNo?: string },
 ): AsyncGenerator<StreamEvent, void, void> {
   const res = await fetch(`${API}/chat`, {
     method: 'POST',
@@ -195,6 +221,9 @@ export async function* streamChat(
     body: JSON.stringify({
       query,
       session_id: sessionId ?? null,
+      // M9.5：用户从商品详情/订单卡片跳转过来时携带 context
+      sku: opts?.sku ?? null,
+      order_no: opts?.orderNo ?? null,
     }),
   });
 
