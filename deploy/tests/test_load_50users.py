@@ -20,8 +20,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 BASE = "http://localhost:8000"
 ADMIN_JWT = (
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJzdWIiOiIxIiwiaWF0IjowLCJleHAiOjk5OTk5OTk5OTl9."
-    "FFI_p8_HU8nprdYak5OiqXsLQv7XyewoJ-SbGGgzh6M"
+    "eyJzdWIiOiIxIiwiaWF0IjowLCJleHAiOjk5OTk5OTk5OTksInJvbGUiOiJhZG1pbiJ9."
+    "jcCYBqdWOsCWA9ZIMY3d2sy0seLngVs_LfTIuS3bslQ"
 )
 
 # 真实查询样本（混合 4 意图）
