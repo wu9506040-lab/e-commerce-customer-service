@@ -84,10 +84,14 @@ function goShop(cat?: string) {
 
 <template>
   <main class="demo">
-    <!-- ============= Hero Banner（京东红） ============= -->
+    <!-- ============= Hero Banner（京东红 + 渐变 + Live 指示） ============= -->
     <section class="hero">
+      <div class="hero-bg"></div>
       <div class="hero-inner">
-        <div class="hero-tag">RAG · LangGraph · 多意图智能客服</div>
+        <div class="hero-tag">
+          <span class="live-dot"></span>
+          RAG · LangGraph · 多意图智能客服
+        </div>
         <h1 class="hero-title">智选客服</h1>
         <p class="hero-sub">让电商客服更智能 · 4 类意图毫秒级分流 · 实时流式回答</p>
         <div class="hero-actions">
@@ -204,34 +208,65 @@ function goShop(cat?: string) {
 
 /* ============= Hero ============= */
 .hero {
+  position: relative;
   background: var(--jd-red);
   color: #fff;
-  padding: 80px 24px;
+  padding: 90px 24px;
   text-align: center;
+  overflow: hidden;
+}
+.hero-bg {
+  /* 渐变 + 隐约几何纹理，比纯红更现代 */
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at top right, rgba(255, 255, 255, 0.12), transparent 60%),
+    radial-gradient(ellipse at bottom left, rgba(168, 0, 10, 0.4), transparent 60%),
+    linear-gradient(135deg, var(--jd-red) 0%, var(--jd-red-hover) 100%);
+  pointer-events: none;
 }
 .hero-inner {
+  position: relative;
   max-width: 760px;
   margin: 0 auto;
 }
 .hero-tag {
-  display: inline-block;
-  padding: 4px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
   background: rgba(255, 255, 255, 0.18);
   border: 1px solid rgba(255, 255, 255, 0.3);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   margin-bottom: var(--sp-4);
   letter-spacing: 1px;
+  backdrop-filter: blur(4px);
+}
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: #4ade80;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7);
+  animation: live-pulse 1.6s ease-out infinite;
+}
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(74, 222, 128, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
 }
 .hero-title {
-  font-size: 56px;
+  font-size: 64px;
   font-weight: 800;
   margin: 0 0 var(--sp-3);
   line-height: 1.1;
   letter-spacing: 4px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 .hero-sub {
-  font-size: var(--fs-md);
-  opacity: 0.92;
+  font-size: var(--fs-lg);
+  opacity: 0.95;
   line-height: 1.6;
   margin: 0 0 var(--sp-6);
 }
@@ -242,32 +277,38 @@ function goShop(cat?: string) {
   flex-wrap: wrap;
 }
 .btn-hero-primary {
-  padding: 12px 32px;
+  padding: 14px 36px;
   background: #fff;
   color: var(--jd-red);
   border: none;
   font-size: var(--fs-md);
   font-weight: 600;
   cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 .btn-hero-primary:hover {
   background: var(--gray-100);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
 }
 .btn-hero-ghost {
-  padding: 12px 32px;
+  padding: 14px 36px;
   background: transparent;
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.5);
   font-size: var(--fs-md);
   cursor: pointer;
+  transition: all 0.15s;
 }
 .btn-hero-ghost:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: #fff;
 }
 .hero-hint {
   margin: var(--sp-5) 0 0;
-  font-size: var(--fs-xs);
-  opacity: 0.7;
+  font-size: var(--fs-sm);
+  opacity: 0.75;
 }
 
 /* ============= 类目导航 ============= */
@@ -300,7 +341,7 @@ function goShop(cat?: string) {
 .section {
   max-width: var(--content-max);
   margin: 0 auto;
-  padding: 60px var(--sp-6);
+  padding: 70px var(--sp-6);
 }
 .section-head {
   margin-bottom: var(--sp-6);
@@ -309,12 +350,12 @@ function goShop(cat?: string) {
   font-size: var(--fs-2xl);
   font-weight: 700;
   color: var(--gray-800);
-  margin: 0 0 var(--sp-1);
+  margin: 0 0 var(--sp-2);
   padding-left: var(--sp-3);
   border-left: 4px solid var(--jd-red);
 }
 .section-head p {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   color: var(--gray-500);
   margin: 0;
   padding-left: calc(var(--sp-3) + 4px);
@@ -324,48 +365,67 @@ function goShop(cat?: string) {
 .cap-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--sp-3);
+  gap: var(--sp-4);
 }
 .cap-card {
   background: var(--gray-0);
   border: var(--border);
-  padding: var(--sp-4);
-  transition: border-color 0.15s;
+  padding: var(--sp-5);
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+.cap-card::before {
+  /* 顶部红色细线，hover 时拉宽 */
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 3px;
+  background: var(--jd-red);
+  transition: width 0.25s ease;
 }
 .cap-card:hover {
   border-color: var(--jd-red);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(225, 37, 27, 0.08);
+}
+.cap-card:hover::before {
+  width: 100%;
 }
 .cap-head {
-  margin-bottom: var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
 .cap-tag {
   display: inline-block;
-  padding: 2px 10px;
+  padding: 3px 12px;
   background: var(--jd-red-light);
   color: var(--jd-red);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 .cap-desc {
   margin: 0 0 var(--sp-3);
   color: var(--gray-700);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   line-height: 1.6;
 }
 .cap-examples {
   list-style: none;
   margin: 0;
-  padding: var(--sp-2) 0 0;
+  padding: var(--sp-3) 0 0;
   border-top: 1px dashed var(--gray-200);
 }
 .cap-examples li {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--gray-600);
-  padding: 4px 0;
-  line-height: 1.5;
+  padding: 5px 0;
+  line-height: 1.6;
 }
 .qmark {
   color: var(--jd-red);
+  font-weight: 600;
 }
 
 /* ============= 指标 ============= */
@@ -387,30 +447,38 @@ function goShop(cat?: string) {
   margin: 0 auto;
   padding: 0 var(--sp-6) 60px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--sp-4);
 }
 .metric-box {
-  background: var(--gray-50);
+  background: linear-gradient(135deg, var(--gray-0) 0%, var(--gray-50) 100%);
   border: var(--border);
-  padding: var(--sp-5);
+  padding: var(--sp-5) var(--sp-4);
   text-align: center;
+  transition: all 0.2s;
+  position: relative;
+}
+.metric-box:hover {
+  border-color: var(--jd-red);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(225, 37, 27, 0.06);
 }
 .metric-num {
   font-size: var(--fs-3xl);
   font-weight: 700;
   color: var(--jd-red);
   line-height: 1;
+  letter-spacing: -1px;
 }
 .metric-num small {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   font-weight: 400;
   color: var(--gray-500);
   margin-left: 2px;
 }
 .metric-label {
-  margin-top: var(--sp-1);
-  font-size: var(--fs-xs);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
   color: var(--gray-600);
 }
 .metrics-loading {
@@ -426,18 +494,24 @@ function goShop(cat?: string) {
   gap: var(--sp-2);
 }
 .tech-tag {
-  padding: 6px 14px;
+  padding: 8px 16px;
   background: var(--gray-0);
   border: var(--border);
   font-size: var(--fs-sm);
   color: var(--gray-700);
+  transition: all 0.15s;
+}
+.tech-tag:hover {
+  border-color: var(--jd-red);
+  color: var(--jd-red);
+  transform: translateY(-1px);
 }
 
 /* ============= CTA ============= */
 .cta {
   background: var(--jd-red);
   color: #fff;
-  padding: 60px var(--sp-6);
+  padding: 70px var(--sp-6);
   text-align: center;
 }
 .cta-inner {
@@ -445,12 +519,14 @@ function goShop(cat?: string) {
   margin: 0 auto;
 }
 .cta h2 {
-  font-size: var(--fs-2xl);
+  font-size: var(--fs-3xl);
+  font-weight: 700;
   margin: 0 0 var(--sp-2);
 }
 .cta p {
   margin: 0 0 var(--sp-5);
-  opacity: 0.92;
+  opacity: 0.95;
+  font-size: var(--fs-md);
 }
 .cta-actions {
   display: flex;
@@ -459,27 +535,33 @@ function goShop(cat?: string) {
   flex-wrap: wrap;
 }
 .btn-cta-primary {
-  padding: 12px 32px;
+  padding: 14px 36px;
   background: #fff;
   color: var(--jd-red);
   border: none;
   font-size: var(--fs-md);
   font-weight: 600;
   cursor: pointer;
+  transition: all 0.15s;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 .btn-cta-primary:hover {
   background: var(--gray-100);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
 }
 .btn-cta-ghost {
-  padding: 12px 32px;
+  padding: 14px 36px;
   background: transparent;
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.5);
   font-size: var(--fs-md);
   cursor: pointer;
+  transition: all 0.15s;
 }
 .btn-cta-ghost:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: #fff;
 }
 
 /* ============= Footer ============= */
