@@ -288,6 +288,11 @@ class Synthesizer:
         """refund_query V2.x：调 RefundService（复合 tool + policy）
 
         V3 起作为 fallback：USE_LANGGRAPH_REFUND=false 时使用，或 LangGraph 版异常时回退。
+
+        .. deprecated::
+            V3 LangGraph refund_graph 上线后的临时双轨态。V3 稳定后（预计下一个里程碑）
+            删除本函数 + 关闭 USE_LANGGRAPH_REFUND 开关 + 删除对应测试。
+            截止 2026-06-28：chat_e2e #5/#6 已用 V3 路径通过。
         """
         entities = intent_result["entities"]
         order_no = entities.get("order_no")
