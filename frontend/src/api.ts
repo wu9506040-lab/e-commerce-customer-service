@@ -9,6 +9,11 @@
 import type {
   Conversation,
   MessagesPage,
+  OrderDetail,
+  OrderListResponse,
+  Product,
+  ProductListResponse,
+  RegisterPayload,
   StreamEvent,
   User,
 } from './types';
@@ -59,6 +64,16 @@ export async function login(
   return data.user;
 }
 
+/** 注册（M9 新增） */
+export async function register(payload: RegisterPayload): Promise<User> {
+  const data = await http<{ user: User }>('/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return data.user;
+}
+
 export async function logout(): Promise<void> {
   await http<{ message: string }>('/auth/logout', { method: 'POST' });
 }
@@ -97,6 +112,70 @@ export async function deleteConversation(
   return http(`/conversations/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
   });
+}
+
+/** 更新会话标题（M9 自动生成标题用） */
+export async function updateConversationTitle(
+  sessionId: string,
+  title: string,
+): Promise<{ session_id: string; title: string; message: string }> {
+  return http(`/conversations/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+}
+
+// =============================================================
+// Shop（M9 新增：商品 / 订单公开 API）
+// =============================================================
+export async function listProducts(params?: {
+  category?: string;
+  limit?: number;
+}): Promise<ProductListResponse> {
+  const search = new URLSearchParams();
+  if (params?.category) search.append('category', params.category);
+  if (params?.limit) search.append('limit', String(params.limit));
+  const qs = search.toString();
+  return http(`/products${qs ? `?${qs}` : ''}`);
+}
+
+export async function getProduct(sku: string): Promise<Product> {
+  return http(`/products/${encodeURIComponent(sku)}`);
+}
+
+export async function listMyOrders(params?: {
+  status?: string;
+  limit?: number;
+}): Promise<OrderListResponse> {
+  const search = new URLSearchParams();
+  if (params?.status) search.append('status', params.status);
+  if (params?.limit) search.append('limit', String(params.limit));
+  const qs = search.toString();
+  return http(`/orders/my${qs ? `?${qs}` : ''}`);
+}
+
+export async function getOrderDetail(orderNo: string): Promise<OrderDetail> {
+  return http(`/orders/${encodeURIComponent(orderNo)}`);
+}
+
+// =============================================================
+// Metrics（M9 demo 首页用：展示能力指标）
+// =============================================================
+export interface MetricsSnapshot {
+  uptime_seconds: number;
+  chat?: {
+    total: number;
+    by_intent: Record<string, number>;
+    latency_ms?: { p50: number; p90: number; p95: number; max: number; samples: number };
+  };
+  rag?: { qdrant_search_success: number; qdrant_search_total: number };
+  embedding?: { calls_total: number; errors_total: number };
+  hit_at_k?: { 'hit@1': number; 'hit@3': number; 'hit@5': number; 'hit@10': number };
+}
+
+export async function getMetrics(): Promise<MetricsSnapshot> {
+  return http('/metrics');
 }
 
 // =============================================================
