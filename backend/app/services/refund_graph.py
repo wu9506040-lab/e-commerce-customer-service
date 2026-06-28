@@ -65,44 +65,95 @@ def fetch_order(state: RefundState) -> RefundState:
 
     输入: state["user_id"], state["order_no"]
     输出（写回 state）: order_info (dict), days_since_order (int)
+
+    days_since_order 计算规则：
+        - delivered / completed → 按签收日算（7 天无理由窗口起点）
+        - 其他状态               → 按下单日算
+        - 签收日由 OrderTool 硬编码 create_time + 2 days 推算
+          （Order 表当前无 delivery_time 字段，与 OrderTool.get_logistics 保持一致）
     """
     order = OrderTool.get_order_by_no(state["user_id"], state["order_no"])
 
     if order is None:
-        # 订单不存在 → 兜底值，让后续 judge 返回"订单不存在"
-        return {"order_info": {}, "days_since_order": 999}
+        # 订单不存在 → 兜底值；days 用 0 而非 magic number 999
+        return {"order_info": {}, "days_since_order": 0}
 
     # 算天数（create_time 是 ISO 字符串）
     create_time = datetime.datetime.fromisoformat(order["create_time"])
-    days = (datetime.datetime.now() - create_time).days
+    status = order.get("status")
+    if status in ("delivered", "completed"):
+        # 已签收：按签收日算（与 OrderTool.get_logistics 的 create_time + 2 days 一致）
+        delivery_time = create_time + datetime.timedelta(days=2)
+        days = (datetime.datetime.now() - delivery_time).days
+    else:
+        # 其他状态：按下单日算
+        days = (datetime.datetime.now() - create_time).days
 
     return {"order_info": order, "days_since_order": days}
+
+
+# 7 天无理由窗口常量（与 RefundTool.REFUND_WINDOW_DAYS 保持一致）
+REFUND_WINDOW_DAYS = 7
+# 签收日偏移（与 OrderTool.get_logistics 一致；Order 模型暂无 delivery_time 字段）
+DELIVERY_OFFSET_DAYS = 2
+
+# 状态中文映射（用于 prompt 注入和 reason 拼接）
+_STATUS_ZH = {
+    "pending":   "待支付",
+    "paid":      "已支付",
+    "shipped":   "运输中",
+    "delivered": "已签收",
+    "completed": "已完成",
+    "refunded":  "已退款",
+}
 
 
 def judge_basic_refundable(state: RefundState) -> RefundState:
     """
     Node 2: 基础规则判断（纯业务逻辑，不调 LLM）
 
-    4 种 case 按顺序判断：
+    规则（与 RefundTool.check_refundable 对齐）：
         - 订单不存在         → refundable=False, reason="订单不存在"
-        - 订单已退款         → refundable=False, reason="该订单已退款"
-        - 已签收 + 7 天内    → refundable=True,  reason="符合 7 天无理由"
-        - 其他情况           → refundable=False, reason="超过 7 天或未签收"
+        - 订单已退款         → refundable=False, reason="该订单已退款，无法重复申请"
+        - 已签收 + 7 天内    → refundable=True,  reason="已签收 N 天，在 7 天无理由退货期限内"
+        - 已签收 + 超 7 天   → refundable=False, reason="已签收 N 天，超过 7 天无理由退货期限"
+        - 其他状态           → refundable=True,  reason="订单状态「XX」，可发起退款申请"
 
     注意：return 里 pass-through days_since_order（LangGraph stream_mode=updates
     只返回本 node 的 delta，前置 fetch_order 写入的字段需要显式 pass-through
     才能在 stream event 里被下游看到）。
     """
     order = state.get("order_info", {})
-    days = state.get("days_since_order", 999)
+    days = state.get("days_since_order", 0)
+    status = order.get("status")
 
     if not order:
         return {"refundable": False, "reason": "订单不存在", "days_since_order": days}
-    if order.get("status") == "refunded":
-        return {"refundable": False, "reason": "该订单已退款", "days_since_order": days}
-    if order.get("status") == "delivered" and days <= 7:
-        return {"refundable": True, "reason": "符合 7 天无理由", "days_since_order": days}
-    return {"refundable": False, "reason": "超过 7 天或未签收", "days_since_order": days}
+    if status == "refunded":
+        return {
+            "refundable": False,
+            "reason": "该订单已退款，无法重复申请",
+            "days_since_order": days,
+        }
+    if status == "delivered":
+        if days <= REFUND_WINDOW_DAYS:
+            return {
+                "refundable": True,
+                "reason": f"已签收 {days} 天，在 {REFUND_WINDOW_DAYS} 天无理由退货期限内",
+                "days_since_order": days,
+            }
+        return {
+            "refundable": False,
+            "reason": f"已签收 {days} 天，超过 {REFUND_WINDOW_DAYS} 天无理由退货期限",
+            "days_since_order": days,
+        }
+    # pending / paid / shipped / completed：都可发起退款申请
+    status_zh = _STATUS_ZH.get(status, status)
+    return {
+        "refundable": True,
+        "reason": f"订单状态「{status_zh}」，可发起退款申请",
+        "days_since_order": days,
+    }
 
 
 def fetch_policy(state: RefundState) -> RefundState:
@@ -151,8 +202,13 @@ def synthesize_answer(state: RefundState) -> RefundState:
     """
     Node 6: LLM 综合答案（走 Qwen 生成最终回答）
 
-    Prompt 优先级硬约束（参考 synthesizer.py:51-73）：
-        【事实陈述】(最高优先级) → 【政策依据】→ 问题
+    Prompt 优先级硬约束 + 反幻觉 4 条铁律（防止 LLM 胡编乱造 / 串单）：
+        1. 必须基于【事实陈述】回答，禁止编造订单号/状态/价格/日期
+        2. 【事实陈述】与【政策依据】冲突时，以【事实陈述】为准
+        3. 信息不足时直接告知用户，禁止推测
+        4. 回答中出现的订单号必须与【事实陈述】中的 order_no 完全一致
+
+    字段注入：order_no 单独提出来强制注入（防止 LLM 从订单 dict 漏看）
     """
     # 1. 拼 policy 摘录（每条前 200 字，[1]/[2]/[3] 编号）
     policy_lines = []
@@ -162,21 +218,38 @@ def synthesize_answer(state: RefundState) -> RefundState:
             policy_lines.append(f"[{i}] {text}")
     policy_block = "\n".join(policy_lines) if policy_lines else "（无相关政策）"
 
-    # 2. 拼 prompt
+    # 2. 提取订单核心事实（避免把整个 dict 灌进 prompt 让 LLM 漏看关键字段）
+    order_info = state.get("order_info", {}) or {}
+    order_no = order_info.get("order_no") or state.get("order_no") or "未知"
+    order_status = _STATUS_ZH.get(order_info.get("status", ""), order_info.get("status", "未知"))
+    order_amount = order_info.get("total_amount", "未知")
+    refundable = state.get("refundable", False)
+    reason = state.get("reason", "")
+    days = state.get("days_since_order", 0)
+    query = state.get("query", "")
+
+    # 3. 拼 prompt — 反幻觉 4 条铁律 + 字段显式注入
     prompt = (
-        "你是专业的电商客服，请严格基于以下【事实陈述】和【政策依据】回答用户。\n\n"
+        "你是专业的电商客服。请严格按以下规则回答：\n\n"
+        "【硬约束 - 违反任何一条都视为错误回答】\n"
+        "1. 必须基于【事实陈述】回答，不得编造订单号、状态、价格、日期\n"
+        "2. 如果【事实陈述】与【政策依据】冲突，以【事实陈述】为准\n"
+        "3. 如果【事实陈述】信息不足（如订单不存在），直接告知用户并请其提供订单号，禁止推测\n"
+        "4. 回答中出现的订单号必须与【事实陈述】中的 order_no 完全一致，禁止换单\n\n"
         "【事实陈述】(最高优先级)\n"
-        f"订单: {state.get('order_info', {})}\n"
-        f"可否退款: {state.get('refundable', False)}\n"
-        f"原因: {state.get('reason', '')}\n"
-        f"已下单 {state.get('days_since_order', 0)} 天\n\n"
+        f"订单号: {order_no}\n"
+        f"订单状态: {order_status}\n"
+        f"订单金额: ¥{order_amount}\n"
+        f"可否退款: {'是' if refundable else '否'}\n"
+        f"原因: {reason}\n"
+        f"已下单 {days} 天\n\n"
         "【政策依据】\n"
         f"{policy_block}\n\n"
-        f"问题: {state.get('query', '')}\n\n"
-        "请简洁回答，必要时引用订单号、价格、政策条款编号。"
+        f"用户问题: {query}\n\n"
+        "回答："
     )
 
-    # 3. 调 LLM
+    # 4. 调 LLM — temperature=0.3 降低随机性
     result = qwen_chat(
         [{"role": "user", "content": prompt}],
         temperature=0.3,

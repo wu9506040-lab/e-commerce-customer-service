@@ -469,22 +469,21 @@ class Synthesizer:
             yield from Synthesizer._stream_simple(NO_LOGIN_PROMPT)
             return
 
-        # 2. order_no 兜底（与 V2 一致）
+        # 2. order_no 兜底（M9.5 修复：禁止自动 fallback 到最近订单，防止串单）
+        # 根因：之前 fallback 会偷换成「最近订单」，导致 LLM 用错误订单的事实回答
+        # 修复：无 order_no 时直接请用户提供，禁止推测
         if not effective_order_no:
-            recent = OrderService.list_user_orders(user_id)
-            recent = recent[:1] if recent else []
-            if recent:
-                effective_order_no = recent[0]["order_no"]
-            else:
-                yield ("meta", {
-                    "intent": "refund_query",
-                    "entities": entities,
-                    "contexts": [],
-                    "scores": [],
-                    "v3_engine": "langgraph",
-                })
-                yield from Synthesizer._stream_simple("用户当前没有订单，无法判断退款。请提供订单号。")
-                return
+            yield ("meta", {
+                "intent": "refund_query",
+                "entities": entities,
+                "contexts": [],
+                "scores": [],
+                "v3_engine": "langgraph",
+            })
+            yield from Synthesizer._stream_simple(
+                "请提供要查询退款的订单号（格式示例：ORD20260628004）。"
+            )
+            return
 
         # 3. 调 LangGraph refund_graph_app.stream() 边执行边输出
         meta_emitted = False
