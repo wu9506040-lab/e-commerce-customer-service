@@ -17,6 +17,7 @@ V2.5 范围（M4）：
 - 单步（不做 Agent 多步）
 """
 import logging
+import re as _re
 import threading
 from typing import Any, Generator, Optional, Tuple
 
@@ -217,6 +218,32 @@ def _format_history(history: Optional[list[dict]]) -> str:
     return "\n".join(lines)
 
 
+# M9.5+：从历史消息中提取最近一个订单号（ORD + 8位日期 + 3位序号）
+_ORDER_NO_RE = _re.compile(r"ORD\d{8}\d{3}")
+
+
+def _extract_order_no_from_history(history: Optional[list[dict]]) -> Optional[str]:
+    """从对话历史里提取最近一个出现的订单号
+
+    用于多轮对话：用户第一轮 "ORD20260628004 啥情况"，第二轮只说 "那能退吗"
+    时，refund handler 能从 history 自动补上 order_no。
+
+    扫描规则：从最新消息往前扫，user 和 assistant 消息都看，
+    返回第一个匹配 ORD + 8位日期 + 3位序号 的字符串。
+    """
+    if not history:
+        return None
+    # history 通常按时间正序（最旧 → 最新），所以反向遍历找最近一个
+    for msg in reversed(history):
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        m = _ORDER_NO_RE.search(content)
+        if m:
+            return m.group(0)
+    return None
+
+
 # =============================================================
 # Synthesizer 入口
 # =============================================================
@@ -282,7 +309,7 @@ class Synthesizer:
                 if settings.USE_LANGGRAPH_REFUND:
                     logger.info("refund_query → LangGraph V3", extra={"intent": intent})
                     metrics.inc_chat(intent, v3_engine="v3")  # M8
-                    yield from Synthesizer._handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block)
+                    yield from Synthesizer._handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block, history=history)
                 else:
                     metrics.inc_chat(intent, v3_engine="v2")  # M8
                     yield from Synthesizer._handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block)
@@ -437,6 +464,7 @@ class Synthesizer:
         query: str, user_id: int, intent_result: dict,
         order_no: Optional[str] = None,
         context_block: str = "",
+        history: Optional[list[dict]] = None,
     ) -> Generator[Tuple[str, Any], None, None]:
         """refund_query V3：走 LangGraph refund_graph_app.stream()
 
@@ -452,10 +480,16 @@ class Synthesizer:
         - done 事件由 api/chat.py 统一处理（write-through）
 
         M9.5：context_block 透传给 LangGraph state，让 synthesize_answer 节点能看到订单 context
+        M9.5+：history 透传给 LangGraph state，让 synthesize_answer / judge 能从历史提取 order_no
         """
         entities = intent_result["entities"]
         # M9.5：优先用 context 传来的 order_no（用户从订单卡片跳转退款）
-        effective_order_no = order_no or entities.get("order_no")
+        # M9.5+：其次用 intent 解析出的；最后从 history 中最近一条提到 ORD... 的消息兜底
+        effective_order_no = (
+            order_no
+            or entities.get("order_no")
+            or _extract_order_no_from_history(history)
+        )
 
         # 1. 鉴权（与 V2 一致）
         if user_id == ANONYMOUS_USER_ID:
@@ -494,6 +528,7 @@ class Synthesizer:
                     "order_no": effective_order_no,
                     "query": query,
                     "context_block": context_block,  # M9.5：注入 context 让 synthesize 看得到
+                    "history": history or [],  # M9.5+：注入历史让 synthesize 能引用上下文
                 },
                 stream_mode="updates",  # 每步返回 {node_name: state_update}
             ):
