@@ -442,6 +442,10 @@ class Synthesizer:
                         chunk = state_update.get("final_answer", "")
                         if chunk:
                             yield ("token", chunk)
+            # 修复：refund_v3 主 LangGraph 流完成后补 yield done
+            # 根因：_stream_llm/_stream_simple 末尾自动 yield done，但 LangGraph 路径不走它们
+            # 影响：chat.py StopIteration → break → 缺 SSE done + write-through + latency 埋点
+            yield ("done", {"answer": ""})
         except Exception as e:
             # LangGraph 挂了 → fallback 到 V2（保险丝）
             logger.exception(
