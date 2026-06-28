@@ -55,7 +55,7 @@ def user_session(user_id: int, queries_per_user: int) -> list[dict]:
 
         try:
             with requests.post(
-                f"{BASE}/chat",
+                f"{BASE}/api/chat",
                 json=body,
                 cookies=cookies,
                 stream=True,
@@ -124,7 +124,7 @@ def main():
     for q in QUERIES[:warmup]:
         try:
             requests.post(
-                f"{BASE}/chat",
+                f"{BASE}/api/chat",
                 json={"query": q},
                 cookies={"cs_token": ADMIN_JWT},
                 timeout=30,

@@ -93,14 +93,14 @@ CASES = [
 
 
 def call_chat(query: str, jwt: str | None, timeout: int = 30) -> dict:
-    """调 /chat SSE，收集所有事件，返回 {ok, meta, answer, first_token_ms, elapsed_ms, tokens, error}"""
+    """调 /api/chat SSE，收集所有事件，返回 {ok, meta, answer, first_token_ms, elapsed_ms, tokens, error}"""
     body = json.dumps({"query": query}, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if jwt:
         headers["Cookie"] = f"cs_token={jwt}"
 
     req = urllib.request.Request(
-        f"{BASE}/chat",
+        f"{BASE}/api/chat",
         data=body,
         headers=headers,
         method="POST",

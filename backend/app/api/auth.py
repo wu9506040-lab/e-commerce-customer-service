@@ -36,7 +36,7 @@ from app.services.auth_service import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 def _set_token_cookie(response: Response, token: str) -> None:

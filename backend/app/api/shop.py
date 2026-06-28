@@ -25,7 +25,7 @@ from app.schemas.shop import (
 from app.tools.order_tool import OrderTool
 from app.tools.product_tool import ProductTool
 
-router = APIRouter(tags=["shop"])
+router = APIRouter(prefix="/api", tags=["shop"])
 
 
 # =============================================================

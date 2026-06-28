@@ -32,7 +32,7 @@ from app.services.audit_service import try_log_action
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/conversations", tags=["conversations"])
+router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 
 # =============================================================

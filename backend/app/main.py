@@ -150,7 +150,7 @@ app.include_router(shop_router)  # 前端商品橱窗 + 我的订单
 # M8：/metrics 端点（业务指标 JSON 快照）
 # =============================================================
 @app.get(
-    "/metrics",
+    "/api/metrics",
     summary="业务指标快照（M8）",
     description="返回 chat / rag / embedding / hit@K 等指标的 JSON 快照。不引入 Prometheus，纯内存实现。",
 )
