@@ -41,7 +41,7 @@ def _product_to_out(p: dict) -> ProductOut:
         attributes=p.get("attributes"),
         description=p.get("description"),
         # 相对路径，前端拼接 base URL（Vite dev / Nginx 都直接 serve /products/）
-        cover_url=f"/products/{p['sku']}.jpg",
+        cover_url=f"/products/{p['sku']}.svg",
     )
 
 

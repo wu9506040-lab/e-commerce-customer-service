@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <linearGradient id="bg8" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0f4f0"/>
+      <stop offset="100%" stop-color="#d4e0d4"/>
+    </linearGradient>
+    <linearGradient id="laptopBase8" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#aab0b8"/>
+      <stop offset="100%" stop-color="#7a8088"/>
+    </linearGradient>
+    <linearGradient id="laptopLid8" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#9aa0a8"/>
+      <stop offset="100%" stop-color="#6a7078"/>
+    </linearGradient>
+    <linearGradient id="screen8" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a2a3a"/>
+      <stop offset="100%" stop-color="#0a1a2a"/>
+    </linearGradient>
+    <filter id="shadow8"><feGaussianBlur in="SourceAlpha" stdDeviation="10"/><feOffset dy="10"/><feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <rect width="600" height="600" fill="url(#bg8)"/>
+  <ellipse cx="300" cy="470" rx="220" ry="16" fill="#000" opacity="0.18"/>
+
+  <g filter="url(#shadow8)">
+    <!-- 笔记本屏幕（打开的，盖子略向后倾） -->
+    <!-- 屏幕背面（梯形简化） -->
+    <path d="M120 380 L150 150 L450 150 L480 380 Z" fill="url(#laptopLid8)" stroke="#5a6068" stroke-width="1"/>
+
+    <!-- 屏幕边框（黑色） -->
+    <path d="M150 165 L450 165 L468 360 L132 360 Z" fill="#000"/>
+
+    <!-- 屏幕显示区 -->
+    <path d="M165 175 L435 175 L450 350 L150 350 Z" fill="url(#screen8)"/>
+
+    <!-- 屏幕内容 - 代码编辑器 -->
+    <!-- 顶部工具栏 -->
+    <path d="M165 175 L435 175 L437 195 L163 195 Z" fill="#2a2a3a"/>
+    <circle cx="178" cy="185" r="3" fill="#ff5f57"/>
+    <circle cx="190" cy="185" r="3" fill="#febc2e"/>
+    <circle cx="202" cy="185" r="3" fill="#28c840"/>
+    <text x="225" y="188" fill="#999" font-family="ui-monospace" font-size="9">main.py</text>
+
+    <!-- 代码行（左侧带行号） -->
+    <rect x="165" y="200" width="270" height="150" fill="#0d1421"/>
+    <text x="175" y="215" fill="#666" font-family="ui-monospace" font-size="9">1</text>
+    <text x="190" y="215" fill="#c678dd" font-family="ui-monospace" font-size="10">def</text>
+    <text x="218" y="215" fill="#61afef" font-family="ui-monospace" font-size="10">greet</text>
+    <text x="248" y="215" fill="#abb2bf" font-family="ui-monospace" font-size="10">(name):</text>
+
+    <text x="175" y="232" fill="#666" font-family="ui-monospace" font-size="9">2</text>
+    <text x="195" y="232" fill="#abb2bf" font-family="ui-monospace" font-size="10">print(</text>
+    <text x="237" y="232" fill="#98c379" font-family="ui-monospace" font-size="10">f"Hello, </text>
+    <text x="295" y="232" fill="#e5c07b" font-family="ui-monospace" font-size="10">{name}</text>
+    <text x="335" y="232" fill="#98c379" font-family="ui-monospace" font-size="10">"</text>
+    <text x="345" y="232" fill="#abb2bf" font-family="ui-monospace" font-size="10">)</text>
+
+    <text x="175" y="249" fill="#666" font-family="ui-monospace" font-size="9">3</text>
+    <text x="195" y="249" fill="#abb2bf" font-family="ui-monospace" font-size="10">return </text>
+    <text x="240" y="249" fill="#c678dd" font-family="ui-monospace" font-size="10">True</text>
+
+    <text x="175" y="270" fill="#666" font-family="ui-monospace" font-size="9">5</text>
+    <text x="195" y="270" fill="#abb2bf" font-family="ui-monospace" font-size="10">greet(</text>
+    <text x="240" y="270" fill="#98c379" font-family="ui-monospace" font-size="10">"智选"</text>
+    <text x="290" y="270" fill="#abb2bf" font-family="ui-monospace" font-size="10">)</text>
+
+    <text x="175" y="295" fill="#666" font-family="ui-monospace" font-size="9">6</text>
+    <text x="190" y="295" fill="#5c6370" font-family="ui-monospace" font-size="10"># output: Hello, 智选</text>
+
+    <!-- 光标闪烁位置 -->
+    <rect x="305" y="283" width="2" height="12" fill="#fff" opacity="0.8"/>
+
+    <!-- 笔记本底座（梯形） -->
+    <path d="M100 380 L500 380 L530 420 L70 420 Z" fill="url(#laptopBase8)" stroke="#5a6068" stroke-width="1"/>
+    <!-- 触控板凹槽 -->
+    <rect x="260" y="395" width="80" height="3" rx="1" fill="#5a6068"/>
+    <!-- 键盘区域示意 -->
+    <g fill="#3a4048">
+      <rect x="130" y="395" width="6" height="6"/>
+      <rect x="140" y="395" width="6" height="6"/>
+      <rect x="150" y="395" width="6" height="6"/>
+      <rect x="160" y="395" width="6" height="6"/>
+      <rect x="170" y="395" width="6" height="6"/>
+      <rect x="180" y="395" width="6" height="6"/>
+      <rect x="190" y="395" width="6" height="6"/>
+      <rect x="200" y="395" width="6" height="6"/>
+      <rect x="210" y="395" width="6" height="6"/>
+      <rect x="220" y="395" width="6" height="6"/>
+      <rect x="230" y="395" width="6" height="6"/>
+      <rect x="240" y="395" width="6" height="6"/>
+    </g>
+  </g>
+
+  <text x="300" y="540" text-anchor="middle" fill="#1a2a3a" font-family="system-ui" font-size="18" font-weight="600">智选科技 LB1 笔记本</text>
+  <text x="300" y="565" text-anchor="middle" fill="#666" font-family="system-ui" font-size="13">SKU008 · 16+512 · 高性能</text>
+</svg>

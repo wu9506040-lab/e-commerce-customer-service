@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * 个人中心（M9 新增）
- * 用户卡片 + 统计 + 我的订单列表
+ * 个人中心（京东个人中心风）
+ * 左侧菜单 + 右侧内容区
+ * 无紫色 banner，无头像渐变，纯京东风
  */
 import { ref, onMounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
@@ -23,11 +24,7 @@ const avatarLetter = computed(() => {
 
 const memberSince = computed(() => {
   if (!user.value?.create_time) return '';
-  return new Date(user.value.create_time).toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
+  return new Date(user.value.create_time).toLocaleDateString('zh-CN');
 });
 
 async function load() {
@@ -54,6 +51,38 @@ async function onLogout() {
   await logout();
   router.push('/demo');
 }
+
+// 订单状态分组
+const ordersByStatus = computed(() => {
+  const groups = {
+    pending: [] as OrderSummary[],
+    paid: [] as OrderSummary[],
+    shipped: [] as OrderSummary[],
+    delivered: [] as OrderSummary[],
+    completed: [] as OrderSummary[],
+    refunded: [] as OrderSummary[],
+  };
+  for (const o of orders.value) {
+    const key = o.status as keyof typeof groups;
+    if (key in groups) groups[key].push(o);
+    else groups.completed.push(o);
+  }
+  return groups;
+});
+
+const STATUS_TABS = [
+  { key: 'all', label: '全部', count: () => orders.value.length },
+  { key: 'pending', label: '待付款', count: () => ordersByStatus.value.pending.length },
+  { key: 'paid', label: '待发货', count: () => ordersByStatus.value.paid.length },
+  { key: 'shipped', label: '运输中', count: () => ordersByStatus.value.shipped.length },
+  { key: 'delivered', label: '已签收', count: () => ordersByStatus.value.delivered.length },
+];
+const activeStatus = ref('all');
+
+const filteredOrders = computed(() => {
+  if (activeStatus.value === 'all') return orders.value;
+  return ordersByStatus.value[activeStatus.value as keyof typeof ordersByStatus.value] || [];
+});
 </script>
 
 <template>
@@ -63,69 +92,109 @@ async function onLogout() {
       <p>加载中…</p>
     </div>
 
-    <div v-else-if="error" class="error-state">⚠️ {{ error }}</div>
+    <div v-else-if="error" class="error-state">{{ error }}</div>
 
     <template v-else-if="user">
-      <!-- 用户卡片 -->
-      <section class="user-card">
-        <div class="user-banner"></div>
-        <div class="user-info">
-          <div class="avatar-xl">{{ avatarLetter }}</div>
-          <div class="user-meta">
-            <h1>
-              {{ user.display_name || user.username }}
-              <span v-if="user.role === 'admin'" class="admin-badge">管理员</span>
-            </h1>
-            <p class="username">@{{ user.username }}</p>
-            <p v-if="user.email" class="email">📧 {{ user.email }}</p>
-            <p class="joined">🗓 加入于 {{ memberSince }}</p>
+      <div class="profile-body">
+        <!-- 左侧菜单 -->
+        <aside class="sidebar">
+          <div class="user-card">
+            <div class="avatar">{{ avatarLetter }}</div>
+            <div class="user-info">
+              <div class="username">
+                {{ user.display_name || user.username }}
+                <span v-if="user.role === 'admin'" class="admin-tag">管理员</span>
+              </div>
+              <div class="member">注册于 {{ memberSince }}</div>
+            </div>
           </div>
-        </div>
-      </section>
 
-      <!-- 统计卡片 -->
-      <section class="stats-row">
-        <div class="stat-card">
-          <div class="stat-num">{{ user.message_count ?? 0 }}</div>
-          <div class="stat-label">累计消息</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-num">{{ user.conversation_count ?? 0 }}</div>
-          <div class="stat-label">历史会话</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-num">{{ orders.length }}</div>
-          <div class="stat-label">订单总数</div>
-        </div>
-      </section>
+          <nav class="menu">
+            <div class="menu-section">
+              <div class="menu-title">订单中心</div>
+              <a class="menu-item active">
+                <span>我的订单</span>
+                <span class="count">{{ orders.length }}</span>
+              </a>
+              <a class="menu-item">
+                <span>退款/售后</span>
+              </a>
+            </div>
 
-      <!-- 我的订单 -->
-      <section class="orders-section">
-        <div class="section-head">
-          <h2>📦 我的订单</h2>
-          <button class="ghost-btn" @click="load">↻ 刷新</button>
-        </div>
+            <div class="menu-section">
+              <div class="menu-title">账户管理</div>
+              <a class="menu-item">
+                <span>个人资料</span>
+              </a>
+              <a class="menu-item">
+                <span>收货地址</span>
+              </a>
+              <a class="menu-item disabled">
+                <span>修改密码</span>
+                <span class="badge">即将开放</span>
+              </a>
+            </div>
 
-        <div v-if="orders.length === 0" class="empty-state">
-          <p>暂无订单</p>
-          <button class="link-btn" @click="router.push('/shop')">去逛逛商品 →</button>
-        </div>
-        <div v-else class="orders-list">
-          <OrderCard
-            v-for="o in orders"
-            :key="o.order_no"
-            :order="o"
-            density="list"
-          />
-        </div>
-      </section>
+            <div class="menu-section">
+              <button class="logout-btn" @click="onLogout">退出登录</button>
+            </div>
+          </nav>
+        </aside>
 
-      <!-- 账户操作 -->
-      <section class="actions-section">
-        <h2>⚙️ 账户</h2>
-        <button class="action-btn" disabled>🔑 修改密码（即将开放）</button>
-        <button class="action-btn danger" @click="onLogout">🚪 退出登录</button>
-      </section>
+        <!-- 右侧内容 -->
+        <section class="content">
+          <!-- 统计卡片 -->
+          <div class="stats">
+            <div class="stat-box">
+              <div class="stat-num">{{ user.message_count ?? 0 }}</div>
+              <div class="stat-label">累计消息</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num">{{ user.conversation_count ?? 0 }}</div>
+              <div class="stat-label">历史会话</div>
+            </div>
+            <div class="stat-box highlight">
+              <div class="stat-num">{{ orders.length }}</div>
+              <div class="stat-label">订单总数</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num">¥0</div>
+              <div class="stat-label">账户余额</div>
+            </div>
+          </div>
+
+          <!-- 订单列表 -->
+          <div class="orders-panel">
+            <div class="orders-head">
+              <h2>我的订单</h2>
+              <div class="tabs">
+                <a
+                  v-for="t in STATUS_TABS"
+                  :key="t.key"
+                  :class="{ active: activeStatus === t.key }"
+                  @click="activeStatus = t.key"
+                >
+                  {{ t.label }}
+                  <span v-if="t.count() > 0" class="tab-count">{{ t.count() }}</span>
+                </a>
+              </div>
+            </div>
+
+            <div v-if="filteredOrders.length === 0" class="empty-state">
+              <p>暂无相关订单</p>
+              <button class="link-btn" @click="router.push('/shop')">去逛逛商品 →</button>
+            </div>
+            <div v-else class="orders-list">
+              <OrderCard
+                v-for="o in filteredOrders"
+                :key="o.order_no"
+                :order="o"
+                density="list"
+              />
+            </div>
+          </div>
+        </section>
+      </div>
     </template>
   </main>
 </template>
@@ -134,213 +203,288 @@ async function onLogout() {
 .profile {
   flex: 1;
   overflow-y: auto;
-  max-width: 880px;
-  width: 100%;
+  background: var(--gray-50);
+}
+.profile-body {
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding: 24px;
+  padding: var(--sp-4) var(--sp-6);
+  display: flex;
+  gap: var(--sp-4);
 }
 
-/* ============= User Card ============= */
+/* Sidebar */
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+}
 .user-card {
-  background: white;
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
-  margin-bottom: 20px;
-}
-.user-banner {
-  height: 100px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-.user-info {
-  padding: 0 24px 20px;
+  background: var(--gray-0);
+  border: var(--border);
+  padding: var(--sp-4);
   display: flex;
-  gap: 16px;
-  align-items: flex-end;
-  margin-top: -40px;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
 }
-.avatar-xl {
-  width: 80px;
-  height: 80px;
+.avatar {
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
-  background: white;
-  color: #4f46e5;
+  background: var(--jd-red);
+  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 32px;
-  font-weight: 700;
-  border: 4px solid white;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  font-size: 24px;
+  font-weight: 600;
   flex-shrink: 0;
 }
-.user-meta {
+.user-info {
   flex: 1;
-  padding-bottom: 4px;
+  min-width: 0;
 }
-.user-meta h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
-  font-weight: 700;
-  color: #1f2937;
+.username {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--gray-800);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
-.admin-badge {
-  padding: 2px 8px;
-  background: linear-gradient(135deg, #fbbf24 0%, #f97316 100%);
-  color: white;
-  font-size: 11px;
+.admin-tag {
+  padding: 1px 6px;
+  background: var(--jd-red);
+  color: #fff;
+  font-size: var(--fs-xs);
   font-weight: 500;
-  border-radius: 10px;
 }
-.username, .email, .joined {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: #6b7280;
-}
-
-/* ============= Stats ============= */
-.stats-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-bottom: 20px;
-}
-.stat-card {
-  background: white;
-  padding: 20px;
-  border-radius: 10px;
-  text-align: center;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-}
-.stat-num {
-  font-size: 28px;
-  font-weight: 700;
-  color: #4f46e5;
-}
-.stat-label {
+.member {
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
   margin-top: 4px;
-  font-size: 13px;
-  color: #6b7280;
 }
 
-/* ============= Section Head ============= */
-.section-head {
+.menu {
+  background: var(--gray-0);
+  border: var(--border);
+}
+.menu-section {
+  border-bottom: var(--border);
+}
+.menu-section:last-child {
+  border-bottom: none;
+}
+.menu-title {
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--gray-50);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--gray-700);
+  border-bottom: var(--border);
+}
+.menu-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-base);
+  color: var(--gray-700);
+  cursor: pointer;
+  border-bottom: 1px dashed var(--gray-200);
 }
-.section-head h2 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #1f2937;
+.menu-item:last-child {
+  border-bottom: none;
 }
-.ghost-btn {
-  padding: 4px 12px;
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #4b5563;
+.menu-item:hover {
+  background: var(--jd-red-light);
+  color: var(--jd-red);
+}
+.menu-item.active {
+  background: var(--jd-red-light);
+  color: var(--jd-red);
+  font-weight: 500;
+  border-left: 3px solid var(--jd-red);
+  padding-left: calc(var(--sp-4) - 3px);
+}
+.menu-item.disabled {
+  color: var(--gray-400);
+  cursor: not-allowed;
+}
+.menu-item.disabled:hover {
+  background: transparent;
+  color: var(--gray-400);
+}
+.count {
+  font-size: var(--fs-xs);
+  background: var(--jd-red);
+  color: #fff;
+  padding: 1px 6px;
+  min-width: 20px;
+  text-align: center;
+}
+.badge {
+  font-size: var(--fs-xs);
+  color: var(--gray-400);
+}
+.logout-btn {
+  width: 100%;
+  padding: var(--sp-3);
+  background: var(--gray-0);
+  border: none;
+  font-size: var(--fs-base);
+  color: var(--jd-red);
   cursor: pointer;
 }
-.ghost-btn:hover {
-  background: #f9fafb;
+.logout-btn:hover {
+  background: var(--jd-red-light);
 }
 
-/* ============= Orders ============= */
-.orders-section {
-  margin-bottom: 20px;
+/* Content */
+.content {
+  flex: 1;
+  min-width: 0;
 }
+
+/* Stats */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.stat-box {
+  background: var(--gray-0);
+  border: var(--border);
+  padding: var(--sp-4);
+  text-align: center;
+}
+.stat-box.highlight {
+  border-color: var(--jd-red);
+}
+.stat-num {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  color: var(--gray-800);
+  line-height: 1.2;
+}
+.stat-box.highlight .stat-num {
+  color: var(--jd-red);
+}
+.stat-label {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
+}
+
+/* Orders */
+.orders-panel {
+  background: var(--gray-0);
+  border: var(--border);
+}
+.orders-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: var(--border);
+}
+.orders-head h2 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--gray-800);
+}
+.tabs {
+  display: flex;
+  gap: var(--sp-4);
+}
+.tabs a {
+  font-size: var(--fs-sm);
+  color: var(--gray-600);
+  cursor: pointer;
+  padding: var(--sp-1) 0;
+  border-bottom: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tabs a:hover {
+  color: var(--jd-red);
+}
+.tabs a.active {
+  color: var(--jd-red);
+  border-bottom-color: var(--jd-red);
+}
+.tab-count {
+  font-size: var(--fs-xs);
+  background: var(--gray-200);
+  color: var(--gray-600);
+  padding: 0 6px;
+  min-width: 18px;
+  text-align: center;
+}
+.tabs a.active .tab-count {
+  background: var(--jd-red);
+  color: #fff;
+}
+
 .orders-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 .empty-state {
-  background: white;
-  padding: 40px;
-  border-radius: 10px;
+  padding: 60px 20px;
   text-align: center;
-  color: #9ca3af;
+  color: var(--gray-500);
+}
+.empty-state p {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-base);
 }
 .link-btn {
-  margin-top: 8px;
-  padding: 6px 16px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--jd-red);
+  color: #fff;
   border: none;
-  border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
-/* ============= Actions ============= */
-.actions-section {
-  background: white;
-  border-radius: 10px;
-  padding: 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-}
-.actions-section h2 {
-  margin: 0 0 12px;
-  font-size: 18px;
-  font-weight: 600;
-  color: #1f2937;
-}
-.action-btn {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 12px 16px;
-  margin-bottom: 8px;
-  background: #f9fafb;
-  border: 1px solid #f3f4f6;
-  border-radius: 8px;
-  font-size: 14px;
-  color: #4b5563;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.action-btn:not(:disabled):hover {
-  background: #f3f4f6;
-  border-color: #e5e7eb;
-}
-.action-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.action-btn.danger {
-  color: #b91c1c;
-}
-.action-btn.danger:hover {
-  background: #fef2f2;
-  border-color: #fecaca;
-}
-
-/* ============= Loading / Error ============= */
+/* States */
 .loading-state, .error-state {
   text-align: center;
   padding: 80px 20px;
-  color: #9ca3af;
+  color: var(--gray-500);
 }
 .error-state {
-  color: #b91c1c;
+  color: var(--jd-red);
 }
 .spinner {
   width: 28px;
   height: 28px;
-  border: 3px solid #e5e7eb;
-  border-top-color: #667eea;
+  border: 2px solid var(--gray-200);
+  border-top-color: var(--jd-red);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  margin: 0 auto 12px;
+  margin: 0 auto var(--sp-3);
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+@media (max-width: 768px) {
+  .profile-body {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+  }
+  .stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 </style>

@@ -31,13 +31,13 @@ function onKeydown(e: KeyboardEvent) {
   <div class="input-bar">
     <textarea
       v-model="text"
-      placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
+      placeholder="输入消息…  (Enter 发送 · Shift+Enter 换行)"
       :disabled="disabled"
       rows="3"
       @keydown="onKeydown"
     />
     <button :disabled="disabled || !text.trim()" @click="send">
-      {{ disabled ? '生成中…' : '发送' }}
+      {{ disabled ? '生成中…' : '发 送' }}
     </button>
   </div>
 </template>
@@ -45,43 +45,53 @@ function onKeydown(e: KeyboardEvent) {
 <style scoped>
 .input-bar {
   display: flex;
-  gap: 8px;
-  padding: 12px 20px;
-  border-top: 1px solid #e0e0e0;
-  background: #fafafa;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: var(--border);
+  background: var(--gray-50);
 }
 textarea {
   flex: 1;
-  padding: 10px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
+  padding: var(--sp-3);
+  border: 1px solid var(--gray-300);
+  font-family: var(--font-base);
+  font-size: var(--fs-base);
+  color: var(--gray-800);
+  background: var(--gray-0);
   resize: vertical;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+textarea::placeholder {
+  color: var(--gray-400);
 }
 textarea:focus {
-  border-color: #667eea;
+  border-color: var(--jd-red);
 }
 textarea:disabled {
-  background: #f5f5f5;
+  background: var(--gray-100);
   cursor: not-allowed;
 }
 button {
-  padding: 0 24px;
-  background: #667eea;
-  color: white;
+  padding: 0 var(--sp-5);
+  background: var(--jd-red);
+  color: #fff;
   border: none;
-  border-radius: 6px;
-  font-size: 14px;
+  font-family: var(--font-base);
+  font-size: var(--fs-base);
   font-weight: 500;
-  transition: background 0.2s;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: background 0.15s;
   align-self: stretch;
+  min-width: 88px;
 }
 button:hover:not(:disabled) {
-  background: #5568d3;
+  background: var(--jd-red-hover);
 }
 button:disabled {
-  background: #ccc;
+  background: var(--gray-400);
   cursor: not-allowed;
 }
 </style>

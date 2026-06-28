@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef9e7"/>
+      <stop offset="100%" stop-color="#fae5b8"/>
+    </linearGradient>
+    <linearGradient id="phone3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f5f5f5"/>
+      <stop offset="100%" stop-color="#e0e0e0"/>
+    </linearGradient>
+    <linearGradient id="screen3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff8e1"/>
+      <stop offset="100%" stop-color="#ffeaa7"/>
+    </linearGradient>
+    <filter id="shadow3"><feGaussianBlur in="SourceAlpha" stdDeviation="6"/><feOffset dy="5"/><feComponentTransfer><feFuncA type="linear" slope="0.25"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <rect width="600" height="600" fill="url(#bg3)"/>
+  <ellipse cx="300" cy="500" rx="115" ry="12" fill="#000" opacity="0.1"/>
+
+  <g filter="url(#shadow3)">
+    <rect x="200" y="115" width="200" height="365" rx="20" ry="20" fill="url(#phone3)" stroke="#bbb" stroke-width="1"/>
+    <rect x="210" y="130" width="180" height="335" rx="14" ry="14" fill="url(#screen3)"/>
+    <!-- 水滴屏 -->
+    <path d="M285 130 Q300 145 315 130" fill="#1a1a1a"/>
+    <!-- 价格标签式屏幕内容 -->
+    <text x="300" y="180" text-anchor="middle" fill="#e1251b" font-family="system-ui" font-size="32" font-weight="700">¥999</text>
+    <text x="300" y="205" text-anchor="middle" fill="#666" font-family="system-ui" font-size="11">起 · 千元性价比</text>
+    <!-- 简单图标 -->
+    <circle cx="240" cy="270" r="18" fill="#e1251b" opacity="0.15"/>
+    <text x="240" y="276" text-anchor="middle" fill="#e1251b" font-family="system-ui" font-size="14" font-weight="600">★</text>
+    <circle cx="300" cy="270" r="18" fill="#e1251b" opacity="0.15"/>
+    <text x="300" y="276" text-anchor="middle" fill="#e1251b" font-family="system-ui" font-size="14">⚡</text>
+    <circle cx="360" cy="270" r="18" fill="#e1251b" opacity="0.15"/>
+    <text x="360" y="276" text-anchor="middle" fill="#e1251b" font-family="system-ui" font-size="14">♪</text>
+    <!-- 底部电池信息 -->
+    <rect x="230" y="430" width="140" height="20" rx="3" fill="#fff" stroke="#ccc"/>
+    <rect x="232" y="432" width="100" height="16" fill="#19be6b"/>
+    <text x="300" y="445" text-anchor="middle" fill="#fff" font-family="system-ui" font-size="10" font-weight="600">5000mAh</text>
+  </g>
+
+  <text x="300" y="540" text-anchor="middle" fill="#1a1a1a" font-family="system-ui" font-size="18" font-weight="600">智选科技 ZN1 千元机</text>
+  <text x="300" y="565" text-anchor="middle" fill="#666" font-family="system-ui" font-size="13">SKU003 · 6+128 · 性价比首选</text>
+</svg>

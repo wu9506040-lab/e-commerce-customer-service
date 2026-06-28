@@ -66,7 +66,8 @@ onMounted(scrollToBottom);
 
     <!-- 空态 -->
     <div v-if="messages.length === 0 && !streaming && !loading" class="empty">
-      <p class="empty-title">开始对话吧 👋</p>
+      <div class="empty-mark">智</div>
+      <p class="empty-title">开始对话吧</p>
       <p class="empty-sub">可以从下面这些话题开始：</p>
       <div class="chips">
         <button
@@ -84,6 +85,9 @@ onMounted(scrollToBottom);
       :key="`${msg.create_time}-${idx}`"
       :class="['message', msg.role]"
     >
+      <div class="avatar-mini" v-if="msg.role === 'assistant'">
+        <span>智</span>
+      </div>
       <div class="bubble">
         <div class="content">
           <MarkdownView :text="msg.content" />
@@ -95,18 +99,18 @@ onMounted(scrollToBottom);
             <li v-for="(ctx, i) in msg.contexts" :key="i">{{ ctx }}</li>
           </ol>
         </details>
-        <!-- M9: assistant 消息下方挂卡片 -->
+        <!-- 消息内嵌卡（按 intent 路由） -->
         <MessageCard v-if="msg.role === 'assistant'" :message="msg" />
       </div>
     </div>
 
     <!-- 流式中 -->
     <div v-if="streaming" class="message assistant">
+      <div class="avatar-mini"><span>智</span></div>
       <div class="bubble streaming">
         <div class="content">
           <MarkdownView :text="streamingText" /><span class="cursor"></span>
         </div>
-        <!-- 流式过程中也挂卡片（meta 已有数据时） -->
         <MessageCard
           v-if="streamingMeta && streamingMeta.type === 'meta' && streamingMeta.intent"
           :message="{
@@ -127,61 +131,74 @@ onMounted(scrollToBottom);
 .message-list {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
-  background: white;
+  padding: var(--sp-5);
+  background: var(--gray-50);
 }
+
+/* 空态 */
 .empty {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #999;
-  gap: 8px;
-  padding: 0 20px;
+  color: var(--gray-500);
+  gap: var(--sp-2);
+  padding: 0 var(--sp-5);
+}
+.empty-mark {
+  width: 64px;
+  height: 64px;
+  background: var(--jd-red);
+  color: #fff;
+  font-size: 32px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--sp-2);
 }
 .empty-title {
-  font-size: 20px;
-  color: #bbb;
+  font-size: var(--fs-xl);
+  color: var(--gray-700);
   margin: 0;
+  font-weight: 600;
 }
 .empty-sub {
-  font-size: 13px;
-  color: #ccc;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
   margin: 0;
 }
 .chips {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
   flex-wrap: wrap;
   justify-content: center;
 }
 .chip {
   padding: 6px 14px;
-  background: white;
-  border: 1px solid #d1d5db;
-  border-radius: 16px;
-  font-size: 13px;
-  color: #4b5563;
+  background: var(--gray-0);
+  border: var(--border);
+  font-size: var(--fs-sm);
+  color: var(--gray-700);
   cursor: pointer;
   transition: all 0.15s;
 }
 .chip:hover {
-  background: #667eea;
-  color: white;
-  border-color: #667eea;
+  background: var(--jd-red-light);
+  color: var(--jd-red);
+  border-color: var(--jd-red);
 }
 
 /* Skeleton */
 .skeletons {
-  padding: 20px 0;
+  padding: var(--sp-5) 0;
 }
 .skeleton {
-  padding: 10px 14px;
-  background: #f9fafb;
-  border-radius: 8px;
-  margin: 0 0 12px 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--gray-100);
+  margin: 0 0 var(--sp-3) 0;
   display: inline-block;
   max-width: 70%;
 }
@@ -191,8 +208,7 @@ onMounted(scrollToBottom);
 .sk-line {
   height: 12px;
   margin: 6px 0;
-  border-radius: 3px;
-  background: linear-gradient(90deg, #e5e7eb 0%, #f3f4f6 50%, #e5e7eb 100%);
+  background: linear-gradient(90deg, var(--gray-200) 0%, var(--gray-100) 50%, var(--gray-200) 100%);
   background-size: 200% 100%;
   animation: shimmer 1.5s linear infinite;
 }
@@ -202,11 +218,12 @@ onMounted(scrollToBottom);
   100% { background-position: -200% 0; }
 }
 
-/* 消息 */
+/* 消息气泡 */
 .message {
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-4);
   display: flex;
   animation: fadeIn 0.2s ease;
+  gap: var(--sp-2);
 }
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(4px); }
@@ -214,48 +231,71 @@ onMounted(scrollToBottom);
 }
 .message.user { justify-content: flex-end; }
 .message.assistant { justify-content: flex-start; }
+
+/* AI 头像 */
+.avatar-mini {
+  width: 32px;
+  height: 32px;
+  background: var(--jd-red);
+  color: #fff;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+
 .bubble {
   max-width: 75%;
-  padding: 10px 14px;
-  border-radius: 8px;
-  font-size: 14px;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-base);
   line-height: 1.6;
   word-break: break-word;
 }
 .message.user .bubble {
-  background: #667eea;
-  color: white;
+  background: var(--jd-red);
+  color: #fff;
 }
 .message.assistant .bubble {
-  background: #f3f4f6;
-  color: #333;
+  background: var(--gray-0);
+  color: var(--gray-800);
+  border: var(--border);
 }
 .bubble.streaming {
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  background: var(--gray-0);
+  border: var(--border);
 }
+
 .cursor {
   display: inline-block;
   width: 2px;
   height: 1em;
-  background: linear-gradient(180deg, #667eea 0%, #5568d3 100%);
+  background: var(--jd-red);
   margin-left: 2px;
   vertical-align: text-bottom;
   animation: cursor-pulse 1.1s ease-in-out infinite;
-  border-radius: 1px;
 }
 @keyframes cursor-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.25; }
 }
+
+/* 来源 */
 .sources {
-  margin-top: 8px;
-  font-size: 12px;
-  color: #888;
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: var(--border);
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
 }
 .sources summary {
   cursor: pointer;
   user-select: none;
+}
+.sources summary:hover {
+  color: var(--jd-red);
 }
 .sources ol {
   margin-top: 6px;

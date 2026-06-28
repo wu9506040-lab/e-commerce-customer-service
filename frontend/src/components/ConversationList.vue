@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * 会话列表（M9 增强）
- * - 时间分组：今天 / 昨天 / 本周 / 更早（折叠分组）
- * - hover 显示删除按钮（×）
+ * 会话列表（京东极简风）
+ * - 时间分组：今天 / 昨天 / 本周 / 更早
+ * - hover 显示删除按钮
  * - 顶部「清空全部」按钮（二次确认）
- * - 自动标题 vs 首条消息：title 优先，回退 last_message 前 30 字
+ * - 自动标题 vs 首条消息：title 优先，回退 last_message 截断
  */
 import { computed } from 'vue';
 import type { Conversation } from '../types';
@@ -49,7 +49,7 @@ function getGroupKey(iso: string | null | undefined): GroupKey {
   const yesterdayStart = new Date(todayStart);
   yesterdayStart.setDate(yesterdayStart.getDate() - 1);
   const weekStart = new Date(todayStart);
-  weekStart.setDate(weekStart.getDate() - 6); // 今天 + 前 6 天 = 本周 7 天
+  weekStart.setDate(weekStart.getDate() - 6);
 
   if (d >= todayStart) return 'today';
   if (d >= yesterdayStart) return 'yesterday';
@@ -124,22 +124,23 @@ function onClearAll() {
 <template>
   <aside class="conv-list">
     <header>
-      <h3>会话 ({{ conversations.length }})</h3>
-      <div class="actions">
-        <button class="icon-btn" :disabled="loading" :title="loading ? '加载中' : '刷新'" @click="emit('refresh')">
-          {{ loading ? '⟳' : '↻' }}
-        </button>
-        <button class="icon-btn primary" title="新建会话" @click="emit('newChat')">+ 新会话</button>
-      </div>
+      <h3>历史会话 ({{ conversations.length }})</h3>
+      <button class="new-btn" title="新建会话" @click="emit('newChat')">+ 新会话</button>
     </header>
 
     <div v-if="conversations.length" class="toolbar">
-      <button class="clear-btn" @click="onClearAll">🗑 清空全部</button>
+      <button class="refresh-btn" :disabled="loading" @click="emit('refresh')">
+        {{ loading ? '刷新中…' : '刷新列表' }}
+      </button>
+      <button class="clear-btn" @click="onClearAll">清空全部</button>
     </div>
 
     <div v-if="conversations.length" class="groups">
       <div v-for="g in grouped" :key="g.key" class="group">
-        <div class="group-label">{{ g.label }} <span class="count">{{ g.items.length }}</span></div>
+        <div class="group-label">
+          {{ g.label }}
+          <span class="count">{{ g.items.length }}</span>
+        </div>
         <ul>
           <li
             v-for="conv in g.items"
@@ -170,66 +171,73 @@ function onClearAll() {
 
 <style scoped>
 .conv-list {
-  width: 280px;
-  background: #fafafa;
-  border-right: 1px solid #e0e0e0;
+  width: var(--convlist-w);
+  background: var(--gray-0);
+  border-right: var(--border);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
 }
+
 header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid #e0e0e0;
-  background: white;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: var(--border);
+  background: var(--gray-50);
 }
 header h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
+  color: var(--gray-800);
 }
-.actions {
-  display: flex;
-  gap: 6px;
-}
-.icon-btn {
+.new-btn {
   padding: 4px 10px;
-  background: white;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 12px;
+  background: var(--jd-red);
+  color: #fff;
+  border: none;
+  font-size: var(--fs-xs);
+  font-family: var(--font-base);
   cursor: pointer;
+  letter-spacing: 1px;
+  transition: background 0.15s;
 }
-.icon-btn.primary {
-  background: #667eea;
-  color: white;
-  border-color: #667eea;
-}
-.icon-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.new-btn:hover {
+  background: var(--jd-red-hover);
 }
 
 .toolbar {
-  padding: 8px 16px;
-  background: white;
-  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--gray-0);
+  border-bottom: var(--border);
 }
+.refresh-btn,
 .clear-btn {
-  width: 100%;
-  padding: 5px 10px;
-  background: white;
-  border: 1px solid #fecaca;
-  border-radius: 4px;
-  font-size: 12px;
-  color: #b91c1c;
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--gray-0);
+  border: 1px solid var(--gray-300);
+  font-family: var(--font-base);
+  font-size: var(--fs-xs);
+  color: var(--gray-700);
   cursor: pointer;
   transition: all 0.15s;
 }
+.refresh-btn:hover:not(:disabled),
 .clear-btn:hover {
-  background: #fef2f2;
+  border-color: var(--jd-red);
+  color: var(--jd-red);
+}
+.refresh-btn:disabled {
+  color: var(--gray-400);
+  cursor: not-allowed;
+}
+.clear-btn:hover {
+  color: var(--jd-red-dark);
 }
 
 .groups {
@@ -237,20 +245,19 @@ header h3 {
   overflow-y: auto;
 }
 .group-label {
-  padding: 10px 16px 4px;
-  font-size: 11px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-1);
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #9ca3af;
-  text-transform: uppercase;
+  color: var(--gray-500);
   letter-spacing: 0.5px;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 .group-label .count {
-  font-size: 10px;
-  color: #d1d5db;
-  font-weight: 500;
+  font-size: var(--fs-xs);
+  color: var(--gray-400);
+  font-weight: 400;
 }
 ul {
   list-style: none;
@@ -259,33 +266,38 @@ ul {
 }
 li {
   position: relative;
-  padding: 10px 16px;
-  border-bottom: 1px solid #f0f0f0;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: var(--border);
   cursor: pointer;
   transition: background 0.15s;
+  background: var(--gray-0);
 }
 li:hover {
-  background: #f0f0f0;
+  background: var(--gray-50);
 }
 li.active {
-  background: #e8edff;
-  border-left: 3px solid #667eea;
-  padding-left: 13px;
+  background: var(--jd-red-light);
+  border-left: 3px solid var(--jd-red);
+  padding-left: calc(var(--sp-4) - 3px);
 }
 .preview {
-  font-size: 13px;
-  color: #333;
+  font-size: var(--fs-sm);
+  color: var(--gray-800);
   margin-bottom: 4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: 22px; /* 给删除按钮留位 */
+  padding-right: 22px;
+  font-weight: 500;
+}
+li.active .preview {
+  color: var(--jd-red);
 }
 .meta {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
-  color: #999;
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
 }
 .time {
   font-variant-numeric: tabular-nums;
@@ -294,12 +306,11 @@ li.active {
   position: absolute;
   top: 8px;
   right: 8px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: white;
-  border: 1px solid #e5e7eb;
-  color: #9ca3af;
+  width: 18px;
+  height: 18px;
+  background: var(--gray-0);
+  border: 1px solid var(--gray-300);
+  color: var(--gray-500);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
@@ -314,9 +325,9 @@ li:hover .del-btn {
   opacity: 1;
 }
 .del-btn:hover {
-  background: #fef2f2;
-  border-color: #fecaca;
-  color: #b91c1c;
+  background: var(--jd-red);
+  border-color: var(--jd-red);
+  color: #fff;
 }
 
 .empty {
@@ -324,9 +335,9 @@ li:hover .del-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
-  color: #999;
-  font-size: 13px;
+  padding: var(--sp-5);
+  color: var(--gray-500);
+  font-size: var(--fs-sm);
   text-align: center;
 }
 </style>
