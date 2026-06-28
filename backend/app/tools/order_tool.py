@@ -138,6 +138,7 @@ class OrderTool:
 
     @staticmethod
     def _order_to_dict(o: Order) -> dict:
+        """订单 → dict（已含 order_no 字段，给 LangGraph synthesize 节点注入 prompt）"""
         return {
             "order_no": o.order_no,
             "status": o.status,
