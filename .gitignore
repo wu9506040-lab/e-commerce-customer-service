@@ -134,6 +134,8 @@ chat_response.json
 /register.json
 /test_chat_m8.json
 /test_chat_robustness.json
+/probe_refund.json
+/probe_normal.json
 
 # =============================================================
 # 电商知识库数据（本地保留，不上传公开仓库）
