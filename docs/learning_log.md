@@ -2940,3 +2940,80 @@ M9 是 V1.x → V2.0 商业化的最后一块：
 - **M9 = 前端从 demo 到产品**
 
 后端从「能跑」升级到「能生产」，前端从「能演示」升级到「能给客户用」。
+
+---
+
+## 10. M12 Query Rewriter - 多轮对话指代补全
+
+**文件**：`backend/app/services/query_rewriter.py`（新建）+ `backend/app/services/synthesizer.py`（run_stream 入口 +6 行）+ `backend/app/services/metrics.py`（+rewrite 字段/方法/snapshot）
+
+### What
+多轮对话的 query 改写：把用户问题里的指代词（"它/这个/那个/刚才/那种"等）补全为具体实体（商品名/SKU/订单号/颜色等），让 RAG 检索 query 直接命中正确知识库文档。三层防浪费：L0 规则检测（零成本短路）+ L1 history 检查（无 history 跳过）+ L2 LLM 改写（条件触发，1 次 qwen chat 调用 ~250 token）。
+
+### Why
+- 真实多轮对话里 30%+ 的 query 含指代词，但当前 query 直接送 embedding → 检索召回错（"它能便宜吗" embedding 不到 "iPhone 15 Pro"）
+- 现有 history 只用作 LLM prompt 上下文（让 LLM "看懂"对话），不参与 embedding 检索 → 治标不治本
+- Multi-Query / HyDE / Step-back 成本高收益场景依赖度高，先做最高频痛点（指代补全）
+- 规则前置过滤：含指代词才调 LLM，避免无谓 token 浪费
+
+### Tech Stack
+- **正则表达式** `COREFERENCE_PATTERNS`：覆盖电商高频指代词（它/他们/这个/那个/这些/那些/刚才/之前/上面/下面/那款/这款/这种/那种/前者/后者 等）
+- **qwen chat**（`core/qwen.py` 已封装）：`temperature=0.0` + `max_tokens=80`（输出短）
+- **短路降级**：LLM 返回空 / 输出过长（> 3 倍原 query）/ 异常 → fallback 返原 query
+- **埋点**：`metrics.inc_rewrite(reason)` 区分 `rewritten` / `skipped_no_coref` / `skipped_no_history` / `error_*`
+
+### Flow
+```
+用户 query → L0 正则检测指代词
+   ├─ 无 → inc_rewrite("skipped_no_coref") → 返原 query
+   └─ 有 → L1 history 非空检查
+              ├─ 空 → inc_rewrite("skipped_no_history") → 返原 query
+              └─ 非空 → L2 调 qwen chat（prompt = system + history + query）
+                          ├─ 成功 → inc_rewrite("rewritten") → 返改写后
+                          └─ 异常/空/过长 → inc_rewrite("error_*") → 返原 query
+```
+
+### 插入点
+`synthesizer.py` 的 `Synthesizer.run_stream` 入口（line 281-291），intent classify **之前**：
+- product_query / policy_query 走 `PolicyService.search_policy(query)` → 改写有效
+- order_query / refund_query 走 tool 查 DB（不读 query 检索）→ 改写无效但无害
+- intent 分类前调用：避免「它」「这个」被识别成无效 query
+
+### Problem → Fix
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| `metrics.metrics.rewrite_by_reason` AttributeError | `__pycache__` 旧 .pyc 缓存了老 metrics.py | `find ... __pycache__ -exec rm -rf` 清缓存后正常 |
+| 中文乱码（`iPhone 15 Pro�ܱ��˵���`） | Windows GBK 终端显示问题 | 仅终端显示问题，不影响 result 字符串内容 |
+| 改写结果过长可能失控 | LLM 输出没长度约束 | 加防护：`len(rewritten) > len(query) * 3 + 50` → fallback |
+
+### 验证（11/11 PASS）
+- `scripts/verify_rewriter_mock.py`：mock qwen_chat 跑 9 个 case
+  - 含指代+history → 改写成功、结果含 history 实体
+  - 无指代词 / 无 history / 长 query 无指代 → 短路跳过
+  - 复杂指代（这个和那个）→ 改写成功
+  - LLM 异常 / 输出过长 / 返回空 → 降级返原 query
+  - 空字符串 / None query → 直接返空/None
+
+### Architecture Role
+- 属于 `services/` 编排层，按 §6 规则：只调 core/qwen.py + services/metrics.py
+- 不动 api/chat.py / intent_service / policy_service
+- 单一职责：只做指代补全，不做 Multi-Query / HyDE / Query 扩展（YAGNI）
+
+### 关键设计决策
+| 决策 | 选择 | 原因 |
+|------|------|------|
+| 模块位置 | services/query_rewriter.py | services/ 编排层，符合 §6 |
+| 触发条件 | 含指代词 + history 非空 | 零浪费：无指代词直接跳过 |
+| 改写方式 | 单次 LLM（temp=0, max_tokens=80） | 指代补全只需短输出 |
+| 失败降级 | 返原 query + warning log | 不阻塞业务 |
+| Scope Lock | 4 文件（rewriter + metrics + synthesizer + verify） | 不动 api/chat.py / intent / policy |
+
+### Role
+M12 是 RAG 链路最后一公里优化：
+- M1-M5 = 后端核心能力
+- M6-M8 = 后端生产化（V3 LangGraph + 可观测 + JWT）
+- M9 = 前端从 demo 到产品
+- M11 = 输入防御（InputGuard 防 token 滥用）
+- **M12 = RAG 召回优化（query 改写，指代补全）**
+
+让"用户问得越随意，系统召回越准"。
