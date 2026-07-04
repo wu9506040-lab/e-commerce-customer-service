@@ -8,11 +8,14 @@
 // =============================================================
 import type {
   Conversation,
+  CreateOrderPayload,
   MessagesPage,
+  OrderActionResponse,
   OrderDetail,
   OrderListResponse,
   Product,
   ProductListResponse,
+  RefundPayload,
   RegisterPayload,
   StreamEvent,
   User,
@@ -176,6 +179,49 @@ export async function listMyOrders(params?: {
 
 export async function getOrderDetail(orderNo: string): Promise<OrderDetail> {
   return http(`/orders/${encodeURIComponent(orderNo)}`);
+}
+
+// =============================================================
+// 订单状态流转（M10 闭环 demo）
+// 对应后端 /api/orders 状态机：pending → paid → shipped → delivered → refunded
+// =============================================================
+export async function createOrder(
+  payload: CreateOrderPayload,
+): Promise<OrderActionResponse> {
+  return http('/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function payOrder(orderNo: string): Promise<OrderActionResponse> {
+  return http(`/orders/${encodeURIComponent(orderNo)}/pay`, {
+    method: 'POST',
+  });
+}
+
+export async function shipOrder(orderNo: string): Promise<OrderActionResponse> {
+  return http(`/orders/${encodeURIComponent(orderNo)}/ship`, {
+    method: 'POST',
+  });
+}
+
+export async function confirmOrder(orderNo: string): Promise<OrderActionResponse> {
+  return http(`/orders/${encodeURIComponent(orderNo)}/confirm`, {
+    method: 'POST',
+  });
+}
+
+export async function refundOrder(
+  orderNo: string,
+  payload?: RefundPayload,
+): Promise<OrderActionResponse> {
+  return http(`/orders/${encodeURIComponent(orderNo)}/refund`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload ?? {}),
+  });
 }
 
 // =============================================================

@@ -109,6 +109,28 @@ export interface OrderDetail {
   logistics?: Logistics | null;
 }
 
+/**
+ * 订单状态流转响应（M10 闭环：创建/付款/发货/签收/退款）
+ * 与后端 app/schemas/shop.py::OrderActionResponse 一一对应
+ */
+export interface OrderActionResponse {
+  order_no: string;
+  status: string;
+  refund_no?: string | null;
+}
+
+/** 下单请求体（M10：前端 -> POST /orders） */
+export interface CreateOrderPayload {
+  sku: string;
+  qty: number;
+}
+
+/** 退款申请请求体（M10：前端 -> POST /orders/:no/refund） */
+export interface RefundPayload {
+  reason?: string;
+  remark?: string;
+}
+
 /** 注册请求体（前端 -> POST /auth/register） */
 export interface RegisterPayload {
   username: string;

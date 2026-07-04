@@ -52,6 +52,11 @@ async function onLogout() {
   router.push('/demo');
 }
 
+// M10 闭环：订单状态变化 → 重新拉订单列表
+async function onOrderChanged(_orderNo: string) {
+  await load();
+}
+
 // 订单状态分组
 const ordersByStatus = computed(() => {
   const groups = {
@@ -190,6 +195,7 @@ const filteredOrders = computed(() => {
                 :key="o.order_no"
                 :order="o"
                 density="list"
+                @changed="onOrderChanged"
               />
             </div>
           </div>

@@ -3,10 +3,14 @@
  * 商品详情页（京东风）
  * 左侧大图 + 右侧名称/价格/规格/描述/CTA
  * 京东风格：1px 边框 + 表格化规格 + 红价格 + 红 CTA
+ *
+ * M10 闭环：
+ * - "立即购买" → 调 POST /orders → 跳 /profile 看到 pending 订单
+ * - 必须登录（未登录跳 /login?redirect=...）
  */
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getProduct, listProducts } from '../api';
+import { createOrder, getProduct, isAuthed, listProducts } from '../api';
 import type { Product } from '../types';
 import ProductCard from '../components/ProductCard.vue';
 
@@ -73,6 +77,39 @@ function onAsk() {
     },
   });
 }
+
+// M10 闭环：立即购买 → 创建订单 → 跳个人中心看新订单
+const buying = ref(false);
+const buyError = ref<string | null>(null);
+
+async function buyNow() {
+  if (!product.value || buying.value) return;
+  buyError.value = null;
+  // 未登录跳登录页（保留 redirect 到当前商品详情）
+  if (!isLoggedIn.value) {
+    router.push({
+      name: 'login',
+      query: { redirect: `/shop/${product.value.sku}` },
+    });
+    return;
+  }
+  buying.value = true;
+  try {
+    const r = await createOrder({ sku: product.value.sku, qty: 1 });
+    // 跳个人中心，新订单会出现在列表
+    router.push({
+      name: 'profile',
+      query: { highlight: r.order_no },
+    });
+  } catch (e) {
+    buyError.value = e instanceof Error ? e.message : '下单失败';
+  } finally {
+    buying.value = false;
+  }
+}
+
+// 复用 api.ts 里的 isAuthed ref 判断登录态
+const isLoggedIn = computed(() => isAuthed.value === true);
 function openProduct(s: string) {
   router.push({ name: 'product-detail', params: { sku: s } });
 }
@@ -155,9 +192,16 @@ function openProduct(s: string) {
               </svg>
               咨询客服
             </button>
-            <button class="ask-btn-secondary">加入清单</button>
-            <span class="hint">登录后即可对话，AI 客服 24h 在线</span>
+            <button
+              class="buy-btn-primary"
+              :disabled="buying || product.stock === 0"
+              @click="buyNow"
+            >
+              {{ buying ? '下单中…' : (product.stock === 0 ? '无货' : '立即购买') }}
+            </button>
+            <span class="hint">登录后即可下单 · AI 客服 24h 在线</span>
           </div>
+          <div v-if="buyError" class="buy-error">{{ buyError }}</div>
         </div>
       </div>
 
@@ -394,6 +438,31 @@ function openProduct(s: string) {
 }
 .ask-btn-secondary:hover {
   background: var(--jd-red-light);
+}
+/* M10 立即购买按钮：右红主操作，比咨询略宽 */
+.buy-btn-primary {
+  padding: 12px 36px;
+  background: var(--jd-red);
+  color: #fff;
+  border: none;
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+.buy-btn-primary:hover:not(:disabled) {
+  background: var(--jd-red-hover, #c81623);
+}
+.buy-btn-primary:disabled {
+  background: var(--gray-300);
+  color: var(--gray-500);
+  cursor: not-allowed;
+}
+.buy-error {
+  margin-top: var(--sp-2);
+  padding: 8px 12px;
+  background: #fff3e0;
+  color: #c81623;
+  font-size: var(--fs-sm);
+  border: 1px solid #c81623;
 }
 .hint {
   margin-left: auto;
