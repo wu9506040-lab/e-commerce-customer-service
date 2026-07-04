@@ -170,8 +170,10 @@ class InputGuard:
     # -------------------------------------------------------------
     def _check_l2(self, query: str) -> Optional[GuardResult]:
         """L2 闲聊识别；centroid 失败时静默放行"""
-        # M13 修复：纯订单号查询直接放行（L2 cosine 对订单号几乎必然 < 0.4）
-        if _ORDER_NO_FULL_RE.match(query.strip()):
+        # M13.1 修复：纯订单号或含 SKU 的 query 直接放行
+        # （L2 cosine 对"ZP1 规格参数"这类纯属性词几乎必然 < 0.4，业务 query 不该被拦）
+        stripped = query.strip()
+        if _ORDER_NO_FULL_RE.match(stripped) or _SKU_PATTERN.search(stripped):
             return None
         centroid = get_domain_centroid()
         if centroid is None:
