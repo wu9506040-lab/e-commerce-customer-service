@@ -57,7 +57,8 @@ def test_rerank_enabled_uses_coarse_then_fine():
 
         with patch("app.services.policy_service.qdrant_search", return_value=fake_hits), \
              patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
-             patch("app.services.rerank.rerank", side_effect=fake_rerank):
+             patch("app.services.rerank.rerank", side_effect=fake_rerank), \
+             patch("app.services.bm25_index.bm25_search", return_value=[]):  # 隔离 hybrid 路径
 
             from app.services.policy_service import PolicyService
             results = PolicyService.search_policy("运费险怎么赔付", top_k=3)
@@ -96,6 +97,7 @@ def test_rerank_disabled_keeps_legacy_behavior():
         # 关键：rerank 不应被调用
         with patch("app.services.policy_service.qdrant_search", side_effect=fake_qdrant), \
              patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+             patch("app.services.bm25_index.bm25_search", return_value=[]), \
              patch("app.services.rerank.rerank") as mock_rerank:
 
             from app.services.policy_service import PolicyService
@@ -131,7 +133,8 @@ def test_rerank_failure_falls_back_to_coarse():
 
         with patch("app.services.policy_service.qdrant_search", return_value=fake_hits), \
              patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
-             patch("app.services.rerank.rerank", side_effect=fake_rerank_fail):
+             patch("app.services.rerank.rerank", side_effect=fake_rerank_fail), \
+             patch("app.services.bm25_index.bm25_search", return_value=[]):
 
             from app.services.policy_service import PolicyService
             # 不应抛异常
@@ -163,6 +166,7 @@ def test_small_corpus_skips_rerank():
 
         with patch("app.services.policy_service.qdrant_search", return_value=fake_hits), \
              patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+             patch("app.services.bm25_index.bm25_search", return_value=[]), \
              patch("app.services.rerank.rerank") as mock_rerank:
 
             from app.services.policy_service import PolicyService
@@ -183,6 +187,7 @@ def test_qdrant_returns_empty():
 
     with patch("app.services.policy_service.qdrant_search", return_value=[]), \
          patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+         patch("app.services.bm25_index.bm25_search", return_value=[]), \
          patch("app.services.rerank.rerank") as mock_rerank:
 
         results = PolicyService.search_policy("运费险", top_k=3)
