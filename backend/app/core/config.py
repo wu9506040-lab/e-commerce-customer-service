@@ -97,6 +97,20 @@ class Settings(BaseSettings):
     # RRF k 常数（Cormack 2009 论文推荐 60）
     RRF_K: int = 60
 
+    # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
+    # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
+    # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩
+    # 可重试错误：429 / 5xx / Timeout / ConnectionError
+    # 不可重试：400 / 401 / 403（业务错，重试无意义）
+    # 总尝试次数 = LLM_MAX_RETRIES + 1（含首次）
+    LLM_MAX_RETRIES: int = 3
+    # 退避基础延迟（秒）：wait = base * 2^attempt + jitter(0-50%)
+    LLM_RETRY_BASE_DELAY: float = 1.0
+    # 断路器：连续失败 N 次开路
+    LLM_CIRCUIT_FAILURE_THRESHOLD: int = 5
+    # 断路器开路后多久进入 HALF_OPEN 探活
+    LLM_CIRCUIT_RECOVERY_TIMEOUT: float = 60.0
+
 
 settings = Settings()
 
