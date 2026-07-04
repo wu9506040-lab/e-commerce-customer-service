@@ -129,6 +129,7 @@ def stream_chat(
     messages: List[Dict[str, str]],
     model: Optional[str] = None,
     temperature: float = 0.7,
+    max_tokens: Optional[int] = None,
 ) -> Generator[str, None, None]:
     """
     流式调用千问 chat 端点（带 429 连接重试）
@@ -140,6 +141,7 @@ def stream_chat(
         messages: 消息列表 [{"role": "user", "content": "..."}]
         model: 模型名（默认从环境变量 QWEN_MODEL 读）
         temperature: 温度 0-2
+        max_tokens: 单次输出最大 token 数（None = 模型默认；P1 限流时设 512）
 
     Yields:
         文本片段（可能为空字符串，已过滤）
@@ -147,19 +149,25 @@ def stream_chat(
     client = get_client()
     used_model = model or QWEN_MODEL
 
-    logger.info(f"qwen stream_chat: model={used_model}, messages={len(messages)}")
+    logger.info(
+        f"qwen stream_chat: model={used_model}, messages={len(messages)}, "
+        f"max_tokens={max_tokens}"
+    )
 
     # 仅 retry 连接阶段，不 retry 已开始的流
     stream = None
     last_error: Optional[Exception] = None
+    create_kwargs = {
+        "model": used_model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    if max_tokens is not None:
+        create_kwargs["max_tokens"] = max_tokens
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            stream = client.chat.completions.create(
-                model=used_model,
-                messages=messages,
-                temperature=temperature,
-                stream=True,
-            )
+            stream = client.chat.completions.create(**create_kwargs)
             break
         except Exception as e:
             if _is_rate_limit(e) and attempt < _MAX_RETRIES:

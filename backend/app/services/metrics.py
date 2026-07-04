@@ -90,6 +90,16 @@ class Metrics:
         # 上限 + 实际样本数（deque 满后 len 就是 HIT_K_WINDOW）
         self._hit_k_total_samples = 0  # 历史累计（用来算总 hit@K）
 
+        # ----- M11.5 P2：异常行为监控告警计数 -----
+        # 5 类告警：ip_high_freq / ip_multi_account / user_high_freq / user_sku_probe / user_order_probe
+        self.behavior_alerts_total = 0
+        self.behavior_alerts_by_type: Dict[str, int] = {}
+
+        # ----- M12：query 改写（指代补全） -----
+        # reason: 'rewritten' | 'skipped_no_coref' | 'skipped_no_history' | 'error_empty' | 'error_too_long' | 'error_llm'
+        self.rewrite_total = 0
+        self.rewrite_by_reason: Dict[str, int] = {}
+
     # ----- chat -----
 
     def inc_chat(self, intent: str, v3_engine: str = "-") -> None:
@@ -158,6 +168,32 @@ class Metrics:
             self._hit_k_window.append(rank)
             self._hit_k_total_samples += 1
 
+    # ----- M11.5 P2：异常行为告警 -----
+
+    def inc_behavior_alert(self, alert_type: str) -> None:
+        """记录一次行为监控告警（M11.5 P2）
+
+        Args:
+            alert_type: 告警类型（AlertType 常量之一）
+        """
+        with self._lock:
+            self.behavior_alerts_total += 1
+            self.behavior_alerts_by_type[alert_type] = (
+                self.behavior_alerts_by_type.get(alert_type, 0) + 1
+            )
+
+    # ----- M12：query 改写 -----
+
+    def inc_rewrite(self, reason: str) -> None:
+        """记录一次 query 改写结果
+
+        Args:
+            reason: 'rewritten' | 'skipped_no_coref' | 'skipped_no_history' | 'error_*'
+        """
+        with self._lock:
+            self.rewrite_total += 1
+            self.rewrite_by_reason[reason] = self.rewrite_by_reason.get(reason, 0) + 1
+
     # ----- snapshot -----
 
     def _hit_at_k(self, k: int) -> float:
@@ -217,6 +253,16 @@ class Metrics:
                 "hit@10": self._hit_at_k(10),
             }
 
+            behavior_block = {
+                "alerts_total": self.behavior_alerts_total,
+                "alerts_by_type": dict(self.behavior_alerts_by_type),
+            }
+
+            rewrite_block = {
+                "total": self.rewrite_total,
+                "by_reason": dict(self.rewrite_by_reason),
+            }
+
             cb_block = circuit_breaker_stats or {}
 
             return {
@@ -226,6 +272,8 @@ class Metrics:
                 "embedding": emb_block,
                 "circuit_breaker": cb_block,
                 "hit_at_k": hit_k_block,
+                "behavior": behavior_block,
+                "rewrite": rewrite_block,
             }
 
 
