@@ -83,6 +83,20 @@ class Settings(BaseSettings):
     # 粗排候选数（rerank.py 单 prompt 上限 15）
     RERANK_CANDIDATE_TOP_K: int = 15
 
+    # ---- 混合检索：vector (dense) + BM25 (sparse) + RRF ----
+    # 开启后 PolicyService.search_policy 走 hybrid 路径：
+    #   vector top-K + BM25 top-K → RRF 融合 → rerank → top-k
+    # 关闭则仅用 vector 检索（保持单一 dense 路径）
+    # 成本：BM25 索引启动时一次性构建（<1s for 67 docs），查询时几乎零开销（纯 Python）
+    # 收益：解决"关键词精确命中但语义不相似"的召回盲区
+    # 典型案例：用户搜 "ZP2 Pro Max 续航"，BM25 召回精确含型号的 doc，
+    #          vector 召回含"续航"语义的 doc，融合后两者都进 top
+    USE_HYBRID_BM25: bool = True
+    # BM25 候选数（与 vector 粗排一致，保证融合时两路平衡）
+    BM25_TOP_K: int = 15
+    # RRF k 常数（Cormack 2009 论文推荐 60）
+    RRF_K: int = 60
+
 
 settings = Settings()
 
