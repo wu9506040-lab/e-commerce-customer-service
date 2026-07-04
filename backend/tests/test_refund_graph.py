@@ -38,7 +38,9 @@ class TestFetchOrder:
         state = {"user_id": 42, "order_no": "ORD001"}
         result = fetch_order(state)
 
-        assert result["days_since_order"] == 3
+        # delivered 订单按「签收日」算：create_time + 2 天 = 签收日（与 OrderTool.get_logistics 一致）
+        # days_ago=3 → 签收是 1 天前
+        assert result["days_since_order"] == 1
         assert result["order_info"]["status"] == "delivered"
         mock_tool.get_order_by_no.assert_called_once_with(42, "ORD001")
 
@@ -51,7 +53,8 @@ class TestFetchOrder:
         result = fetch_order(state)
 
         assert result["order_info"] == {}
-        assert result["days_since_order"] == 999
+        # 订单不存在 → 用 0 兜底（取代老 sentinel 999，避免 magic number）
+        assert result["days_since_order"] == 0
 
 
 class TestJudgeBasic:
