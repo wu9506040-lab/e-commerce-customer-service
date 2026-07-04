@@ -42,12 +42,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '智能客服演示' },
   },
 
-  // 登录 + 注册（guest only）
+  // 登录 + 注册（M13：去掉 guestOnly，已登录访问显示"已登录为 xxx"提示，让用户能切换账号）
   {
     path: '/login',
     name: 'login',
     component: () => import('../views/LoginPage.vue'),
-    meta: { title: '登录 / 注册', guestOnly: true },
+    meta: { title: '登录 / 注册' },
   },
 
   // 商品橱窗（公开，但需登录才能问客服）
@@ -110,6 +110,7 @@ router.beforeEach(async (to: RouteLocationNormalized) => {
   if (to.meta.requiresAuth && !isAuthed.value) {
     return { name: 'login', query: { redirect: to.fullPath } };
   }
+  // guestOnly 已移除（M13）：/login 不再重定向已登录用户，允许"切换账号"
   if (to.meta.guestOnly && isAuthed.value) {
     return { name: 'shop' };
   }

@@ -219,8 +219,10 @@ def _format_history(history: Optional[list[dict]]) -> str:
     return "\n".join(lines)
 
 
-# M9.5+：从历史消息中提取最近一个订单号（ORD + 8位日期 + 3位序号）
-_ORDER_NO_RE = _re.compile(r"ORD\d{8}\d{3}")
+# M9.5+：从历史消息中提取最近一个订单号
+# 订单号格式：ORD + 8位日期(YYYYMMDD) + uuid4().hex[:6].upper()（3-6位大写字母数字混合）
+# M13 修复：原 regex 只匹配纯数字，遗漏了字母后缀（如 ORD20260704899EBA）
+_ORDER_NO_RE = _re.compile(r"ORD\d{8}[A-Z0-9]{3,6}")
 
 
 def _extract_order_no_from_history(history: Optional[list[dict]]) -> Optional[str]:
