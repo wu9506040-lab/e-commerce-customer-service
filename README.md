@@ -47,6 +47,35 @@ Qdrant 控制台 (`6333/dashboard`) 内网-only（按需开安全组）。
 
 ---
 
+## 📸 效果展示
+
+### 首页 & 商城
+
+| 首页（4 类意图分流） | 商品列表 | 商品详情 |
+|---|---|---|
+| ![home](frontend/_screenshots/demo.png) | ![shop](frontend/_screenshots/shop.png) | ![detail](frontend/_screenshots/detail.png) |
+
+### 智能客服聊天
+
+| 多轮对话（左历史会话列表 + 右主区） | 上下文：订单 | 上下文：商品 |
+|---|---|---|
+| ![chat](frontend/_screenshots/chat.png) | ![ctx-order](frontend/_screenshots/ctx-order.png) | ![ctx-product](frontend/_screenshots/ctx-product.png) |
+
+### 完整流程演示（公网 ECS 实测）
+
+8 张顺序截图覆盖登录 → 浏览 → RAG 咨询 → 退款 LangGraph → 个人中心：
+
+[`frontend/_screenshots/walkthrough/demo-01-home.png`](frontend/_screenshots/walkthrough/demo-01-home.png) → [`demo-08-profile.png`](frontend/_screenshots/walkthrough/demo-08-profile.png)
+
+### 订单生命周期流转
+
+`pending` → `paid` → `shipped` → `delivered` → `refunded`（6 张状态截图）：
+[`loop-01-product-detail.png`](frontend/_screenshots/loop-01-product-detail.png) → [`loop-06-profile-refunded.png`](frontend/_screenshots/loop-06-profile-refunded.png)
+
+> 截图由 `scripts/verify_demo_public.py` + Playwright 在公网 ECS 自动生成（120.79.27.124）。
+
+---
+
 ## ✨ 核心特性
 
 | 模块 | 能力 |
@@ -162,11 +191,26 @@ curl http://localhost:8000/health
 | http://120.79.27.124:8000/docs | Swagger API 文档（FastAPI 自动生成） | ✅ |
 | http://120.79.27.124:8000/health | 健康检查（mysql/redis/qdrant 三件套） | ✅ |
 | http://120.79.27.124:6333/dashboard | Qdrant 控制台 | ❌ 安全组未开放（按需开启） |
-| http://120.79.27.124:8000 | API 直连（SSE 流式聊天用） | ✅ |
+| http://120.79.27.124:8000 | API 根路径（返回服务自描述 JSON） | ✅ |
 
 ### 初始化账号
 
-首次启动后会自动创建 admin 账号：`admin / admin123`，**登录后请立即修改密码**。
+首次启动**不会**自动创建任何账号，需要手动操作：
+
+```bash
+# 1. 注册一个普通用户
+curl -X POST http://localhost:8000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"myuser","password":"mypassword123"}'
+
+# 2. 提升为 admin（直接改 MySQL）
+docker exec customer-service-mysql mysql -ucs_user -pcs_pass_2026 customer_service \
+  -e "UPDATE users SET role='admin' WHERE username='myuser';"
+```
+
+测试账号（已 seed，仅用于演示）：
+- `demotest` / `demotest123`：4 个真实订单可演示 LangGraph 退款状态机的 4 路径
+- `admin`：通过上述方式手动创建并提权后即可登录 `/api/admin/*` 后台
 
 ---
 
@@ -199,8 +243,6 @@ curl http://localhost:8000/health
 | DELETE | `/conversations/{sid}` | 软删会话 | ✅ |
 | POST | `/admin/ingest` | 知识入库 | admin |
 | GET | `/admin/knowledge/sources` | 知识来源列表 | admin |
-
-完整 Swagger：http://120.79.27.124:8000/docs
 
 ---
 

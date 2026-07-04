@@ -2260,13 +2260,13 @@ yield ("done", ...)
 - `backend/tests/test_synthesizer_refund.py`（~190 行）：9 个 synthesizer 集成测试
 - `backend/app/services/synthesizer.py`：新增 `_handle_refund_v3`，V2 改名 `_handle_refund_v2`，env 控制 dispatch
 - `backend/app/core/config.py`：加 `USE_LANGGRAPH_REFUND: bool = False`
-- `docs/refund_graph_v3.png`（26 KB）：状态图 PNG（可直接放简历）
+- `docs/refund_graph_v3.png`（26 KB）：状态图 PNG
 
 ### Why
 **为什么引入 LangGraph（不是"规则禁了所以引入"）**：
 1. **业务真到了复杂门槛**：退款流程从 3 步扩展到 5-6 步（查订单→判断→查政策→验凭证→升级人工），4 条条件分支 + 1 个升级路径，if/else 嵌套难维护
 2. **可观测性**：LangGraph 的 stream + 状态可视化（mermaid PNG）+ Checkpoint 让每步可追溯，if/else 版只能 log
-3. **市场匹配**：JD 普遍要求 LangGraph 经验（一线/新一线 70%+），项目里没有 LangGraph 字样简历初筛容易挂
+3. **市场匹配**：LangGraph 是当前招聘市场的常见技能要求之一，README 提到 LangGraph 便于搜索匹配
 4. **生态复用**：LangGraph 的 StateGraph / Conditional Edge / Checkpoint / interrupt 这些能力自研做起来很重
 
 **为什么不重构整个项目（YAGNI 原则）**：
@@ -2387,8 +2387,8 @@ V3 不破坏 V2.x：环境变量默认 false，V2.x 继续工作；验证 OK 后
 - 集成测试（9 个）：测 Synthesizer + LangGraph 协同 + SSE 协议 + Fallback
 两层覆盖：LangGraph 改动不会破坏 Synthesizer，Synthesizer 改动不会破坏 LangGraph。**测试金字塔的实践：底层快、上层慢，分层 mock**。
 
-**5. 「JD 要求 vs 项目需要」的权衡**
-JD 普遍要求 LangGraph 是事实。**项目需求和简历表达是两回事**：项目内部该用什么用什么（11 个固定 + 1 个 LangGraph），简历要会写（V3 LangGraph 实战）。**不要为了简历硬塞框架（11 个固定模块不该用 LangGraph），也不要忽视市场需求（JD 初筛是硬门槛）**。
+**5. 「市场需求 vs 项目需要」的权衡**
+市场需求 LangGraph 是事实。**项目需求和对外表达是两回事**：项目内部该用什么用什么（11 个固定 + 1 个 LangGraph），对外要会讲（V3 LangGraph 实战）。**不要为了表面潮流硬塞框架（11 个固定模块不该用 LangGraph），也不要忽视市场需求**。
 
 ---
 
@@ -2405,7 +2405,7 @@ JD 普遍要求 LangGraph 是事实。**项目需求和简历表达是两回事*
 
 ### Why
 **为什么需要 hit@K 评估**：
-1. **没有量化指标 = "RAG 效果好不好"全凭感觉**。简历项目最怕「RAG 已实现」但说不出 hit@5 多少
+1. **没有量化指标 = "RAG 效果好不好"全凭感觉**。项目最怕「RAG 已实现」但说不出 hit@5 多少
 2. **合成数据可行**：67 条 KB 文档都是自己写的结构化政策/FAQ，让 Qwen 围绕文档生成 query 质量可控（实测：201 条 0 失败）
 3. **定位问题**：按 `source` 分组看 hit@1，找出"哪类目召回差"（如 `product_sku001` hit@1=0.0 → 后续优化可定向加 dense vector / 改 chunk 切分）
 
@@ -2472,9 +2472,9 @@ eval_hitk.py：
 - 后续：可加 MRR（Mean Reciprocal Rank）指标，看"第一条命中的排名质量"
 
 ### Role
-**M6 = RAG 模块的"质检层"**。前面 M1-M5 实现"能不能跑"，M6 回答"跑得好不好"。这是把 RAG 从「demo」变成「产品」的必经一步——也是面试官必问的："你的 RAG 召回率多少？怎么测的？"
+**M6 = RAG 模块的"质检层"**。前面 M1-M5 实现"能不能跑"，M6 回答"跑得好不好"。这是把 RAG 从「demo」变成「产品」的必经一步——也是使用者必问的："你的 RAG 召回率多少？怎么测的？"
 
-**简历写法**：
+**项目摘要**：
 > "基于 67 条电商知识库构建 201 条合成评估集，实现 hit@1=0.52 / hit@5=0.80 / hit@10=0.90 的检索质量，按 source 分组定位召回薄弱类目"
 
 ---
@@ -2496,7 +2496,7 @@ eval_hitk.py：
 **为什么按"系统功能 → 补数据"反推**：
 - KB 不能"为了多而多"——前一轮 67 条覆盖率有 5 个功能空缺
 - 系统层面能展示：升级人工（LangGraph V3）/ 发票 / 支付 / 账户 / 商品高频
-- **目标**：让面试官问"这个系统能处理 X 场景吗"时，KB 立刻有数据可演示
+- **目标**：让使用者问"这个系统能处理 X 场景吗"时，KB 立刻有数据可演示
 
 **为什么不堆数量**：
 - 67 → 88 个 chunk，增幅 31%
@@ -2559,9 +2559,9 @@ eval_hitk.py → 新 baseline
   - 或加入 BM25 关键词检索兜底（型号名是关键标识）
 
 ### Role
-**V1.2 = 让 KB 跟系统能力 1:1 对齐**。系统有 6 大能力，KB 就有 6 大类数据。**面试时任何功能 demo 都有真实数据可调**——这是"看起来是 demo，跑起来像产品"的关键。
+**V1.2 = 让 KB 跟系统能力 1:1 对齐**。系统有 6 大能力，KB 就有 6 大类数据。**对外演示时任何功能 demo 都有真实数据可调**——这是"看起来是 demo，跑起来像产品"的关键。
 
-**简历写法**：
+**项目摘要**：
 > "构建 88 个 chunk 的电商知识库（6 大类、17 个业务场景），覆盖退换货/物流/促销/保修/发票/支付/账户/升级人工/商品咨询 9 大功能"
 
 ---
@@ -2588,7 +2588,7 @@ eval_hitk.py → 新 baseline
 1. 零额外依赖（已有 Qwen）
 2. 跨语言/多领域适应性好
 3. **单 prompt 打分 15 候选**（vs 每候选一次调用）→ 比专门 cross-encoder 还快
-4. 面试亮点：能讲"为什么不选 bge-reranker"（成本/部署/精度 trade-off）
+4. 讲解亮点：能讲"为什么不选 bge-reranker"（成本/部署/精度 trade-off）
 
 ### Tech
 - **Qwen plus + temperature=0**（关闭随机性，确保打分稳定）
@@ -2664,12 +2664,12 @@ Phase C：两阶段检索
 ### Role
 **M7 = RAG 模块的"调优层"**。M6 测出"跑得好不好"，M7 负责"让它跑得更好"。这是把"能用"变成"好用"的关键。
 
-**面试话术**：
+**讲解思路**：
 - "RAG 召回差怎么办？" → "先看 hit@K 按 source 分布找根因（chunking？同质化？），再针对性修"
 - "为什么不用专门 cross-encoder？" → "成本/部署简单/LLM 已够用"
 - "rerank 怎么控制成本？" → "单 prompt 批量打分 + 候选截断 + 降级到原始排序"
 
-**简历写法**：
+**项目摘要**：
 > "针对商品 SKU 召回差问题，采用「按场景切分 + LLM Cross-Encoder Rerank」两阶段优化，hit@1 从 0.47 提升到 0.58，hit@10 从 0.87 提升到 0.90"
 
 ### 最终 V1.2 baseline（含 Phase A + C）
@@ -2754,13 +2754,13 @@ Phase C：两阶段检索
 - 测试覆盖：原有 synthesizer 测试仍全过；新增 robustness 测试覆盖 sentinel 逻辑
 
 ### Role
-**M7 = 让系统从"能跑"变"跑得稳"**。前面 M1-M6 实现功能 + 量化效果，M7 加固健壮性。**这是面试"生产级"问题的标准答案**：
+**M7 = 让系统从"能跑"变"跑得稳"**。前面 M1-M6 实现功能 + 量化效果，M7 加固健壮性。**这是对外"生产级"问题的标准答案**：
 - "Qdrant 挂了怎么办？" → "断路器开路 → RAG 返回空 → LLM 走工具兜底"
 - "LLM 限流怎么办？" → "指数退避重试 3 次 → 总失败抛业务异常让上层处理"
 - "SSE 长连接被 nginx 切断怎么办？" → "30s heartbeat + 客户端断开检测"
 - "为什么不直接 try/except？" → "断路器防雪崩、retry 防偶发、heartbeat 防超时——各有分工"
 
-**简历写法**：
+**项目摘要**：
 > "实现 Circuit Breaker 模式保障 Qdrant 依赖可用性（3 状态机 + 30s 探活），SSE 长连接加 30s heartbeat 防止 nginx 切断，Embedding 服务加 429 指数退避重试，配套 20 个单元测试覆盖各降级路径"
 
 ## 25. M8 可观测性：Request ID 全链路追踪 + 业务指标埋点（2026-06-28）
@@ -2870,14 +2870,14 @@ M8 是 V1.x → V2.0 生产化的最后一块拼图：
 
 **总计 75 个测试全部通过**（45 老 + 30 新）。
 
-### 面试话术
+### 讲解思路
 
 - "怎么排查线上问题？" → "Request ID 串联所有日志，curl /metrics 实时看业务健康度"
 - "为什么不用 Prometheus？" → "MVP 阶段内存足够，加 Prometheus 要拉新基础设施（CLAUDE.md 禁止），后续量起来再迁"
 - "hit@K 线上怎么算的？" → "用'检索到结果'作命中代理，真 gold label 在离线 eval_hitk.py 算"
 - "ContextVar 和线程局部变量区别？" → "asyncio task 隔离 + 跨 await 自动传播，TLGV 不行"
 
-**简历写法**：
+**项目摘要**：
 > "为 RAG 客服系统加可观测性：Request ID 中间件实现全链路日志追踪（ContextVar + 双 Middleware 透传），结构化 JSON 日志 + 业务指标埋点（chat / RAG / embedding / hit@K），新增 `/metrics` 端点 + 30 个单元测试，覆盖 5 个业务模块（合成器 / 检索 / 嵌入 / 客户端 / API）"
 
 ---
@@ -2890,7 +2890,7 @@ M8 是 V1.x → V2.0 生产化的最后一块拼图：
 把"最小可运行 demo"（1174 行 / 6 组件 / 一个聊天框）升级成"接近真实电商客服产品"的全栈前端：路由化、注册 + 登录、商品橱窗 + 详情、个人中心、会话管理、消息卡片嵌入、演示模式首页。后端补 4 个公开端点 + 1 个 PATCH 改标题。
 
 ### Why
-- 当前前端给外部访问者（面试官 / GitHub demo）只看到「套了紫色 logo 的聊天框」，完全感受不到「电商客服」定位
+- 当前前端给外部访问者（使用者 / GitHub demo）只看到「套了紫色 logo 的聊天框」，完全感受不到「电商客服」定位
 - 用户 5 点痛点：UI 不真实、历史记录没意义、没有注册、只有一个聊天界面、没有展示平台
 - 真实电商客服（京东 / 淘宝小蜜 / Shopify Chat）都有：商品上下文、订单上下文、个人中心、注册流程、悬浮 CTA
 
