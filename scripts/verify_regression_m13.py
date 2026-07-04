@@ -250,7 +250,7 @@ async def main():
     print("=" * 70)
     print(f"  M13 历史 Bug 回归固化 — {BASE}")
     print("=" * 70)
-    print("⚠  R6 限流测试会发 35 次请求，可能影响其他并发测试，请独立运行")
+    print("[WARN] R6 限流测试会发 35 次请求，可能影响其他并发测试，请独立运行")
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         if not await login(client):
