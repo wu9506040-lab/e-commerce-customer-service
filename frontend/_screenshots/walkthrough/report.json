@@ -1,0 +1,68 @@
+{
+  "base_url": "http://120.79.27.124:5173",
+  "api_url": "http://120.79.27.124:8000",
+  "elapsed_sec": 48.0,
+  "passed": 7,
+  "total": 9,
+  "console_errors": 20,
+  "console_error_details": [
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 409 (Conflict)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ],
+  "results": {
+    "1. 演示首页 + 数字锚点": {
+      "ok": true,
+      "msg": "命中 4/4 锚点"
+    },
+    "2. 一键 demo 登录": {
+      "ok": true,
+      "msg": "已跳转到 shop"
+    },
+    "3. 新账号注册": {
+      "ok": false,
+      "msg": "Timeout 15000ms exceeded.\n=========================== logs ===========================\nwaiting for navigation to \"<funct"
+    },
+    "4. demotest 账号登录": {
+      "ok": true,
+      "msg": "已跳转到 shop"
+    },
+    "5. 商品橱窗浏览": {
+      "ok": true,
+      "msg": "商品卡片存在=True"
+    },
+    "6. RAG 提问（退货政策）": {
+      "ok": true,
+      "msg": "命中知识库关键词=1/3"
+    },
+    "7. LangGraph 退款状态机": {
+      "ok": true,
+      "msg": "命中 LangGraph 关键词=3/3"
+    },
+    "8. 订单生命周期展示": {
+      "ok": true,
+      "msg": "订单存在=True, 状态词=True"
+    },
+    "10. 控制台 JS 错误统计": {
+      "ok": false,
+      "msg": "错误数=20（已过滤 favicon + 401 测试副作用）"
+    }
+  },
+  "screenshots": [
+    "demo-01-home.png",
+    "demo-02-after-demo-login.png",
+    "demo-03-after-register.png",
+    "demo-04-account-login.png",
+    "demo-05-shop.png",
+    "demo-06-chat-rag.png",
+    "demo-07-refund-langgraph.png",
+    "demo-08-profile.png"
+  ]
+}

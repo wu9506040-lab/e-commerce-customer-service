@@ -1,0 +1,106 @@
+{
+  "passed": 25,
+  "total": 25,
+  "results": {
+    "order_query 基准·状态 [基准]": {
+      "ok": true,
+      "msg": "query='我的订单状态', intent=order_query (期望 order_query), method=None"
+    },
+    "order_query 基准·ORD到哪 [基准]": {
+      "ok": true,
+      "msg": "query='ORD20260704004 到哪了', intent=order_query (期望 order_query), method=None"
+    },
+    "order_query 基准·物流 [基准]": {
+      "ok": true,
+      "msg": "query='查一下物流', intent=order_query (期望 order_query), method=None"
+    },
+    "order_query 基准·我的那笔 [基准]": {
+      "ok": true,
+      "msg": "query='我的那笔 ZP1 订单', intent=order_query (期望 order_query), method=None"
+    },
+    "order_query 边界·口语 [边界]": {
+      "ok": true,
+      "msg": "query='东西到哪了', intent=order_query (期望 order_query), method=None"
+    },
+    "order_query 边界·错别字 [边界]": {
+      "ok": true,
+      "msg": "query='我哩订单啥状态', intent=order_query (期望 order_query), method=None"
+    },
+    "refund_query 基准·我想退款 [基准]": {
+      "ok": true,
+      "msg": "query='我想退款', intent=refund_query (期望 refund_query), method=None"
+    },
+    "refund_query 基准·怎么退 [基准]": {
+      "ok": true,
+      "msg": "query='怎么退', intent=refund_query (期望 refund_query), method=None"
+    },
+    "refund_query 基准·退货 [基准]": {
+      "ok": true,
+      "msg": "query='我要退货', intent=refund_query (期望 refund_query), method=None"
+    },
+    "refund_query 基准·ORD退一下 [基准]": {
+      "ok": true,
+      "msg": "query='ORD20260704004 退一下', intent=refund_query (期望 refund_query), method=None"
+    },
+    "refund_query 边界·想退掉 [边界]": {
+      "ok": true,
+      "msg": "query='想退掉那个耳机', intent=refund_query (期望 refund_query), method=None"
+    },
+    "refund_query 边界·给退不 [边界]": {
+      "ok": true,
+      "msg": "query='这件给退不', intent=refund_query (期望 refund_query), method=None"
+    },
+    "product_query 基准·多少钱 [基准]": {
+      "ok": true,
+      "msg": "query='ZP1 多少钱', intent=product_query (期望 product_query), method=None"
+    },
+    "product_query 基准·库存 [基准]": {
+      "ok": true,
+      "msg": "query='BP1 有库存吗', intent=product_query (期望 product_query), method=None"
+    },
+    "product_query 基准·续航 [基准]": {
+      "ok": true,
+      "msg": "query='ZP1 续航怎么样', intent=product_query (期望 product_query), method=None"
+    },
+    "product_query 基准·规格 [基准]": {
+      "ok": true,
+      "msg": "query='ZP1 规格参数', intent=product_query (期望 product_query), method=None"
+    },
+    "product_query 边界·推荐 [边界]": {
+      "ok": true,
+      "msg": "query='推荐个手机', intent=product_query (期望 product_query), method=None"
+    },
+    "product_query 边界·有货吗 [边界]": {
+      "ok": true,
+      "msg": "query='ZP1 有货吗', intent=product_query (期望 product_query), method=None"
+    },
+    "policy_query 基准·7天无理由 [基准]": {
+      "ok": true,
+      "msg": "query='7 天无理由', intent=policy_query (期望 policy_query), method=None"
+    },
+    "policy_query 基准·保修多久 [基准]": {
+      "ok": true,
+      "msg": "query='保修多久', intent=policy_query (期望 policy_query), method=None"
+    },
+    "policy_query 基准·运费险 [基准]": {
+      "ok": true,
+      "msg": "query='运费险', intent=policy_query (期望 policy_query), method=None"
+    },
+    "policy_query 基准·包邮 [基准]": {
+      "ok": true,
+      "msg": "query='包邮吗', intent=policy_query (期望 policy_query), method=None"
+    },
+    "policy_query 边界·流程（回归 bug） [边界]": {
+      "ok": true,
+      "msg": "query='怎么申请退款', intent=policy_query (期望 policy_query), method=None"
+    },
+    "policy_query 边界·运费 [边界]": {
+      "ok": true,
+      "msg": "query='7 天无理由退货运费谁出', intent=policy_query (期望 policy_query), method=None"
+    },
+    "跨意图·订单+保修": {
+      "ok": true,
+      "msg": "query='我的订单 ORD20260704004 怎么保修', intent=order_query (期望 ('order_query', 'policy_query'))"
+    }
+  }
+}
