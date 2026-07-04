@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     # 用逗号分隔的字符串写入环境变量，逗号分隔解析成 list
     CORS_ALLOWED_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # ---- 两阶段检索：粗排 top-K → LLM rerank → 精排 top-k ----
+    # 开启后 PolicyService.search_policy 走 Qdrant top-15 → rerank → top-3
+    # 关闭则保持原样（直接 Qdrant top-3）
+    # 成本：每次 policy_query 多 ~500 token（rerank 调用）
+    # 收益：长尾召回 top-1 准确率 +15-25%
+    USE_RERANK: bool = True
+    # 粗排候选数（rerank.py 单 prompt 上限 15）
+    RERANK_CANDIDATE_TOP_K: int = 15
+
 
 settings = Settings()
 
