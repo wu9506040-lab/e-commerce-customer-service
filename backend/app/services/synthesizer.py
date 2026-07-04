@@ -46,10 +46,19 @@ _LLM_SEMAPHORE = threading.Semaphore(10)
 # Prompt 模板（PROJECT_DESIGN §7 硬约束：tool > policy > product > history）
 # =============================================================
 SYSTEM_PROMPT_BASE = (
-    "你是一个专业的电商客服助手。"
-    "请严格基于以下【结构化数据】和【参考资料】回答用户问题。"
-    "如果信息不足，请直接回答「我不知道」并建议联系人工客服，不要编造。"
-    "回答要简洁、准确，必要时引用订单号、价格、政策条款编号。"
+    "你是一个专业的电商客服助手。\n"
+    # ====== 防幻觉硬约束 ======
+    # 1. 严禁编造：参考资料/结构化数据里没有的数字、价格、政策、规格、订单状态，一律不许出现
+    # 2. 强制溯源：每个具体事实必须在句末用引用标签标注来源
+    #    - 政策条款：用 [1][2]... 对应【政策依据】段编号
+    #    - 订单/退款事实：用 [订单] 或 [退款] 标签
+    #    - 商品参数：用 [商品] 标签
+    #    - 知识库补充：用 [知识库] 标签
+    # 3. 无资料兜底：参考资料/结构化数据为空或无相关内容时，必须说「我不知道」+ 建议联系人工客服，禁止自由发挥
+    "请严格基于以下【结构化数据】和【参考资料】回答用户问题。\n"
+    "严禁编造参考资料里没有的数字、价格、政策条款、订单状态、商品规格。\n"
+    "每个具体事实必须在句末用引用标签标注来源：政策用 [1][2]...、订单/退款用 [订单][退款]、商品用 [商品]、知识库用 [知识库]。\n"
+    "如果【参考资料】和【结构化数据】均无相关内容，请直接回答「我不知道」并建议联系人工客服，不要编造。\n"
     "回答控制在 200 字以内，不要长篇大论，先给结论再补充细节。"
 )
 
@@ -147,7 +156,11 @@ def _build_chat_prompt(
 
 
 def _format_tool_result(intent: str, tool_result: Optional[dict]) -> str:
-    """把 tool 输出格式化成中文自然语言片段（供 LLM 引用）"""
+    """把 tool 输出格式化成中文自然语言片段（供 LLM 引用）
+
+    P0-LLM 溯源：每段加 [订单] / [退款] 来源标签前缀，
+    让 LLM 知道这是结构化数据（DB 查的，不是 LLM 编的）
+    """
     if not tool_result:
         return ""
     # order_query: 列表 / 详情
@@ -155,8 +168,8 @@ def _format_tool_result(intent: str, tool_result: Optional[dict]) -> str:
         if "orders" in tool_result:
             orders = tool_result.get("orders", [])
             if not orders:
-                return "用户当前没有订单。"
-            lines = [f"用户共有 {len(orders)} 笔订单："]
+                return "[订单] 用户当前没有订单。"
+            lines = ["[订单] 用户共有 {} 笔订单：".format(len(orders))]
             for o in orders:
                 lines.append(
                     f"- 订单号 {o.get('order_no')} | 状态 {o.get('status')} | "
@@ -168,14 +181,14 @@ def _format_tool_result(intent: str, tool_result: Optional[dict]) -> str:
             items = tool_result.get("items", [])
             logistics = tool_result.get("logistics", {})
             lines = [
-                f"订单号 {o.get('order_no')} | 状态 {o.get('status')} | 金额 ¥{o.get('total_amount')}",
-                f"明细：{len(items)} 件商品",
+                f"[订单] 订单号 {o.get('order_no')} | 状态 {o.get('status')} | 金额 ¥{o.get('total_amount')}",
+                f"[订单] 明细：{len(items)} 件商品",
             ]
             for it in items:
                 lines.append(f"  - {it.get('product_name')} × {it.get('qty')} = ¥{it.get('subtotal')}")
             if logistics:
                 lines.append(
-                    f"物流：{logistics.get('status')} | 最新位置 {logistics.get('last_location')} | 单号 {logistics.get('logistics_no')}"
+                    f"[订单] 物流：{logistics.get('status')} | 最新位置 {logistics.get('last_location')} | 单号 {logistics.get('logistics_no')}"
                 )
             return "\n".join(lines)
     # refund_query
@@ -184,7 +197,7 @@ def _format_tool_result(intent: str, tool_result: Optional[dict]) -> str:
         if tr.get("refundable") is not None:
             reason = tr.get("reason", "")
             return (
-                f"退款判断：{'可退' if tr['refundable'] else '不可退'} | 原因：{reason} | "
+                f"[退款] 退款判断：{'可退' if tr['refundable'] else '不可退'} | 原因：{reason} | "
                 f"订单状态 {tr.get('order_status')} | 已签收 {tr.get('days_since_order')} 天"
             )
     return str(tool_result)
@@ -767,11 +780,11 @@ class Synthesizer:
             if not products:
                 products = Synthesizer._search_by_keyword_window(query, limit=5)
 
-        # 格式化 product 块
+        # 格式化 product 块（P0-LLM 溯源：加 [商品] 标签，让 LLM 知道这是 DB 数据）
         if not products:
-            product_block = "未在数据库中找到相关商品。"
+            product_block = "[商品] 未在数据库中找到相关商品。"
         else:
-            lines = []
+            lines = ["[商品] 数据库匹配结果："]
             for p in products:
                 attrs = p.get("attributes") or {}
                 color = attrs.get("color", [])
@@ -786,8 +799,8 @@ class Synthesizer:
         kb_docs = PolicyService.search_policy(query, top_k=3)
         kb_block = _format_policy_docs(kb_docs)
         if kb_block:
-            if product_block and product_block != "未在数据库中找到相关商品。":
-                product_block = f"{product_block}\n\n【商品详细规格（来自知识库）】\n{kb_block}"
+            if product_block and "[商品] 未在数据库中找到" not in product_block:
+                product_block = f"{product_block}\n\n【商品详细规格（来自知识库 [知识库]）】\n{kb_block}"
             else:
                 product_block = f"未在数据库中找到相关商品。\n\n【知识库相关参考】\n{kb_block}"
 
