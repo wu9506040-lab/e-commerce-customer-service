@@ -192,28 +192,29 @@ async def chat(
             )
             return
 
+        # M13.1：refund_query 不进缓存（meta refundable/reason 是 order 相关的，不能复用）
+        try:
+            pre_intent = await asyncio.to_thread(IntentService.classify, payload.query)
+            intent_for_cache = pre_intent.get("intent", "policy_query")
+        except Exception:
+            intent_for_cache = "policy_query"
+
         # M11.5：响应缓存（exact + semantic），10min 内同 query 不再调 LLM
-        cached_answer = await asyncio.to_thread(
-            get_cached_answer, payload.query, user_id
-        )
+        # 仅对 policy_query 启用，refund_query 必须走 LangGraph 保证 meta 正确
+        cached_answer = None
+        if intent_for_cache == "policy_query":
+            cached_answer = await asyncio.to_thread(
+                get_cached_answer, payload.query, user_id
+            )
         if cached_answer:
-            # 缓存命中仍要抽取实体 + 识别意图，否则 LangGraph 退款收不到 order_no
-            # M13 修复：原代码硬编码 entities/order_no=null，导致带订单号的 refund/cancel 请求被吞
-            try:
-                intent_meta = await asyncio.to_thread(IntentService.classify, payload.query)
-                cached_intent = intent_meta.get("intent", "policy_query")
-                cached_entities = intent_meta.get("entities", {})
-            except Exception:
-                cached_intent = "policy_query"
-                cached_entities = {"order_no": None, "sku": None, "keywords": []}
-            # policy_query 命中缓存 → 必然来自知识库（否则不会进 RAG 流水线）
-            cached_policy_hits = 1 if cached_intent == "policy_query" else 0
+            # policy_query 才进缓存（refund_query 已在前置分类跳过）
+            cached_entities = pre_intent.get("entities", {"order_no": None, "sku": None, "keywords": []})
             yield _sse_format({
                 "type": "meta",
-                "intent": cached_intent,
+                "intent": intent_for_cache,
                 "intent_method": "cache_hit",
                 "entities": cached_entities,
-                "policy_hits": cached_policy_hits,
+                "policy_hits": 1,  # policy 进缓存 → 必然来自知识库
                 "contexts": [],
                 "scores": [],
             })
