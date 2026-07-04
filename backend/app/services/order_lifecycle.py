@@ -157,8 +157,17 @@ class OrderLifecycle:
     # pending → paid（付款）
     # =============================================================
     @staticmethod
-    def pay_order(user_id: int, order_no: str) -> dict:
-        """付款（pending → paid）"""
+    def pay_order(user_id: int, order_no: str, role: str = "user") -> dict:
+        """付款（pending → paid）
+
+        Args:
+            role: 用户角色。visitor 体验账号禁止付款（403）。
+        """
+        if role == "visitor":
+            raise OrderLifecycleError(
+                "体验账号不支持付款。如需完整体验，请注册正式账号。",
+                status_code=403,
+            )
         order = OrderLifecycle._get_order(user_id, order_no)
         if order.status != OrderStatus.PENDING.value:
             raise OrderLifecycleError(
@@ -172,8 +181,17 @@ class OrderLifecycle:
     # paid → shipped（发货，演示场景允许用户触发）
     # =============================================================
     @staticmethod
-    def ship_order(user_id: int, order_no: str) -> dict:
-        """发货（paid → shipped）"""
+    def ship_order(user_id: int, order_no: str, role: str = "user") -> dict:
+        """发货（paid → shipped）
+
+        Args:
+            role: 用户角色。visitor 体验账号禁止发货（403）。
+        """
+        if role == "visitor":
+            raise OrderLifecycleError(
+                "体验账号不支持发货操作。如需完整体验，请注册正式账号。",
+                status_code=403,
+            )
         order = OrderLifecycle._get_order(user_id, order_no)
         if order.status != OrderStatus.PAID.value:
             raise OrderLifecycleError(
@@ -187,8 +205,17 @@ class OrderLifecycle:
     # shipped → delivered（确认签收）
     # =============================================================
     @staticmethod
-    def confirm_order(user_id: int, order_no: str) -> dict:
-        """确认签收（shipped → delivered）"""
+    def confirm_order(user_id: int, order_no: str, role: str = "user") -> dict:
+        """确认签收（shipped → delivered）
+
+        Args:
+            role: 用户角色。visitor 体验账号禁止签收（403）。
+        """
+        if role == "visitor":
+            raise OrderLifecycleError(
+                "体验账号不支持确认签收。如需完整体验，请注册正式账号。",
+                status_code=403,
+            )
         order = OrderLifecycle._get_order(user_id, order_no)
         if order.status != OrderStatus.SHIPPED.value:
             raise OrderLifecycleError(
@@ -207,6 +234,7 @@ class OrderLifecycle:
         order_no: str,
         reason: str = "用户申请退款",
         remark: Optional[str] = None,
+        role: str = "user",
     ) -> dict:
         """
         申请退款（任意状态 → refunded）
@@ -215,10 +243,16 @@ class OrderLifecycle:
         - paid / shipped / delivered / completed → 可申请（但 completed 超 7 天不允许）
         - pending（待付款）→ 不能"退款"，直接取消订单即可（暂不实现取消）
         - refunded → 不可重复
+        - role=visitor 体验账号禁止退款（403）— AI 客服 LangGraph 退款演示用真实订单号仍可走
 
         Returns:
             {"order_no", "status": "refunded", "refund_no": "RF..."}
         """
+        if role == "visitor":
+            raise OrderLifecycleError(
+                "体验账号不持有真实订单，无法发起退款。如需完整体验，请注册正式账号。",
+                status_code=403,
+            )
         order = OrderLifecycle._get_order(user_id, order_no)
 
         # 状态校验

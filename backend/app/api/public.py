@@ -82,7 +82,8 @@ def create_demo_account(
     # 16 字符随机密码，用户不可登录 + 防被冒用
     password = secrets.token_urlsafe(16)
 
-    # 2. 注册用户
+    # 2. 注册用户（role="visitor"：体验账号，下单开放但禁止支付/发货/签收/退款，
+    #    防数据库膨胀 + 保留 LangGraph 退款状态机演示能力）
     try:
         user = register_user(
             db,
@@ -90,6 +91,7 @@ def create_demo_account(
             password=password,
             display_name="访客体验者",
             email=None,
+            role="visitor",
         )
     except ValueError as e:
         # 极小概率 UUID 冲突，重试一次
@@ -98,7 +100,7 @@ def create_demo_account(
         password = secrets.token_urlsafe(16)
         user = register_user(
             db, username=username, password=password,
-            display_name="访客体验者", email=None,
+            display_name="访客体验者", email=None, role="visitor",
         )
 
     # 3. 发 token + cookie
