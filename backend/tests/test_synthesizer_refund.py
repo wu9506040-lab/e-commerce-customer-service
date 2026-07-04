@@ -103,6 +103,7 @@ class TestRefundDispatch:
             events = collect_events(Synthesizer.run_stream(
                 query="三天前买的能退吗",
                 user_id=42,
+                order_no="ORD001",  # 必传：M9.5 修复后无 order_no 直接 early-return 不会进 LangGraph
                 history=None,
             ))
 
@@ -160,6 +161,7 @@ class TestHandleRefundV3:
             query="三天前买的能退吗",
             user_id=42,
             intent_result=make_intent_result(),
+            order_no="ORD001",  # 必传：M9.5 防串单修复后无 order_no 不会进 LangGraph
         ))
 
         # 验证 SSE 协议
@@ -176,7 +178,8 @@ class TestHandleRefundV3:
         # meta 应包含 judge 的判断结果
         assert "refundable" in meta
         assert meta["refundable"] is True
-        assert meta["days_since_order"] == 3
+        # delivered 订单按签收日算：create_time + 2 天偏移，days_ago=3 → 实际 1 天
+        assert meta["days_since_order"] == 1
 
         # token 应包含 LLM 最终答案
         assert any("符合" in ev[1] for ev in token_events)
@@ -193,6 +196,7 @@ class TestHandleRefundV3:
             query="质量有问题能退吗",
             user_id=42,
             intent_result=make_intent_result(),
+            order_no="ORD001",  # 必传：防串单 guard 要求有 order_no 才进 LangGraph
         ))
 
         # 应该走 escalate 路径
@@ -258,6 +262,7 @@ class TestFallback:
             query="能退吗",
             user_id=42,
             intent_result=make_intent_result(),
+            order_no="ORD001",  # 必传：否则 M9.5 guard 直接返回，不进 LangGraph，也触发不了 fallback
         ))
 
         # fallback 应该触发 V2 → 调 RefundService.check_refundable_with_policy
@@ -287,6 +292,7 @@ class TestSSEProtocol:
             query="能退吗",
             user_id=42,
             intent_result=make_intent_result(),
+            order_no="ORD001",  # 必传：否则 guard early-return，LangGraph 不跑，meta 没 v3_engine
         ))
 
         meta_events = [ev for ev in events if ev[0] == "meta"]
