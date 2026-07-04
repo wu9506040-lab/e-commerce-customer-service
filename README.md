@@ -9,6 +9,10 @@
 [![Qdrant](https://img.shields.io/badge/Qdrant-v1.10-DC244C)](https://qdrant.tech)
 [![Docker](https://img.shields.io/badge/Docker_Compose-5_services-2496ED?logo=docker)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+<!-- Status badge: 填入真实 healthcheck.io UUID 后会显示实时 ECS 健康状态 -->
+<!-- 注册地址：https://healthcheck.io → 新建 check → Period=5min → 复制 UUID 替换下方 YOUR-UUID-HERE -->
+<!-- 文档：docs/HEALTHCHECK.md -->
+![Status](https://img.shields.io/endpoint?url=https%3A%2F%2Fhealthchecks.io%2Fapi%2Fv3%2Fchecks%2FYOUR-UUID-HERE%2Fbadge&style=flat-square&label=ECS%20%E5%81%A5%E5%BA%B7%E7%8A%B6%E6%80%81)
 
 ---
 
@@ -252,6 +256,8 @@ docker exec customer-service-mysql mysql -ucs_user -pcs_pass_2026 customer_servi
 |------|------|
 | [`docs/learning_log.md`](docs/learning_log.md) | 项目演进日志（1472 行，14 个模块，每个含 What / Why / Tech / Flow / Problem→Fix / Role）|
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | 运维指南（端口、数据卷、故障排查、生产部署）|
+| [`docs/HEALTHCHECK.md`](docs/HEALTHCHECK.md) | healthcheck.io 接入指南（5 min 接入 + 告警演练）|
+| [`docs/test_coverage.md`](docs/test_coverage.md) | 测试覆盖矩阵（115 单元 + ~100 E2E，10 个测试文件）|
 
 ---
 
