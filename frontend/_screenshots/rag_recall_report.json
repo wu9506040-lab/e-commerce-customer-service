@@ -1,0 +1,38 @@
+{
+  "passed": 8,
+  "total": 8,
+  "results": {
+    "RAG·基准-7天无理由": {
+      "ok": true,
+      "msg": "query='7 天无理由退货规则', intent=policy_query (期望 ['policy_query']), hits=1, keyword_hit=True, text_len=279"
+    },
+    "RAG·基准-保修政策": {
+      "ok": true,
+      "msg": "query='手机保修多久', intent=policy_query (期望 ['policy_query', 'product_query']), hits=1, keyword_hit=True, text_len=150"
+    },
+    "RAG·基准-运费险": {
+      "ok": true,
+      "msg": "query='运费险怎么用', intent=policy_query (期望 ['policy_query']), hits=1, keyword_hit=True, text_len=177"
+    },
+    "RAG·基准-包邮": {
+      "ok": true,
+      "msg": "query='下单包邮规则', intent=policy_query (期望 ['policy_query']), hits=1, keyword_hit=True, text_len=226"
+    },
+    "RAG·鲁棒-同义改写（语义改写仍给出有用回答）": {
+      "ok": true,
+      "msg": "intent=refund_query, text_len=34, 前60='请提供要查询退款的订单号（格式示例：ORD20260628004）。'"
+    },
+    "RAG·鲁棒-错别字": {
+      "ok": true,
+      "msg": "query='运险费素怎么用滴', intent=policy_query (期望 ['policy_query']), hits=1, keyword_hit=True, text_len=188"
+    },
+    "RAG·零召回不编造（不出 Python 代码）": {
+      "ok": true,
+      "msg": "text前80='您好，我是电商客服小智，专注解答订单、商品、物流、退换货相关问题哦～', redirect=True"
+    },
+    "RAG·防串单（答案订单号=query 订单号）": {
+      "ok": true,
+      "msg": "query=ORD20260704004, 答中其他订单=[]"
+    }
+  }
+}
