@@ -30,6 +30,11 @@ from app.models.refund import Refund, RefundStatus
 
 logger = logging.getLogger(__name__)
 
+# 业务常量：从「下单时间」到「默认签收时间」的天数偏移
+# 用于 delivered 订单的 7 天无理由窗口计算（实际签收时间 = 下单时间 + 偏移天数）
+# 业务含义：演示场景里没有真实物流系统，假设平均 2 天送达
+DELIVERY_OFFSET_DAYS = 2
+
 
 class OrderLifecycleError(Exception):
     """订单状态流转业务错误（携带 message 给前端）"""
@@ -273,10 +278,10 @@ class OrderLifecycle:
                 status_code=409,
             )
 
-        # delivered 订单：校验 7 天窗口（按"已下单+2天"作为签收日推算）
+        # delivered 订单：校验 7 天窗口（按"已下单+DELIVERY_OFFSET_DAYS 天"作为签收日推算）
         if order.status == OrderStatus.DELIVERED.value:
             if order.create_time:
-                delivery_time = order.create_time + datetime.timedelta(days=2)
+                delivery_time = order.create_time + datetime.timedelta(days=DELIVERY_OFFSET_DAYS)
                 days_since_delivery = (datetime.datetime.now() - delivery_time).days
                 if days_since_delivery > 7:
                     raise OrderLifecycleError(

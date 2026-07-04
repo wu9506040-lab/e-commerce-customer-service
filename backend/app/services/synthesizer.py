@@ -219,6 +219,60 @@ def _format_history(history: Optional[list[dict]]) -> str:
     return "\n".join(lines)
 
 
+def _build_meta_contexts(
+    policy_docs: Optional[list[dict]] = None,
+    products: Optional[list[dict]] = None,
+    tool_result: Optional[dict] = None,
+) -> tuple[list[dict], list[float]]:
+    """P0-H：把 RAG 检索结果 / tool 结果转成 meta contexts（暴露给前端/调试用）
+
+    Returns:
+        (contexts, scores) — contexts 是 [{source, text_preview, type}, ...]，
+        scores 是对应余弦相似度（policy_docs 有 score，products/tool 没 score 用 None 占位）
+
+    之前所有 meta 都硬编码 "contexts": []，前端看不到检索命中，调试也看不到来源
+    """
+    contexts: list[dict] = []
+    scores: list[float] = []
+    if policy_docs:
+        for d in policy_docs:
+            text = (d.get("text") or "").strip()
+            contexts.append({
+                "source": d.get("source") or d.get("payload", {}).get("source", "knowledge_base"),
+                "text_preview": text[:200] + ("..." if len(text) > 200 else ""),
+                "type": "policy",
+            })
+            score = d.get("score")
+            if isinstance(score, (int, float)):
+                scores.append(float(score))
+    if products:
+        for p in products:
+            contexts.append({
+                "source": f"product:{p.get('sku', '?')}",
+                "text_preview": f"{p.get('name', '')} | ¥{p.get('price', '?')} | 库存 {p.get('stock', '?')}",
+                "type": "product",
+            })
+            scores.append(0.0)  # tool 结果无 cosine 分数，用 0 占位
+    if tool_result:
+        # order_query 的 tool_result 是 dict / list，统一抽出关键标识
+        if "order" in tool_result:
+            o = tool_result["order"]
+            contexts.append({
+                "source": f"order:{o.get('order_no', '?')}",
+                "text_preview": f"状态 {o.get('status')} | 金额 ¥{o.get('total_amount')}",
+                "type": "order",
+            })
+        elif "orders" in tool_result:
+            for o in tool_result["orders"]:
+                contexts.append({
+                    "source": f"order:{o.get('order_no', '?')}",
+                    "text_preview": f"状态 {o.get('status')} | 金额 ¥{o.get('total_amount')}",
+                    "type": "order",
+                })
+        scores.append(0.0)
+    return contexts, scores
+
+
 # M9.5+：从历史消息中提取最近一个订单号
 # 订单号格式：ORD + 8位日期(YYYYMMDD) + uuid4().hex[:6].upper()（3-6位大写字母数字混合）
 # M13 修复：原 regex 只匹配纯数字，遗漏了字母后缀（如 ORD20260704899EBA）
@@ -459,18 +513,21 @@ class Synthesizer:
             detail = OrderService.get_order_detail(user_id, effective_order_no)
             if not detail:
                 tool_block = f"订单 {effective_order_no} 不存在或不属于当前用户。"
+                contexts, scores = [], []
             else:
                 tool_block = _format_tool_result("order_query", detail)
+                contexts, scores = _build_meta_contexts(tool_result=detail)
         else:
             # 无 order_no → 列最近订单（OrderService.list_user_orders 不支持 limit，按默认上限返回）
             orders = OrderService.list_user_orders(user_id)
             tool_block = _format_tool_result("order_query", {"orders": orders})
+            contexts, scores = _build_meta_contexts(tool_result={"orders": orders})
 
         meta = {
             "intent": "order_query",
             "entities": entities,
-            "contexts": [],
-            "scores": [],
+            "contexts": contexts,
+            "scores": scores,
             "tool_result_preview": tool_block[:200] if tool_block else "",
         }
         yield ("meta", meta)
@@ -536,11 +593,13 @@ class Synthesizer:
         policy_docs = result.get("policy_docs", [])
         policy_block = _format_policy_docs(policy_docs)
 
+        # P0-H：把退款判断 + 政策命中一并暴露给 meta
+        contexts, scores = _build_meta_contexts(policy_docs=policy_docs)
         meta = {
             "intent": "refund_query",
             "entities": entities,
-            "contexts": [],
-            "scores": [],
+            "contexts": contexts,
+            "scores": scores,
             "order_no": effective_order_no,
             "refundable": result.get("tool_result", {}).get("refundable"),
             "policy_hits": len(policy_docs),
@@ -732,15 +791,25 @@ class Synthesizer:
             else:
                 product_block = f"未在数据库中找到相关商品。\n\n【知识库相关参考】\n{kb_block}"
 
+        # P0-H：暴露商品 + 知识库命中到 meta
+        contexts, scores = _build_meta_contexts(products=products, policy_docs=kb_docs)
         meta = {
             "intent": "product_query",
             "entities": entities,
-            "contexts": [],
-            "scores": [],
+            "contexts": contexts,
+            "scores": scores,
             "products_found": len(products),
             "kb_hits": len(kb_docs),
         }
         yield ("meta", meta)
+
+        # P0-J：商品 + KB 都没命中 → 不调 LLM，直接返兜底文本（防"ZP2 续航怎么样"幻觉）
+        if not products and not kb_docs:
+            yield from Synthesizer._stream_simple(
+                f"抱歉，知识库中暂无「{query}」相关资料，无法回答。"
+                "如需查询具体商品，请提供准确 SKU 或商品名。"
+            )
+            return
 
         prompt = _build_chat_prompt(
             intent="product_query",
@@ -762,11 +831,13 @@ class Synthesizer:
         policy_docs = PolicyService.search_policy(query, top_k=5)
         policy_block = _format_policy_docs(policy_docs)
 
+        # P0-H：暴露政策命中到 meta
+        contexts, scores = _build_meta_contexts(policy_docs=policy_docs)
         meta = {
             "intent": "policy_query",
             "entities": intent_result["entities"],
-            "contexts": [],
-            "scores": [],
+            "contexts": contexts,
+            "scores": scores,
             "policy_hits": len(policy_docs),
         }
         yield ("meta", meta)
@@ -796,7 +867,8 @@ class Synthesizer:
     def _stream_llm(user_prompt: str) -> Generator[Tuple[str, Any], None, None]:
         """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10）
 
-        P1：max_tokens=512 压输出长度，省 token 也防 LLM 长篇大论
+        P1：max_tokens=256 压输出长度，与 SYSTEM_PROMPT_BASE "200 字以内" 硬约束对齐
+        （512 token ≈ 1500 中文字符，会让 LLM 写长文超出 prompt 字数限制）
         """
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT_BASE},
@@ -805,7 +877,7 @@ class Synthesizer:
         full_answer = ""
         # semaphore 包住整个流式调用：>10 并发时排队，超出请求首 token 延迟增大但不会 429
         with _LLM_SEMAPHORE:
-            for chunk in qwen_stream_chat(messages, temperature=0.3, max_tokens=512):
+            for chunk in qwen_stream_chat(messages, temperature=0.3, max_tokens=256):
                 full_answer += chunk
                 yield ("token", chunk)
         # M8：粗估 token 数（中文 ~1 char ≈ 1.5 token；这里简化为 char 数）
