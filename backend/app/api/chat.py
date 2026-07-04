@@ -32,6 +32,8 @@ from app.schemas.chat import ChatRequest
 from app.services.audit_service import try_log_action
 from app.services.behavior_monitor import behavior_monitor  # M11.5 P2
 from app.services.metrics import metrics  # M8
+from app.services.policy_service import PolicyService
+from app.services.synthesizer import _build_meta_contexts  # P0-H: cache_hit 也暴露 contexts
 from app.services.session_service import (
     ANONYMOUS_USER_ID,
     append_exchange,
@@ -209,14 +211,25 @@ async def chat(
         if cached_answer:
             # policy_query 才进缓存（refund_query 已在前置分类跳过）
             cached_entities = pre_intent.get("entities", {"order_no": None, "sku": None, "keywords": []})
+            # P0-H：cache_hit 也暴露检索 contexts（复用 PolicyService 检索，不调 LLM）
+            # LLM 跳过是因为答案命中缓存，RAG 检索是 cheap 操作值得仍跑
+            cache_contexts: list = []
+            cache_scores: list = []
+            try:
+                cache_policy_docs = await asyncio.to_thread(
+                    PolicyService.search_policy, payload.query, 5
+                )
+                cache_contexts, cache_scores = _build_meta_contexts(policy_docs=cache_policy_docs)
+            except Exception as e:
+                logger.warning(f"cache_hit 拿 contexts 失败（放行）: {e}")
             yield _sse_format({
                 "type": "meta",
                 "intent": intent_for_cache,
                 "intent_method": "cache_hit",
                 "entities": cached_entities,
-                "policy_hits": 1,  # policy 进缓存 → 必然来自知识库
-                "contexts": [],
-                "scores": [],
+                "policy_hits": len(cache_contexts),  # 实际 RAG 命中数，不是缓存标记
+                "contexts": cache_contexts,
+                "scores": cache_scores,
             })
             for chunk in _chunk_text(cached_answer, size=10):
                 yield _sse_format({"type": "token", "text": chunk})
