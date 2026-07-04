@@ -3,11 +3,26 @@
  * 订单卡片（京东风）
  * 复用：在 ProfilePage / MessageCard / ShopPage
  * density: list（默认，列表用）/ mini（消息内）
+ *
+ * M10 闭环：list 模式下根据 status 显示对应流转按钮
+ * - pending   → [立即付款]
+ * - paid      → [模拟发货]（demo 用，正常流程由商家触发）
+ * - shipped   → [确认签收]
+ * - delivered → [申请退款]（7 天无理由）
+ * - refunded  → 无按钮
+ *
+ * 每次点击按钮 → 调后端状态机 API → 成功后 emit('changed') 让父组件 reload
  */
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import type { OrderSummary, OrderDetail } from '../types';
-import { getOrderDetail } from '../api';
+import {
+  confirmOrder,
+  getOrderDetail,
+  payOrder,
+  refundOrder,
+  shipOrder,
+} from '../api';
 
 const props = withDefaults(
   defineProps<{
@@ -16,6 +31,11 @@ const props = withDefaults(
   }>(),
   { density: 'list' },
 );
+
+// emit：状态变化后通知父组件 reload
+const emit = defineEmits<{
+  (e: 'changed', orderNo: string): void;
+}>();
 
 const router = useRouter();
 
@@ -76,6 +96,70 @@ function formatTime(iso: string | null | undefined): string {
   if (!iso) return '';
   return new Date(iso).toLocaleDateString('zh-CN');
 }
+
+// =============================================================
+// M10 闭环：状态流转按钮
+// =============================================================
+type ActionKind = 'pay' | 'ship' | 'confirm' | 'refund';
+
+interface ActionDef {
+  key: ActionKind;
+  label: string;
+  cls: string;
+  // 能否执行（按当前 status 判断）
+  available: boolean;
+}
+
+const actionDef = computed<ActionDef | null>(() => {
+  switch (props.order.status) {
+    case 'pending':
+      return { key: 'pay', label: '立即付款', cls: 'btn-primary', available: true };
+    case 'paid':
+      // demo 用：让用户自己点发货（真实流程由商家操作）
+      return { key: 'ship', label: '模拟发货', cls: 'btn-primary', available: true };
+    case 'shipped':
+      return { key: 'confirm', label: '确认签收', cls: 'btn-primary', available: true };
+    case 'delivered':
+      return { key: 'refund', label: '申请退款', cls: 'btn-danger', available: true };
+    case 'completed':
+      // completed 状态：业务上已完成；如果还想演示退款流程也允许（demo）
+      return { key: 'refund', label: '申请退款', cls: 'btn-danger', available: true };
+    default:
+      return null;
+  }
+});
+
+const acting = ref(false);
+const actionError = ref<string | null>(null);
+
+async function runAction() {
+  if (!actionDef.value || acting.value) return;
+  acting.value = true;
+  actionError.value = null;
+  const kind = actionDef.value.key;
+  const orderNo = props.order.order_no;
+  try {
+    if (kind === 'pay') await payOrder(orderNo);
+    else if (kind === 'ship') await shipOrder(orderNo);
+    else if (kind === 'confirm') await confirmOrder(orderNo);
+    else if (kind === 'refund') {
+      const reason = window.prompt(
+        '请输入退款原因（演示场景，默认「用户申请退款」）:',
+        '用户申请退款',
+      );
+      if (reason === null) {
+        acting.value = false;
+        return; // 用户取消
+      }
+      await refundOrder(orderNo, { reason: reason.trim() || '用户申请退款' });
+    }
+    emit('changed', orderNo);
+  } catch (e) {
+    actionError.value = e instanceof Error ? e.message : '操作失败';
+  } finally {
+    acting.value = false;
+  }
+}
 </script>
 
 <template>
@@ -96,9 +180,19 @@ function formatTime(iso: string | null | undefined): string {
       <div class="order-row time">
         <span>下单时间 {{ formatTime(order.create_time) }}</span>
       </div>
+      <div v-if="actionError" class="action-error">{{ actionError }}</div>
       <div class="order-actions">
         <button class="ask-btn" @click="askAboutOrder" type="button">
           咨询客服
+        </button>
+        <button
+          v-if="actionDef"
+          :class="['action-btn', actionDef.cls]"
+          :disabled="acting"
+          type="button"
+          @click="runAction"
+        >
+          {{ acting ? '处理中…' : actionDef.label }}
         </button>
       </div>
     </template>
@@ -182,6 +276,7 @@ function formatTime(iso: string | null | undefined): string {
   border-top: 1px dashed var(--gray-200);
   display: flex;
   justify-content: flex-end;
+  gap: var(--sp-2);
 }
 .ask-btn {
   padding: 6px 14px;
@@ -195,6 +290,42 @@ function formatTime(iso: string | null | undefined): string {
 .ask-btn:hover {
   background: var(--jd-red);
   color: #fff;
+}
+/* M10 状态流转按钮：左浅红咨询，右主操作 */
+.action-btn {
+  padding: 6px 14px;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid;
+}
+.action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.action-btn.btn-primary {
+  background: var(--jd-red);
+  color: #fff;
+  border-color: var(--jd-red);
+}
+.action-btn.btn-primary:hover:not(:disabled) {
+  background: var(--jd-red-hover, #c81623);
+}
+.action-btn.btn-danger {
+  background: var(--gray-0);
+  color: var(--jd-red);
+  border-color: var(--jd-red);
+}
+.action-btn.btn-danger:hover:not(:disabled) {
+  background: var(--jd-red-light);
+}
+.action-error {
+  margin-top: var(--sp-2);
+  padding: 6px 10px;
+  background: #fff3e0;
+  color: #c81623;
+  font-size: var(--fs-xs);
+  border: 1px solid #c81623;
 }
 .amount {
   font-size: var(--fs-md);

@@ -9,23 +9,34 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+import logging
 
 from app.api.deps import get_current_user
 from app.clients.mysql_client import get_db
 from app.models.user import User
 from app.schemas.shop import (
+    CreateOrderRequest,
     LogisticsOut,
+    OrderActionResponse,
     OrderDetailOut,
     OrderItemOut,
     OrderListResponse,
     OrderSummaryOut,
     ProductListResponse,
     ProductOut,
+    RefundRequest,
 )
+from app.services.order_lifecycle import OrderLifecycle, OrderLifecycleError
 from app.tools.order_tool import OrderTool
 from app.tools.product_tool import ProductTool
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["shop"])
+
+
+def _handle_lifecycle_error(e: OrderLifecycleError) -> HTTPException:
+    """OrderLifecycleError → HTTPException（统一错误出口）"""
+    return HTTPException(status_code=e.status_code, detail=e.message)
 
 
 # =============================================================
@@ -174,3 +185,103 @@ def get_order_detail(
         items=items,
         logistics=logistics,
     )
+
+
+# =============================================================
+# 订单状态流转（闭环 demo 用）
+# =============================================================
+@router.post(
+    "/orders",
+    response_model=OrderActionResponse,
+    summary="下单（创建订单，初始状态 pending）",
+    description="从商品详情页发起下单。需要登录。",
+    responses={404: {"description": "商品不存在或已下架"}, 400: {"description": "库存不足"}},
+)
+def create_order_endpoint(
+    payload: CreateOrderRequest,
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        result = OrderLifecycle.create_order(current_user.id, payload.sku, payload.qty)
+    except OrderLifecycleError as e:
+        raise _handle_lifecycle_error(e)
+    return OrderActionResponse(order_no=result["order_no"], status=result["status"])
+
+
+@router.post(
+    "/orders/{order_no}/pay",
+    response_model=OrderActionResponse,
+    summary="付款（pending → paid）",
+    responses={409: {"description": "状态不允许付款"}, 404: {"description": "订单不存在"}},
+)
+def pay_order_endpoint(
+    order_no: str,
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        result = OrderLifecycle.pay_order(current_user.id, order_no)
+    except OrderLifecycleError as e:
+        raise _handle_lifecycle_error(e)
+    return OrderActionResponse(**result)
+
+
+@router.post(
+    "/orders/{order_no}/ship",
+    response_model=OrderActionResponse,
+    summary="发货（paid → shipped，demo 用用户触发）",
+    responses={409: {"description": "状态不允许发货"}, 404: {"description": "订单不存在"}},
+)
+def ship_order_endpoint(
+    order_no: str,
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        result = OrderLifecycle.ship_order(current_user.id, order_no)
+    except OrderLifecycleError as e:
+        raise _handle_lifecycle_error(e)
+    return OrderActionResponse(**result)
+
+
+@router.post(
+    "/orders/{order_no}/confirm",
+    response_model=OrderActionResponse,
+    summary="确认签收（shipped → delivered）",
+    responses={409: {"description": "状态不允许签收"}, 404: {"description": "订单不存在"}},
+)
+def confirm_order_endpoint(
+    order_no: str,
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        result = OrderLifecycle.confirm_order(current_user.id, order_no)
+    except OrderLifecycleError as e:
+        raise _handle_lifecycle_error(e)
+    return OrderActionResponse(**result)
+
+
+@router.post(
+    "/orders/{order_no}/refund",
+    response_model=OrderActionResponse,
+    summary="申请退款（任意非 pending 状态 → refunded）",
+    description="已退款订单不可重复申请；pending 状态无需退款；completed 超 7 天不允许。",
+    responses={
+        409: {"description": "状态不允许退款或超过 7 天窗口"},
+        404: {"description": "订单不存在"},
+    },
+)
+def refund_order_endpoint(
+    order_no: str,
+    payload: RefundRequest | None = None,
+    current_user: User = Depends(get_current_user),
+):
+    payload = payload or RefundRequest()
+    try:
+        result = OrderLifecycle.refund_order(
+            user_id=current_user.id,
+            order_no=order_no,
+            reason=payload.reason,
+            remark=payload.remark,
+        )
+    except OrderLifecycleError as e:
+        raise _handle_lifecycle_error(e)
+    return OrderActionResponse(**result)

@@ -21,6 +21,8 @@ seed_demo_data.py - 给演示用户注入丰富的订单 + 历史会话数据（
     PYTHONIOENCODING=utf-8 PYTHONPATH=backend python scripts/seed_demo_data.py
     # 默认用户 demotest；指定其他用户：--username convtest
     PYTHONIOENCODING=utf-8 PYTHONPATH=backend python scripts/seed_demo_data.py --username convtest
+    # 演示时订单都退完了？--reset 清掉重来（订单/会话都重建，商品不退）
+    PYTHONIOENCODING=utf-8 PYTHONPATH=backend python scripts/seed_demo_data.py --reset
 """
 import argparse
 import datetime as dt
@@ -186,6 +188,43 @@ def _build_conversations() -> list[dict]:
 # =============================================================
 # 幂等性工具
 # =============================================================
+def _reset_user_data(db: Session, user_id: int) -> None:
+    """
+    --reset：把该用户所有订单改名为 *_old_{6位hex}（让出 unique key 给新订单），
+    所有会话标记 deleted=1。
+    商品数据不动。
+
+    注意：orders.order_no 是 unique key，rename 不论 deleted 状态都做，
+    否则上次 reset 失败的残留 deleted=1 订单还会占着 key。
+    """
+    now = dt.datetime.now()
+    suffix = uuid.uuid4().hex[:6]
+    # 订单：先查所有 → 逐条 rename + 标 deleted=1
+    all_orders = db.scalars(
+        select(Order).where(Order.user_id == user_id)
+    ).all()
+    for o in all_orders:
+        # 已经改过名的就别再改了（避免 _old_xxx_old_yyy）
+        if "_old_" in o.order_no:
+            o.deleted = 1
+            o.update_time = now
+        else:
+            o.deleted = 1
+            o.update_time = now
+            o.order_no = f"{o.order_no}_old_{suffix}"
+    db.flush()
+    # 会话（软删全部）
+    db.execute(
+        Conversation.__table__.update()
+        .where(Conversation.user_id == user_id)
+        .values(deleted=1, update_time=now)
+    )
+    db.flush()
+    logger.info(
+        f"已 reset：用户 id={user_id} 的 {len(all_orders)} 个订单 + 全部会话清场（订单号加 _old_{suffix} 后缀）"
+    )
+
+
 def _upsert_order(db: Session, user_id: int, template: dict) -> Order:
     """订单已存在则跳过，否则创建（基于 order_no 唯一键）"""
     existing = db.scalar(
@@ -295,7 +334,7 @@ def _upsert_conversation(db: Session, user_id: int, template: dict) -> None:
 # =============================================================
 # 主流程
 # =============================================================
-def seed(username: str) -> int:
+def seed(username: str, reset: bool = False) -> int:
     """注入演示数据；返回 user_id"""
     engine = get_engine()
     SessionLocal = get_session_local()
@@ -308,6 +347,14 @@ def seed(username: str) -> int:
             )
         user_id = user.id
         logger.info(f"目标用户: {username} (id={user_id})")
+
+        # --reset：先清空
+        if reset:
+            logger.info("=" * 60)
+            logger.info("Step 0/2: --reset，清空旧订单 + 会话")
+            logger.info("=" * 60)
+            _reset_user_data(db, user_id)
+            db.commit()
 
         # ---------- 1. 订单 ----------
         logger.info("=" * 60)
@@ -354,6 +401,11 @@ if __name__ == "__main__":
         default="demotest",
         help="目标用户名（默认 demotest）",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="先软删该用户的所有订单 + 会话，再重建（演示退单太多时用）",
+    )
     args = parser.parse_args()
 
-    seed(args.username)
+    seed(args.username, reset=args.reset)
