@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
- * 登录 / 注册页（M9 重构）
+ * 登录 / 注册页（M9 重构 / M13：支持切换账号）
  * 双 tab：登录 / 注册，URL ?tab=register 可深链直跳注册
+ * 已登录访问时：顶部显示"当前登录为 xxx"+ 退出按钮
  */
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { login, register, demoLogin } from '../api';
+import { login, register, demoLogin, getMe, logout, isAuthed } from '../api';
 import type { User } from '../types';
 
 const router = useRouter();
@@ -25,6 +26,10 @@ const email = ref('');
 
 const loading = ref(false);
 const error = ref('');
+
+// 已登录状态（M13 cloud：让用户能切换账号）
+const currentUser = ref<User | null>(null);
+const isLoggedIn = computed(() => isAuthed.value === true && currentUser.value !== null);
 
 function switchTab(t: Tab) {
   tab.value = t;
@@ -104,8 +109,25 @@ function onAuthSuccess(_user: User) {
   router.push(redirect);
 }
 
-onMounted(() => {
-  // 防止已登录用户进 /login（路由守卫已处理，这里兜底）
+async function onLogout() {
+  try {
+    await logout();
+    currentUser.value = null;
+    // 保留在 /login 让用户可重新登录
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '退出失败';
+  }
+}
+
+onMounted(async () => {
+  // M13：已登录用户访问 /login 时，显示"已登录为 xxx"+ 退出按钮（用于切换账号）
+  if (isAuthed.value === true) {
+    try {
+      currentUser.value = await getMe();
+    } catch {
+      currentUser.value = null;
+    }
+  }
 });
 </script>
 
@@ -118,7 +140,19 @@ onMounted(() => {
         <p class="brand-sub">RAG + LangGraph · 多意图智能客服</p>
       </div>
 
-      <div class="tabs">
+      <!-- M13：已登录提示 + 切换账号 -->
+      <div v-if="isLoggedIn" class="logged-in-bar">
+        <div class="logged-in-info">
+          <span class="logged-in-label">当前登录</span>
+          <span class="logged-in-name">{{ currentUser?.display_name || currentUser?.username }}</span>
+          <span class="logged-in-role">({{ currentUser?.role === 'admin' ? '管理员' : '访客' }})</span>
+        </div>
+        <button type="button" class="btn-switch" @click="onLogout" :disabled="loading">
+          切换账号
+        </button>
+      </div>
+
+      <div v-if="!isLoggedIn" class="tabs">
         <button
           :class="['tab', { active: tab === 'login' }]"
           @click="switchTab('login')"
@@ -133,7 +167,7 @@ onMounted(() => {
         </button>
       </div>
 
-      <form v-if="tab === 'login'" @submit.prevent="onLogin" class="form">
+      <form v-if="isLoggedIn === false && tab === 'login'" @submit.prevent="onLogin" class="form">
         <div class="field">
           <label>用户名</label>
           <input
@@ -178,7 +212,7 @@ onMounted(() => {
         </p>
       </form>
 
-      <form v-else @submit.prevent="onRegister" class="form">
+      <form v-if="isLoggedIn === false && tab === 'register'" @submit.prevent="onRegister" class="form">
         <div class="field">
           <label>用户名 <em>*</em></label>
           <input
@@ -265,6 +299,54 @@ onMounted(() => {
   margin-bottom: var(--sp-6);
   padding-bottom: var(--sp-5);
   border-bottom: var(--border);
+}
+
+/* M13：已登录状态条 */
+.logged-in-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-5);
+  background: var(--jd-red-light);
+  border: 1px solid var(--jd-red);
+}
+.logged-in-info {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--gray-800);
+}
+.logged-in-label {
+  color: var(--gray-600);
+}
+.logged-in-name {
+  font-weight: 600;
+  color: var(--jd-red);
+}
+.logged-in-role {
+  color: var(--gray-500);
+  font-size: var(--fs-xs);
+}
+.btn-switch {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--gray-0);
+  border: 1px solid var(--jd-red);
+  color: var(--jd-red);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-switch:hover:not(:disabled) {
+  background: var(--jd-red);
+  color: #fff;
+}
+.btn-switch:disabled {
+  border-color: var(--gray-400);
+  color: var(--gray-400);
+  cursor: not-allowed;
 }
 .brand-mark {
   width: 48px;

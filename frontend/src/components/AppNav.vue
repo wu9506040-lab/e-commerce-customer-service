@@ -5,9 +5,9 @@
  * - 中：搜索框（可输入回车跳转 /shop）
  * - 右：商品/客服/关于 + 我的订单/头像菜单
  */
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getMe, logout } from '../api';
+import { getMe, logout, isAuthed } from '../api';
 import type { User } from '../types';
 
 const route = useRoute();
@@ -26,6 +26,12 @@ async function loadUser() {
     user.value = null;
   }
 }
+
+// 监听登录态变化：登录/登出后 AppNav 立即刷新（M13 修复：原版只在 onMounted 调一次）
+watch(isAuthed, (val) => {
+  if (val === true) loadUser();
+  else user.value = null;
+});
 
 function toggleMenu() {
   menuOpen.value = !menuOpen.value;

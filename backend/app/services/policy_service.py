@@ -8,7 +8,7 @@ M8：埋点 retrieve_hits + hit@K（policy 检索是 synthesizer 主路径，必
 import logging
 from typing import Optional
 
-from app.clients.qdrant import search as qdrant_search
+from app.clients.qdrant import QDRANT_COLLECTION, search as qdrant_search
 from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 # Qdrant collection 名（与现有 KB 对齐）
 # V2.5 注：M2 阶段 KB 67 条全部是政策（source 命名 policy_* / warranty_*），
 # 没有 doc_type 字段，不做后过滤。等 V2.6 引入商品/政策混合 KB 时再加 doc_type 过滤。
-COLLECTION_NAME = "knowledge_base"
+# M13 修复：原硬编码 "knowledge_base" 与 ingest 的 "faq_v1" 不一致 → 政策检索 0 命中
+COLLECTION_NAME = QDRANT_COLLECTION
 
 
 class PolicyService:
