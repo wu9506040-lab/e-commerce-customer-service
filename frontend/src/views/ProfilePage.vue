@@ -134,10 +134,6 @@ const filteredOrders = computed(() => {
               <a class="menu-item">
                 <span>收货地址</span>
               </a>
-              <a class="menu-item disabled">
-                <span>修改密码</span>
-                <span class="badge">即将开放</span>
-              </a>
             </div>
 
             <div class="menu-section">

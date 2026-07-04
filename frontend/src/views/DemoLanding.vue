@@ -74,6 +74,21 @@ function goRegister() {
 function goLogin() {
   router.push({ name: 'login' });
 }
+/**
+ * M13 cloud：首页"立即体验"直跳 + 一键 demo
+ * 公开 demo 站点访客无需注册，秒进系统
+ */
+async function goDemo() {
+  try {
+    const { demoLogin } = await import('../api');
+    await demoLogin();
+    router.push({ name: 'shop' });
+  } catch (e) {
+    console.error('demo 登录失败:', e);
+    // fallback 跳登录页
+    router.push({ name: 'login' });
+  }
+}
 function goChat() {
   router.push({ name: 'chat' });
 }
@@ -179,15 +194,48 @@ function goShop(cat?: string) {
       </div>
     </section>
 
+    <!-- ============= 架构亮点（M13 cloud：5 秒看懂技术深度）============= -->
+    <section class="section highlights-section">
+      <div class="section-head">
+        <h2>工程亮点</h2>
+        <p>不堆 chat 模板，从生产工程视角看真实难度</p>
+      </div>
+      <div class="highlight-grid">
+        <div class="highlight-box">
+          <div class="highlight-num">75 / 75</div>
+          <div class="highlight-label">pytest 测试通过</div>
+          <div class="highlight-desc">退款反幻觉 / 防串单 / 上下文贯通 / Token 防滥用 25+ 案例</div>
+        </div>
+        <div class="highlight-box">
+          <div class="highlight-num">0 <small>token</small></div>
+          <div class="highlight-label">3 层 InputGuard</div>
+          <div class="highlight-desc">规则 + embedding 闲聊识别 + 行为监控，挡 95% 异常请求</div>
+        </div>
+        <div class="highlight-box">
+          <div class="highlight-num">6 节点</div>
+          <div class="highlight-label">LangGraph 退款状态机</div>
+          <div class="highlight-desc">可退/质量问题/超期/已退 4 路径分支 + V2 fallback</div>
+        </div>
+        <div class="highlight-box">
+          <div class="highlight-num">5 服务</div>
+          <div class="highlight-label">Docker Compose 部署</div>
+          <div class="highlight-desc">API + Frontend + MySQL + Redis + Qdrant 一键起停</div>
+        </div>
+      </div>
+    </section>
+
     <!-- ============= CTA ============= -->
     <section class="cta">
       <div class="cta-inner">
         <h2>开始体验智选客服</h2>
-        <p>注册新账号或直接登录，立即与 AI 客服对话</p>
+        <p>无需注册，一键体验 demo 账号，立即与 AI 客服对话</p>
         <div class="cta-actions">
-          <button class="btn-cta-primary" @click="goRegister">注册账号</button>
+          <!-- M13 cloud：访客一键体验，主推 -->
+          <button class="btn-cta-primary" @click="goDemo">
+            立即体验 demo →
+          </button>
           <button class="btn-cta-ghost" @click="goChat" v-if="isLoggedIn">直接对话</button>
-          <button class="btn-cta-ghost" @click="goLogin" v-else>登录对话</button>
+          <button class="btn-cta-ghost" @click="goRegister" v-else>注册正式账号</button>
         </div>
       </div>
     </section>
@@ -485,6 +533,59 @@ function goShop(cat?: string) {
   text-align: center;
   color: var(--gray-500);
   padding: var(--sp-8);
+}
+
+/* ============= 工程亮点（M13 cloud：数字锚点）============= */
+.highlights-section {
+  background: linear-gradient(180deg, #fff8f7 0%, var(--gray-50) 100%);
+}
+.highlight-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-4);
+}
+@media (max-width: 768px) {
+  .highlight-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.highlight-box {
+  background: var(--gray-0);
+  padding: var(--sp-6) var(--sp-5);
+  text-align: center;
+  border: var(--border);
+  transition: all 0.2s;
+}
+.highlight-box:hover {
+  border-color: var(--jd-red);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(225, 37, 27, 0.06);
+}
+.highlight-num {
+  font-size: var(--fs-3xl);
+  font-weight: 700;
+  color: var(--jd-red);
+  line-height: 1;
+  letter-spacing: -1px;
+}
+.highlight-num small {
+  font-size: var(--fs-lg);
+  font-weight: 400;
+  color: var(--gray-500);
+  margin-left: 2px;
+}
+.highlight-label {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--gray-800);
+}
+.highlight-desc {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
+  line-height: 1.6;
+  min-height: 2.6em;
 }
 
 /* ============= 技术栈 ============= */
