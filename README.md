@@ -5,10 +5,25 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Vue3](https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vuedotjs)](https://vuejs.org)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python)](https://python.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript)](https://typescriptlang.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6&logo=typescript)](https://typescriptlang.org)
 [![Qdrant](https://img.shields.io/badge/Qdrant-v1.10-DC244C)](https://qdrant.tech)
 [![Docker](https://img.shields.io/badge/Docker_Compose-5_services-2496ED?logo=docker)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+---
+
+## 🌐 在线演示（公网 ECS，已部署）
+
+> 任何人可直接访问，无需注册即可体验客服 AI
+
+| 入口 | 地址 | 用途 |
+|------|------|------|
+| **前端 Web UI** | http://120.79.27.124:5173 | 主入口，点「体验」一键登录 |
+| **Swagger API 文档** | http://120.79.27.124:8000/docs | 在线调 API、看 Pydantic schema |
+| **健康检查** | http://120.79.27.124:8000/health | mysql/redis/qdrant 三件套状态 |
+| **测试账号** | `demotest` / `demotest123` | 含 4 个真实订单可演示退款 LangGraph |
+
+Qdrant 控制台 (`6333/dashboard`) 内网-only（按需开安全组）。
 
 ---
 
@@ -139,13 +154,15 @@ curl http://localhost:8000/health
 # → {"status":"ok","components":{"mysql":"up","redis":"up","qdrant":"up"}}
 ```
 
-### 访问入口
+### 访问入口（公网 ECS：http://120.79.27.124）
 
-| 地址 | 说明 |
-|------|------|
-| http://localhost:8000/docs | Swagger API 文档 |
-| http://localhost:5173 | 前端 Web UI |
-| http://localhost:6333/dashboard | Qdrant 控制台 |
+| 地址 | 说明 | 可用 |
+|------|------|------|
+| http://120.79.27.124:5173 | 前端 Web UI（主入口） | ✅ |
+| http://120.79.27.124:8000/docs | Swagger API 文档（FastAPI 自动生成） | ✅ |
+| http://120.79.27.124:8000/health | 健康检查（mysql/redis/qdrant 三件套） | ✅ |
+| http://120.79.27.124:6333/dashboard | Qdrant 控制台 | ❌ 安全组未开放（按需开启） |
+| http://120.79.27.124:8000 | API 直连（SSE 流式聊天用） | ✅ |
 
 ### 初始化账号
 
@@ -183,7 +200,7 @@ curl http://localhost:8000/health
 | POST | `/admin/ingest` | 知识入库 | admin |
 | GET | `/admin/knowledge/sources` | 知识来源列表 | admin |
 
-完整 Swagger：http://localhost:8000/docs
+完整 Swagger：http://120.79.27.124:8000/docs
 
 ---
 
