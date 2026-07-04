@@ -1,0 +1,22 @@
+{
+  "passed": 4,
+  "total": 4,
+  "results": {
+    "1. 首 token 延迟 P50 < 5s": {
+      "ok": true,
+      "msg": "P50=0.59s ([0.1666405200958252, 0.594942569732666, 1.3548567295074463])"
+    },
+    "2. SSE 事件完整（meta/token/done/closed）": {
+      "ok": true,
+      "msg": "types=['meta', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'token', 'done', 'closed'], 总事件=31"
+    },
+    "3. Redis FLUSHALL fallback（立即发 query 仍正常）": {
+      "ok": true,
+      "msg": "HTTP 200, text_len=181"
+    },
+    "4. Qdrant 故障降级语义（code + 当前流程）": {
+      "ok": true,
+      "msg": "降级语义=True, 当前流程=True"
+    }
+  }
+}

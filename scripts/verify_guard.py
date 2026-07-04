@@ -20,13 +20,15 @@ from typing import Optional
 import httpx
 import urllib.parse
 
-BASE = "http://localhost:8000"
+import os
+
+BASE = os.environ.get("BASE", "http://localhost:8000")  # M13: env-aware
 USERNAME = "demotest"
 PASSWORD = "demotest123"
 
 
 # =============================================================
-# 7 类测试用例
+# 7 类测试用例（原始）+ Day2 扩展 4 条
 # =============================================================
 TEST_CASES = [
     # (name, query, expected_blocked, expected_layer, expected_reason_substr)
@@ -37,6 +39,11 @@ TEST_CASES = [
     ("L2-闲聊-天气",         "今天上海天气怎么样",                True,  "L2",  "no_service"),
     ("L3-首次-不拦",         "发顺丰还是京东",                False, None, None),
     ("正向-正常-订单查询",    "ORD20260621002 什么状态",        False, None, None),
+    # ---- Day2a：边界扩展（防误伤 + 灰度）+ 历史 bug 回归 ----
+    ("L2-防误伤-纯订单号",   "ORD20260615003",              False, None, None),  # 纯 ASC 订单号 → M13 修复
+    ("L2-防误伤-含SKU",     "ZP1 规格参数",                  False, None, None),  # 含 ZP1/BP1 → M13.1 修复
+    ("L2-灰度-模糊query",   "我想问个问题",                  False, None, None),  # 模糊 → 不误拦
+    ("L3-行为监控-写审计",   "运费险怎么用",                  False, None, None),  # 正常通过（审计已由 R4 间接验证）
 ]
 
 

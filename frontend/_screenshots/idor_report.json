@@ -1,0 +1,22 @@
+{
+  "passed": 4,
+  "total": 4,
+  "results": {
+    "1. IDOR·visitor 看 demotest 订单（应 403/404）": {
+      "ok": true,
+      "msg": "HTTP 404, body前80='{\"detail\":\"订单 ORD20260704001 不存在\"}'"
+    },
+    "2. IDOR·visitor 删 demotest 会话（应 403/404，且 demotest 会话保留）": {
+      "ok": true,
+      "msg": "HTTP 404, body前80='{\"detail\":\"会话不存在或无权访问\"}', demotest剩131会话"
+    },
+    "3. 未授权 GET /api/auth/me（应 401）": {
+      "ok": true,
+      "msg": "HTTP 401"
+    },
+    "4. 普通用户调 /api/admin/*（应统一 403）": {
+      "ok": true,
+      "msg": "GET /api/admin/knowledge/info=403, GET /api/admin/knowledge/sources=403, POST /api/admin/ingest=403"
+    }
+  }
+}
