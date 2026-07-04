@@ -219,7 +219,7 @@ def pay_order_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        result = OrderLifecycle.pay_order(current_user.id, order_no)
+        result = OrderLifecycle.pay_order(current_user.id, order_no, role=current_user.role)
     except OrderLifecycleError as e:
         raise _handle_lifecycle_error(e)
     return OrderActionResponse(**result)
@@ -236,7 +236,7 @@ def ship_order_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        result = OrderLifecycle.ship_order(current_user.id, order_no)
+        result = OrderLifecycle.ship_order(current_user.id, order_no, role=current_user.role)
     except OrderLifecycleError as e:
         raise _handle_lifecycle_error(e)
     return OrderActionResponse(**result)
@@ -253,7 +253,7 @@ def confirm_order_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        result = OrderLifecycle.confirm_order(current_user.id, order_no)
+        result = OrderLifecycle.confirm_order(current_user.id, order_no, role=current_user.role)
     except OrderLifecycleError as e:
         raise _handle_lifecycle_error(e)
     return OrderActionResponse(**result)
@@ -281,6 +281,7 @@ def refund_order_endpoint(
             order_no=order_no,
             reason=payload.reason,
             remark=payload.remark,
+            role=current_user.role,
         )
     except OrderLifecycleError as e:
         raise _handle_lifecycle_error(e)
