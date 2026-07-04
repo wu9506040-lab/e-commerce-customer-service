@@ -13,7 +13,7 @@ from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.conversations import router as conversations_router  # §12 会话历史读取层
 from app.api.intent import router as intent_router  # M3 意图分类
-from app.api.middleware import RequestIdMiddleware, ResponseHeaderMiddleware  # M8
+from app.api.middleware import RateLimitMiddleware, RequestIdMiddleware, ResponseHeaderMiddleware  # M8 + P0-I
 from app.api.public import router as public_router  # 公开 demo 站点入口（M13 cloud）
 from app.api.shop import router as shop_router  # 前端商品橱窗 + 我的订单（M9）
 from app.clients.mysql_client import close_engine, get_engine
@@ -41,20 +41,30 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS（开发模式全开，生产用具体域名）
+# CORS（必须显式白名单，禁止 "*" + allow_credentials 组合）
+# "*" + credentials 在浏览器会被拒绝（浏览器安全策略），等于埋雷
+_cors_origins = [
+    o.strip() for o in settings.CORS_ALLOWED_ORIGINS.split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.APP_ENV == "dev" else [],
+    allow_origins=_cors_origins,
     allow_credentials=True,  # 必须 True，cookie 才能跨域
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =============================================================
+# P0-I：限流中间件（防 /chat / 登录被刷）
+# 注意：CORS 之后注册（外层先于内层），让 OPTIONS 预检不受限流影响
+# =============================================================
+app.add_middleware(RateLimitMiddleware)
+
+# =============================================================
 # M8 中间件（必须在 CORS 之后注册 — FastAPI 中间件执行顺序是 LIFO）
 # =============================================================
 # 注意：ResponseHeaderMiddleware 先注册（外层），RequestIdMiddleware 后注册（内层）
-# 实际请求流向：client → CORS → ResponseHeader → RequestId → router
+# 实际请求流向：client → CORS → RateLimit → ResponseHeader → RequestId → router
 # 实际响应流向：router → RequestId（设 ContextVar）→ ResponseHeader（读 ContextVar 写头）
 app.add_middleware(ResponseHeaderMiddleware)
 app.add_middleware(RequestIdMiddleware)

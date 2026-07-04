@@ -8,6 +8,7 @@ P1 性能压测 - §9 「并发 > 50」验证
 注：单进程 50 线程模拟并发；如需更高并发考虑 locust/asyncio。
 """
 import json
+import os
 import sys
 import time
 from collections import Counter
@@ -17,12 +18,27 @@ import requests
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-BASE = "http://localhost:8000"
-ADMIN_JWT = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJzdWIiOiIxIiwiaWF0IjowLCJleHAiOjk5OTk5OTk5OTksInJvbGUiOiJhZG1pbiJ9."
-    "jcCYBqdWOsCWA9ZIMY3d2sy0seLngVs_LfTIuS3bslQ"
-)
+# 服务地址（可覆盖，默认本地；公网测时设 BASE=http://120.79.27.124:8000）
+BASE = os.environ.get("BASE", "http://localhost:8000")
+
+# Admin JWT 必须从环境变量读取，禁止硬编码
+# 永不过期 + role=admin 的 token 等于后门，绝对不能进仓库
+# 生成方式（短过期，本地压测用）：
+#   python -c "
+#   import jwt, time
+#   print(jwt.encode(
+#       {'sub': 1, 'role': 'admin', 'iat': int(time.time()), 'exp': int(time.time()) + 3600},
+#       '<JWT_SECRET>', algorithm='HS256'
+#   ))
+#   "
+# 然后：export LOAD_TEST_ADMIN_JWT="<上面的输出>"
+ADMIN_JWT = os.environ.get("LOAD_TEST_ADMIN_JWT")
+if not ADMIN_JWT:
+    sys.exit(
+        "ERROR: 环境变量 LOAD_TEST_ADMIN_JWT 未设置。\n"
+        "请先生成一个短过期（≤1h）的 admin token，再 export 后跑本脚本。\n"
+        "生成方法见本文件顶部注释。"
+    )
 
 # 真实查询样本（混合 4 意图）
 QUERIES = [

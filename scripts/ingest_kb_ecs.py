@@ -11,8 +11,12 @@ from pathlib import Path
 
 # =============================================================
 # ECS 主机环境（容器外，连 Docker MySQL/Qdrant）
+# 所有连接信息必须通过环境变量传入，禁止硬编码凭据
+# 必传：DATABASE_URL（用 cs_user，不要用 root）/ QDRANT_URL / QDRANT_COLLECTION
 # =============================================================
-os.environ.setdefault("DATABASE_URL", "mysql+pymysql://root:rootpass_cs_2026@127.0.0.1:3307/customer_service?charset=utf8mb4")
+for var in ("DATABASE_URL", "QDRANT_URL", "QDRANT_COLLECTION"):
+    if not os.environ.get(var):
+        sys.exit(f"ERROR: 环境变量 {var} 未设置，请在 ECS 上 export 或写入 .env 后再跑")
 os.environ.setdefault("QDRANT_URL", "http://127.0.0.1:6333")
 os.environ.setdefault("QDRANT_COLLECTION", "faq_v1")
 
