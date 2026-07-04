@@ -30,6 +30,7 @@ from app.services.policy_service import PolicyService
 from app.services.refund_graph import refund_graph_app  # V3 LangGraph 版
 from app.services.refund_service import RefundService
 from app.services.rag.pipeline import run_stream as v12_rag_run_stream
+from app.services.query_rewriter import rewrite_query  # M12：指代补全
 from app.tools.product_tool import ProductTool
 from app.services.session_service import ANONYMOUS_USER_ID
 
@@ -277,6 +278,18 @@ class Synthesizer:
             raise ValueError("query 不能为空")
         query = query.strip()
 
+        # M12：query 改写（指代补全）— 改写后的 query 供后续 intent + RAG 使用
+        # product_query/policy_query 走 PolicyService.search_policy → 改写有效
+        # order_query/refund_query 走 tool 查 DB → 改写无效但无害
+        rewritten_query, was_rewritten = rewrite_query(query, history)
+        if was_rewritten:
+            logger.info(
+                f"synth.rewritten: orig='{query[:40]}...' "
+                f"new='{rewritten_query[:40]}...' user_id={user_id}",
+                extra={"intent": "rewritten"},
+            )
+            query = rewritten_query
+
         # M9.5：预加载 context（商品/订单详情），后续注入 LLM prompt
         context_block = _build_context_block(sku, order_no, user_id)
         if context_block:
@@ -334,6 +347,75 @@ class Synthesizer:
 
     # ---------- 各 intent 分派实现 ----------
 
+    # M11.5：直答关键词（命中即工具直答，不调 LLM）
+    _DIRECT_ANSWER_PATTERNS = {
+        "order_status": _re.compile(
+            r"什么状态|到哪了|在哪|到了没|进度|物流到|快递到|发货了没|出库了没|派送中吗|签收了吗|"
+            r"什么进度|到货了吗|发了吗|发出去了吗|派送了吗"
+        ),
+        "policy_simple": _re.compile(
+            r"^.{0,15}(怎么退|怎么换|运费多少|几天到|什么时候发货|发票怎么开|保多久|保修期|"
+            r"怎么开发票|能开发票|有发票吗|能退吗|几天能到|包邮吗|包邮不|发什么快递|发顺丰吗|发京东吗|"
+            r"有什么颜色|什么颜色|有现货吗|有货吗)$"
+        ),
+    }
+
+    @staticmethod
+    def _try_direct_answer_order(
+        query: str, user_id: int, entities: dict,
+        order_no: Optional[str],
+    ) -> Optional[str]:
+        """M11.5：order_query 工具直答（命中模式即返模板，不调 LLM）
+
+        Returns:
+            直答文本；非直答场景返 None（走 LLM 综合）
+        """
+        effective_order_no = order_no or entities.get("order_no")
+        if not effective_order_no or user_id == ANONYMOUS_USER_ID:
+            return None
+        # 模式匹配
+        if not Synthesizer._DIRECT_ANSWER_PATTERNS["order_status"].search(query):
+            return None
+        # 查订单
+        detail = OrderService.get_order_detail(user_id, effective_order_no)
+        if not detail:
+            return f"订单 {effective_order_no} 不存在或不属于当前用户。"
+
+        order = detail.get("order", {})
+        items = detail.get("items", [])
+        logi = detail.get("logistics") or {}
+        status = order.get("status", "未知")
+        amount = order.get("total_amount", 0)
+        create_time = (order.get("create_time") or "")[:10]
+
+        # 状态中文
+        _STATUS = {
+            "pending":   "待支付",
+            "paid":      "已支付，待发货",
+            "shipped":   "运输中",
+            "delivered": "已签收",
+            "completed": "已完成",
+            "refunded":  "已退款",
+        }
+        status_zh = _STATUS.get(status, status)
+
+        # 拼直答
+        lines = [
+            f"订单 {effective_order_no} 当前状态：{status_zh}。",
+            f"下单时间：{create_time}，金额：¥{float(amount):.2f}。",
+        ]
+        if items:
+            item_text = "、".join(f"{it['product_name']}×{it['qty']}" for it in items[:3])
+            if len(items) > 3:
+                item_text += f" 等{len(items)}件"
+            lines.append(f"商品：{item_text}。")
+        if logi:
+            logi_no = logi.get("logistics_no") or "—"
+            logi_status = logi.get("status", "—")
+            last_loc = logi.get("last_location") or "—"
+            lines.append(f"物流：{logi_no} | {logi_status} | 最近位置 {last_loc}。")
+        return "\n".join(lines)
+
     @staticmethod
     def _handle_order(
         query: str, user_id: int, intent_result: dict,
@@ -354,6 +436,21 @@ class Synthesizer:
                 "scores": [],
             })
             yield from Synthesizer._stream_simple(NO_LOGIN_PROMPT)
+            return
+
+        # M11.5：先试工具直答（"什么状态"类简单查询，不调 LLM）
+        direct = Synthesizer._try_direct_answer_order(
+            query, user_id, entities, order_no
+        )
+        if direct is not None:
+            yield ("meta", {
+                "intent": "order_query",
+                "entities": entities,
+                "contexts": [],
+                "scores": [],
+                "direct_answer": True,
+            })
+            yield from Synthesizer._stream_simple(direct)
             return
 
         if effective_order_no:
@@ -695,7 +792,10 @@ class Synthesizer:
 
     @staticmethod
     def _stream_llm(user_prompt: str) -> Generator[Tuple[str, Any], None, None]:
-        """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10）"""
+        """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10）
+
+        P1：max_tokens=512 压输出长度，省 token 也防 LLM 长篇大论
+        """
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT_BASE},
             {"role": "user", "content": user_prompt},
@@ -703,7 +803,7 @@ class Synthesizer:
         full_answer = ""
         # semaphore 包住整个流式调用：>10 并发时排队，超出请求首 token 延迟增大但不会 429
         with _LLM_SEMAPHORE:
-            for chunk in qwen_stream_chat(messages, temperature=0.3):
+            for chunk in qwen_stream_chat(messages, temperature=0.3, max_tokens=512):
                 full_answer += chunk
                 yield ("token", chunk)
         # M8：粗估 token 数（中文 ~1 char ≈ 1.5 token；这里简化为 char 数）

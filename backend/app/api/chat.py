@@ -30,6 +30,7 @@ from app.core.context import set_session_id, set_user_id  # M8
 from app.models.user import User
 from app.schemas.chat import ChatRequest
 from app.services.audit_service import try_log_action
+from app.services.behavior_monitor import behavior_monitor  # M11.5 P2
 from app.services.metrics import metrics  # M8
 from app.services.session_service import (
     ANONYMOUS_USER_ID,
@@ -39,6 +40,8 @@ from app.services.session_service import (
     persist_to_mysql,
 )
 from app.services.synthesizer import Synthesizer
+from app.services.guard import guard as input_guard
+from app.services.response_cache import get_cached_answer, put_cached_answer
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,20 @@ def _user_agent(request: Request) -> Optional[str]:
 def _sse_format(data: dict) -> str:
     """格式化为 SSE data 行（每条 event 以 \\n\\n 结束）"""
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _chunk_text(text: str, size: int = 10) -> list[str]:
+    """按字符切片，模拟 LLM token 流（前端打字机效果）
+    中文按字符切（不拆字节），英文按 size 字符切
+    """
+    if not text:
+        return []
+    chunks = []
+    i = 0
+    while i < len(text):
+        chunks.append(text[i : i + size])
+        i += size
+    return chunks
 
 
 # =============================================================
@@ -133,6 +150,78 @@ async def chat(
 
     # 3. 异步 SSE 生成器（M7：async generator + heartbeat + 断开检测）
     async def event_generator():
+        # M11.5 P2：异常行为监控（在最早期记一次，含被 guard 拦的）
+        # — 不阻塞业务（Redis 异常放行），只告警
+        behavior_monitor.record_request(
+            ip=ip, user_id=user_id,
+            sku=payload.sku, order_no=payload.order_no,
+        )
+
+        # M11：InputGuard 3 层防御（在最早期拦住垃圾/闲聊/重复，省 LLM token）
+        guard_result = input_guard.check(payload.query, user_id)
+        if not guard_result.allowed:
+            # 黑名单静默不响应；其他走固定话术
+            yield _sse_format({
+                "type": "meta",
+                "intent": "blocked",
+                "entities": {"order_no": None, "sku": None, "keywords": []},
+                "contexts": [],
+                "scores": [],
+                "guard_layer": guard_result.layer,
+                "guard_reason": guard_result.reason,
+            })
+            if guard_result.response:
+                # 分段 yield，模拟正常 token 流（前端能正常渲染）
+                for chunk in _chunk_text(guard_result.response, size=10):
+                    yield _sse_format({"type": "token", "text": chunk})
+            yield _sse_format({"type": "done", "session_id": session_id})
+            yield _sse_format({"type": "closed"})
+            try_log_action(
+                user=user, action="chat_guard_blocked", target_type="session",
+                target_id=session_id, ip=ip, user_agent=ua,
+                detail={
+                    "guard_layer": guard_result.layer,
+                    "guard_reason": guard_result.reason,
+                    "query_len": len(payload.query),
+                },
+            )
+            logger.info(
+                f"/chat guard blocked: layer={guard_result.layer} "
+                f"reason={guard_result.reason} {user_ctx}"
+            )
+            return
+
+        # M11.5：响应缓存（exact + semantic），10min 内同 query 不再调 LLM
+        cached_answer = await asyncio.to_thread(
+            get_cached_answer, payload.query, user_id
+        )
+        if cached_answer:
+            yield _sse_format({
+                "type": "meta",
+                "intent": "cache_hit",
+                "entities": {"order_no": None, "sku": None, "keywords": []},
+                "contexts": [],
+                "scores": [],
+            })
+            for chunk in _chunk_text(cached_answer, size=10):
+                yield _sse_format({"type": "token", "text": chunk})
+            yield _sse_format({"type": "done", "session_id": session_id})
+            yield _sse_format({"type": "closed"})
+            # 写穿透（best-effort，让历史能复用）
+            try:
+                await asyncio.to_thread(
+                    append_exchange, session_id, payload.query, cached_answer
+                )
+            except Exception as e:
+                logger.warning(f"cache 命中后写历史失败: {e}")
+            try_log_action(
+                user=user, action="chat_cache_hit", target_type="session",
+                target_id=session_id, ip=ip, user_agent=ua,
+                detail={"query_len": len(payload.query), "answer_len": len(cached_answer)},
+            )
+            logger.info(f"/chat cache hit: session={session_id[:12]}... {user_ctx}")
+            return
+
         full_answer = ""
         contexts: list = []
         scores: list = []
@@ -200,6 +289,13 @@ async def chat(
                         logger.warning(
                             f"Redis 写穿透失败: session={session_id[:12]}..., {e}"
                         )
+                    # M11.5：响应缓存（10min 内同 query 不调 LLM）
+                    try:
+                        await asyncio.to_thread(
+                            put_cached_answer, payload.query, user_id, full_answer
+                        )
+                    except Exception as e:
+                        logger.warning(f"缓存写入失败: {e}")
                     try:
                         await asyncio.to_thread(
                             persist_to_mysql,
