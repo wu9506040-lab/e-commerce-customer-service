@@ -82,6 +82,10 @@ _BLACKLIST_PATTERNS = [
 # 英文 SKU 前缀（豁免中文比例检查）
 _SKU_PATTERN = re.compile(r"\b(?:ZP|BP|WS|PT|LB|KB|MS|ORD)[\w-]*\b", re.IGNORECASE)
 
+# M13 修复：纯订单号查询应当直接放行（不应被 L2 embedding 误判为闲聊）
+# 因为订单号（ORD+8位日期+3-6位字母数字）的 embedding 与电商领域 centroid cosine 通常 < 0.4
+_ORDER_NO_FULL_RE = re.compile(r"^ORD\d{8}[A-Z0-9]{3,6}$", re.IGNORECASE)
+
 
 # =============================================================
 # GuardResult
@@ -166,6 +170,9 @@ class InputGuard:
     # -------------------------------------------------------------
     def _check_l2(self, query: str) -> Optional[GuardResult]:
         """L2 闲聊识别；centroid 失败时静默放行"""
+        # M13 修复：纯订单号查询直接放行（L2 cosine 对订单号几乎必然 < 0.4）
+        if _ORDER_NO_FULL_RE.match(query.strip()):
+            return None
         centroid = get_domain_centroid()
         if centroid is None:
             # centroid 算不出来（embedding API 挂了等）— 放行，不误伤

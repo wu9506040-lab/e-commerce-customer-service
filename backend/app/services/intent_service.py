@@ -40,6 +40,10 @@ INTENT_RULES: list[tuple[IntentType, list[str]]] = [
     # 注意："7 天无理由"放在这 — 用户问"7 天无理由退货运费谁出"是政策咨询，不是真要退
     ("policy_query", [
         r"7\s*天无理由", r"七天无理由", r"无理由退",
+        # M13 修复：流程咨询类（"怎么申请退款" / "如何退款"等）走政策，不是退款
+        r"怎么.*退款", r"怎么.*退货", r"怎么.*退换",
+        r"如何.*退款", r"如何.*退货",
+        r"退款流程", r"退货流程", r"退款怎么", r"退货怎么",
         # M5 修复：发货时效 / 电池保修 — 这两类之前被 order/product 规则抢匹配
         r"什么时候发货", r"多久发货", r"几天发货", r"发货时间",
         r"电池.*保修", r"电池.*质保", r"保修多久", r"质保多久", r"保修期多久",
@@ -66,7 +70,9 @@ INTENT_RULES: list[tuple[IntentType, list[str]]] = [
 ]
 
 # 实体抽取正则
-ORDER_NO_RE = re.compile(r"\bORD\d{3,}\b", re.IGNORECASE)
+# M13 修复：原 regex `\bORD\d{3,}\b` 不能匹配字母后缀订单（如 ORD20260704899EBA）
+# 与 synthesizer._ORDER_NO_RE 对齐：ORD + 8位日期 + 3-6位大写字母数字
+ORDER_NO_RE = re.compile(r"ORD\d{8}[A-Z0-9]{3,6}", re.IGNORECASE)
 SKU_RE = re.compile(r"\b(?:ZP|BP|LP)\d{1,3}\b", re.IGNORECASE)
 
 
