@@ -5,7 +5,7 @@
  */
 import { ref, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { login, register } from '../api';
+import { login, register, demoLogin } from '../api';
 import type { User } from '../types';
 
 const router = useRouter();
@@ -45,6 +45,23 @@ async function onLogin() {
     onAuthSuccess(user);
   } catch (e) {
     error.value = e instanceof Error ? e.message : '登录失败';
+  } finally {
+    loading.value = false;
+  }
+}
+
+/**
+ * 一键 demo 体验（M13 cloud）
+ * 不需要填任何信息，后端自动建账号 + 登录
+ */
+async function onDemoLogin() {
+  loading.value = true;
+  error.value = '';
+  try {
+    const user: User = await demoLogin();
+    onAuthSuccess(user);
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '体验失败，请稍后重试';
   } finally {
     loading.value = false;
   }
@@ -141,6 +158,20 @@ onMounted(() => {
         <button type="submit" class="btn-submit" :disabled="loading">
           {{ loading ? '登录中…' : '登 录' }}
         </button>
+
+        <!-- M13 cloud：一键体验按钮（公开 demo 站点） -->
+        <div class="demo-divider">
+          <span>或</span>
+        </div>
+        <button
+          type="button"
+          class="btn-demo"
+          :disabled="loading"
+          @click="onDemoLogin"
+        >
+          立即体验 demo 账号 →
+        </button>
+
         <p class="alt-action">
           还没有账号？
           <a href="#" @click.prevent="switchTab('register')">立即注册</a>
@@ -339,6 +370,45 @@ onMounted(() => {
 }
 .btn-submit:disabled {
   background: var(--gray-400);
+  cursor: not-allowed;
+}
+
+/* Demo 一键体验按钮（M13 cloud） */
+.demo-divider {
+  display: flex;
+  align-items: center;
+  margin: var(--sp-3) 0 var(--sp-2);
+  color: var(--gray-400);
+  font-size: var(--fs-xs);
+}
+.demo-divider::before,
+.demo-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--gray-200);
+}
+.demo-divider span {
+  padding: 0 var(--sp-3);
+}
+
+.btn-demo {
+  padding: var(--sp-3);
+  background: var(--gray-0);
+  color: var(--jd-red);
+  border: 1px solid var(--jd-red);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  cursor: pointer;
+  letter-spacing: 1px;
+  transition: all 0.15s;
+}
+.btn-demo:hover:not(:disabled) {
+  background: var(--jd-red-light);
+}
+.btn-demo:disabled {
+  border-color: var(--gray-400);
+  color: var(--gray-400);
   cursor: not-allowed;
 }
 

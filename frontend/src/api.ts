@@ -90,6 +90,22 @@ export async function register(payload: RegisterPayload): Promise<User> {
   return data.user;
 }
 
+/**
+ * 一键 demo 体验（M13 cloud）
+ * 后端自动创建 visitor_<uuid> 账号 + 立即发 token，
+ * 前端无需注册，直接进系统。
+ *
+ * 适用场景：公网公开 demo（云平台简历展示用）
+ * 失败：服务端 ENABLE_DEMO_LOGIN=false 或网络错误
+ */
+export async function demoLogin(): Promise<User> {
+  const data = await http<{ user: User }>('/public/demo-account', {
+    method: 'POST',
+  });
+  isAuthed.value = true;
+  return data.user;
+}
+
 export async function logout(): Promise<void> {
   await http<{ message: string }>('/auth/logout', { method: 'POST' });
   isAuthed.value = false;  // 同步登出态

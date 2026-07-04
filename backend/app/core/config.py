@@ -59,5 +59,13 @@ class Settings(BaseSettings):
     # 控制 synthesizer._handle_refund 走 V2.x service 版还是 V3 LangGraph 版
     USE_LANGGRAPH_REFUND: bool = False
 
+    # ---- Demo 访客登录（公开 demo 站点用）----
+    # True 时开放 /api/public/demo-account 一键体验；生产默认开启（这是简历展示用项目）
+    # 安全策略：每次创建一个隔离的 visitor_xxx 用户，30 天过期自动清理
+    ENABLE_DEMO_LOGIN: bool = True
+
+    # ---- 速率限制（开放 demo 必加，防止被刷 token）----
+    RATE_LIMIT_PER_MINUTE: int = 30
+
 
 settings = Settings()
