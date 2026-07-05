@@ -252,7 +252,14 @@ export interface MetricsSnapshot {
   };
   rag?: { qdrant_search_success: number; qdrant_search_total: number };
   embedding?: { calls_total: number; errors_total: number };
-  hit_at_k?: { 'hit@1': number; 'hit@3': number; 'hit@5': number; 'hit@10': number };
+  hit_at_k?: {
+    window_size: number;
+    total_samples: number;
+    'hit@1': number;
+    'hit@3': number;
+    'hit@5': number;
+    'hit@10': number;
+  };
 }
 
 export async function getMetrics(): Promise<MetricsSnapshot> {

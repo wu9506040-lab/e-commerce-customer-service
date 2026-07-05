@@ -174,13 +174,15 @@ function goShop(cat?: string) {
           <div class="metric-num">
             {{ ((metrics.rag?.qdrant_search_success ?? 0) / Math.max(1, metrics.rag?.qdrant_search_total ?? 1) * 100).toFixed(0) }}%
           </div>
-          <div class="metric-label">RAG 检索成功率</div>
+          <div class="metric-label">近期 RAG 检索成功率</div>
+          <div class="metric-sub">n={{ metrics.rag?.qdrant_search_total ?? 0 }}（运行滑窗）</div>
         </div>
         <div class="metric-box">
           <div class="metric-num">
             {{ ((metrics.hit_at_k?.['hit@5'] ?? 0) * 100).toFixed(0) }}%
           </div>
-          <div class="metric-label">hit@5 命中率</div>
+          <div class="metric-label">近窗 hit@5 命中率</div>
+          <div class="metric-sub">n={{ metrics.hit_at_k?.total_samples ?? 0 }}（运行滑窗）</div>
         </div>
       </div>
     </section>
@@ -529,6 +531,12 @@ function goShop(cat?: string) {
   margin-top: var(--sp-3);
   font-size: var(--fs-base);
   color: var(--gray-600);
+}
+.metric-sub {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
+  letter-spacing: 0.2px;
 }
 .metrics-loading {
   text-align: center;
