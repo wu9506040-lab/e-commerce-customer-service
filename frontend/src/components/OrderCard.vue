@@ -23,6 +23,7 @@ import {
   refundOrder,
   shipOrder,
 } from '../api';
+import RefundReasonDialog from './RefundReasonDialog.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -132,33 +133,53 @@ const actionDef = computed<ActionDef | null>(() => {
 const acting = ref(false);
 const actionError = ref<string | null>(null);
 
+// P0-C：退款原因对话框（替代 window.prompt）
+const refundDialogShow = ref(false);
+const pendingRefund = ref<{ orderNo: string } | null>(null);
+
 async function runAction() {
   if (!actionDef.value || acting.value) return;
-  acting.value = true;
-  actionError.value = null;
   const kind = actionDef.value.key;
   const orderNo = props.order.order_no;
+  // 退款走 dialog 收集原因，其他动作直接执行
+  if (kind === 'refund') {
+    pendingRefund.value = { orderNo };
+    refundDialogShow.value = true;
+    return;
+  }
+  acting.value = true;
+  actionError.value = null;
   try {
     if (kind === 'pay') await payOrder(orderNo);
     else if (kind === 'ship') await shipOrder(orderNo);
     else if (kind === 'confirm') await confirmOrder(orderNo);
-    else if (kind === 'refund') {
-      const reason = window.prompt(
-        '请输入退款原因（演示场景，默认「用户申请退款」）:',
-        '用户申请退款',
-      );
-      if (reason === null) {
-        acting.value = false;
-        return; // 用户取消
-      }
-      await refundOrder(orderNo, { reason: reason.trim() || '用户申请退款' });
-    }
     emit('changed', orderNo);
   } catch (e) {
     actionError.value = e instanceof Error ? e.message : '操作失败';
   } finally {
     acting.value = false;
   }
+}
+
+async function onRefundConfirm(reason: string) {
+  if (!pendingRefund.value) return;
+  const { orderNo } = pendingRefund.value;
+  refundDialogShow.value = false;
+  pendingRefund.value = null;
+  acting.value = true;
+  actionError.value = null;
+  try {
+    await refundOrder(orderNo, { reason: reason.trim() || '用户申请退款' });
+    emit('changed', orderNo);
+  } catch (e) {
+    actionError.value = e instanceof Error ? e.message : '退款失败';
+  } finally {
+    acting.value = false;
+  }
+}
+
+function onRefundCancel() {
+  pendingRefund.value = null;
 }
 </script>
 
@@ -224,6 +245,14 @@ async function runAction() {
         </div>
       </template>
     </template>
+
+    <!-- P0-C：退款原因对话框（替代 window.prompt） -->
+    <RefundReasonDialog
+      v-model:show="refundDialogShow"
+      :order-no="pendingRefund?.orderNo || order.order_no"
+      @confirm="onRefundConfirm"
+      @cancel="onRefundCancel"
+    />
   </div>
 </template>
 

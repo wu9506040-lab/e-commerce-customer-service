@@ -25,7 +25,8 @@
 | **前端 Web UI** | http://120.79.27.124:5173 | 主入口，点「体验」一键登录 |
 | **Swagger API 文档** | http://120.79.27.124:8000/docs | 在线调 API、看 Pydantic schema |
 | **健康检查** | http://120.79.27.124:8000/health | mysql/redis/qdrant 三件套状态 |
-| **测试账号** | `demotest` / `demotest123` | 含 4 个真实订单可演示退款 LangGraph |
+| **测试账号** | `demotest` / `demotest123` | 含 8 个真实订单（覆盖 pending/paid/shipped/delivered/completed/refunded 全 6 种状态）可演示退款 LangGraph |
+| **订单状态分布** | pending×2, paid×1, shipped×1, delivered×1, completed×1, refunded×2 | 8 笔覆盖全状态 |
 
 Qdrant 控制台 (`6333/dashboard`) 内网-only（按需开安全组）。
 
@@ -213,7 +214,7 @@ docker exec customer-service-mysql mysql -ucs_user -pcs_pass_2026 customer_servi
 ```
 
 测试账号（已 seed，仅用于演示）：
-- `demotest` / `demotest123`：4 个真实订单可演示 LangGraph 退款状态机的 4 路径
+- `demotest` / `demotest123`：8 个真实订单（pending×2 / paid×1 / shipped×1 / delivered×1 / completed×1 / refunded×2），可演示 LangGraph 退款状态机的 4 路径
 - `admin`：通过上述方式手动创建并提权后即可登录 `/api/admin/*` 后台
 
 ---

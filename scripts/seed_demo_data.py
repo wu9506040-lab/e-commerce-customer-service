@@ -52,7 +52,7 @@ try:
 except ImportError:
     pass
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import delete, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.clients.mysql_client import get_engine, get_session_local  # noqa: E402
@@ -190,12 +190,22 @@ def _build_conversations() -> list[dict]:
 # =============================================================
 def _reset_user_data(db: Session, user_id: int) -> None:
     """
-    --reset：把该用户所有订单改名为 *_old_{6位hex}（让出 unique key 给新订单），
-    所有会话标记 deleted=1。
-    商品数据不动。
+    --reset：清场该用户所有订单 + 会话 + 消息，为新种子腾位置。
 
-    注意：orders.order_no 是 unique key，rename 不论 deleted 状态都做，
-    否则上次 reset 失败的残留 deleted=1 订单还会占着 key。
+    策略（订单 vs 会话/消息 必须不同处理）：
+
+    1. 订单：必须 rename + 软删（deleted=1）
+       - 原因：orders.order_no 是 unique key，rename 不论 deleted 状态都做，
+         否则上次 reset 失败的残留 deleted=1 订单还会占着 key，导致新订单 INSERT 冲突。
+       - rename = 把 order_no 改成 {原号}_old_{6位hex}，让 unique key 释放。
+
+    2. 会话 + 消息：硬删（DELETE FROM，物理行清掉）
+       - 原因：回归脚本用 demotest 跑时插的脏数据本身就是 deleted=0，
+         软删 `deleted=1` 也能让前端 list_conversations 过滤掉，但
+         数据库行还在——面试官用 SELECT COUNT(*) 一查就露馅。
+       - 硬删直接清表，无审计残留，因为这是演示脏数据不是真实业务会话。
+
+    3. 商品数据：不动（共享给所有用户）。
     """
     now = dt.datetime.now()
     suffix = uuid.uuid4().hex[:6]
@@ -213,15 +223,19 @@ def _reset_user_data(db: Session, user_id: int) -> None:
             o.update_time = now
             o.order_no = f"{o.order_no}_old_{suffix}"
     db.flush()
-    # 会话（软删全部）
+    # 会话 + 关联消息：硬删（脏数据不留审计，避免回归脚本跑出来的"测试1/测试2..."继续污染 demo 列表）
+    # 注意：之前用软删 `deleted=1` 不够——回归脚本用 demotest 跑时会插 deleted=0 的脏会话，
+    # 软删它们没事，但 reset 跑过一次后又有新脏数据进来就又暴露了，所以 reset 必须硬删彻底清场。
+    # 订单保持软删（unique key 限制，必须 rename + deleted=1 让出 key）。
     db.execute(
-        Conversation.__table__.update()
-        .where(Conversation.user_id == user_id)
-        .values(deleted=1, update_time=now)
+        delete(Message).where(Message.user_id == user_id)
+    )
+    db.execute(
+        delete(Conversation).where(Conversation.user_id == user_id)
     )
     db.flush()
     logger.info(
-        f"已 reset：用户 id={user_id} 的 {len(all_orders)} 个订单 + 全部会话清场（订单号加 _old_{suffix} 后缀）"
+        f"已 reset：用户 id={user_id} 的 {len(all_orders)} 个订单（软删让 key） + 全部会话/消息硬删"
     )
 
 

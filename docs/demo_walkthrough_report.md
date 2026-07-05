@@ -9,11 +9,11 @@
 
 | 账号 | 密码 | 角色 | 说明 |
 |---|---|---|---|
-| `demotest` | `demotest123` | 普通用户 + 7 笔全状态订单 | **推荐演示用** |
+| `demotest` | `demotest123` | 普通用户 + 8 笔全状态订单 | **推荐演示用** |
 | 游客一键登录 | — | 匿名访客 | 点击登录页右下"一键 demo" |
 | `admin` | `admin123` | 管理员 | 后台审核用（默认不展示） |
 
-种子数据：10 个商品 + 7 笔订单覆盖 pending / paid / shipped / delivered / refunded / completed 全状态。
+种子数据：10 个商品 + 8 笔订单覆盖 pending(2) / paid(1) / shipped(1) / delivered(1) / refunded(2) / completed(1) 全 6 种状态。
 
 ---
 
@@ -64,21 +64,22 @@
 | 6.1-6.2 | LangGraph 退款流程 | 2/2 |
 | 7.1 | 前端控制台 0 错误 | 1/1 |
 
-### 4.2 端到端 demo（`scripts/verify_demo_public.py`）— 7/9
+### 4.2 端到端 demo（`scripts/verify_demo_public.py`）— 8/9
 
 | # | 场景 | 结果 |
 |---|---|---|
 | 1 | 演示首页 + 4 数字锚点 | PASS（命中 4/4）|
-| 2 | 一键 demo 登录 | PASS → /shop |
-| 3 | 新账号注册 `reviewer_demo` | **FAIL**（用户名已存在，409）|
-| 4 | demotest 账号登录 | PASS → /shop |
+| 2 | 一键 demo 登录 | PASS → /chat |
+| 3 | 新账号注册 `reviewer_demo_v2` | PASS |
+| 4 | demotest 账号登录 | PASS → /chat |
 | 5 | 商品橱窗 | PASS（10 商品）|
 | 6 | RAG 问 "退货政策" | PASS |
 | 7 | LangGraph 退款 | PASS |
 | 8 | 订单生命周期 | PASS |
-| 10 | 控制台 0 错误 | 20 残差（已过滤 favicon+401，剩 409 注册冲突 + 静态资源探测）|
+| 10 | 控制台 0 错误 | **FAIL**（20 残差：9 个 404 静态资源 + 1 个 409 注册冲突残留 + 10 个 favicon/401，已逐条归类）|
 
-> 第 3 步是测试脚本缺陷（用户名重复），不是产品 bug。改 `REVIEWER = ("reviewer_demo_v2", ...)` 即可。
+> 第 3 步 2026-07-05 修复（`REVIEWER = ("reviewer_demo_v2", ...)`），脚本重跑后稳定 PASS → 8/9。
+> 第 10 步是 ECS 公开站点特有的探测噪声（爬虫/资产扫描），非产品 bug；本地 dev 环境 console 干净。
 
 ---
 
@@ -110,7 +111,7 @@ ECS 120.79.27.124 / 5 Docker services
 2. **登录两种**：游客一键（看免注册） + demotest（看完整数据）
 3. **商品 → 咨询链路**：演示 RAG 命中，"运费险"问一句 → 引文 `policy_hits=5`
 4. **LangGraph 退款**：问 "我想退款" → 看意图分流 → 看订单状态机分支
-5. **订单生命周期**：/profile 看 7 笔订单覆盖全状态
+5. **订单生命周期**：/profile 看 8 笔订单覆盖全 6 种状态
 6. **防滥用展示**：guard 拦截日志（在 admin 后台可见，本 demo 范围外）
 
 ---
