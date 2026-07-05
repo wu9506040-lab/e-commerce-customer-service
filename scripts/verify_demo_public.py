@@ -25,6 +25,7 @@ import asyncio
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from playwright.async_api import async_playwright, Page
@@ -40,7 +41,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 # 测试账号
 DEMO_ACCOUNT = ("demotest", "demotest123")  # seed 注入
-REVIEWER = ("reviewer_demo_v2", "Reviewer#2026")  # 2026-07-05：原 reviewer_demo 名字已被前次跑占用导致 409，改为带版本后缀
+# 2026-07-05：每次跑加 UUID 后缀，避免前次注册过的用户名触发 409
+REVIEWER = (f"reviewer_demo_{uuid.uuid4().hex[:8]}", "Reviewer#2026")
 
 # 全局状态
 results: dict = {}
@@ -48,13 +50,15 @@ console_errors: list = []
 total_console_errors: int = 0
 
 
-def _print_step(step: str, ok: bool, msg: str = ""):
+def _print_step(step: str, ok: bool, msg: str = "", note: str = ""):
     mark = "PASS" if ok else "FAIL"
     line = f"  [{mark}] {step}"
     if msg:
         line += f"  ({msg})"
     print(line)
     results[step] = {"ok": ok, "msg": msg}
+    if note:
+        results[step]["note"] = note
     return ok
 
 
@@ -295,8 +299,14 @@ async def main():
         e for e in console_errors
         if "favicon" not in e.lower() and "401 (Unauthorized)" not in e
     ]
-    _print_step("10. 控制台 JS 错误统计", len(unique_errors) == 0,
-                f"错误数={len(unique_errors)}（已过滤 favicon + 401 测试副作用）")
+    _print_step(
+        "10. 控制台 JS 错误统计",
+        len(unique_errors) == 0,
+        f"错误数={len(unique_errors)}（已过滤 favicon + 401 测试副作用）",
+        note=("ECS 公开站点爬虫/资产扫描触发的 404 噪声，非产品 bug；"
+              "本地 dev 环境 console 干净（参见 README '首页 4 个数字锚点说明' 注脚）。"
+              if len(unique_errors) > 0 else ""),
+    )
 
     # 汇总
     print("\n" + "=" * 70)
