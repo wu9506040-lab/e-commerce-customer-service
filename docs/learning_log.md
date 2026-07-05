@@ -2870,6 +2870,8 @@ M8 是 V1.x → V2.0 生产化的最后一块拼图：
 
 **总计 75 个测试全部通过**（45 老 + 30 新）。
 
+> 2026-07-05 更新：随着新增 IntentService / RefundGraph / Rerank / Healthcheck 等模块，pytest 累计 122 个，本节"75 个"为该阶段历史快照。
+
 ### 讲解思路
 
 - "怎么排查线上问题？" → "Request ID 串联所有日志，curl /metrics 实时看业务健康度"
