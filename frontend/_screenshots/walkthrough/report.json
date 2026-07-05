@@ -1,11 +1,12 @@
 {
   "base_url": "http://120.79.27.124:5173",
   "api_url": "http://120.79.27.124:8000",
-  "elapsed_sec": 68.6,
+  "elapsed_sec": 68.8,
   "passed": 8,
   "total": 9,
-  "console_errors": 9,
+  "console_errors": 10,
   "console_error_details": [
+    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
     "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
     "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
     "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
@@ -51,7 +52,7 @@
     },
     "10. 控制台 JS 错误统计": {
       "ok": false,
-      "msg": "错误数=9（已过滤 favicon + 401 测试副作用）",
+      "msg": "错误数=10（已过滤 favicon + 401 测试副作用）",
       "note": "ECS 公开站点爬虫/资产扫描触发的 404 噪声，非产品 bug；本地 dev 环境 console 干净（参见 README '首页 4 个数字锚点说明' 注脚）。"
     }
   },
