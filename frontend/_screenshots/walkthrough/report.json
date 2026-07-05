@@ -1,12 +1,11 @@
 {
   "base_url": "http://120.79.27.124:5173",
   "api_url": "http://120.79.27.124:8000",
-  "elapsed_sec": 48.0,
-  "passed": 7,
+  "elapsed_sec": 74.6,
+  "passed": 8,
   "total": 9,
-  "console_errors": 20,
+  "console_errors": 9,
   "console_error_details": [
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 409 (Conflict)",
     "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
     "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
     "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
@@ -24,15 +23,15 @@
     },
     "2. 一键 demo 登录": {
       "ok": true,
-      "msg": "已跳转到 shop"
+      "msg": "已跳转到 chat"
     },
-    "3. 新账号注册": {
-      "ok": false,
-      "msg": "Timeout 15000ms exceeded.\n=========================== logs ===========================\nwaiting for navigation to \"<funct"
+    "3. 新账号注册 + 自动登录": {
+      "ok": true,
+      "msg": "已进 chat"
     },
     "4. demotest 账号登录": {
       "ok": true,
-      "msg": "已跳转到 shop"
+      "msg": "已跳转到 chat"
     },
     "5. 商品橱窗浏览": {
       "ok": true,
@@ -40,7 +39,7 @@
     },
     "6. RAG 提问（退货政策）": {
       "ok": true,
-      "msg": "命中知识库关键词=1/3"
+      "msg": "命中知识库关键词=3/3"
     },
     "7. LangGraph 退款状态机": {
       "ok": true,
@@ -52,7 +51,7 @@
     },
     "10. 控制台 JS 错误统计": {
       "ok": false,
-      "msg": "错误数=20（已过滤 favicon + 401 测试副作用）"
+      "msg": "错误数=9（已过滤 favicon + 401 测试副作用）"
     }
   },
   "screenshots": [
