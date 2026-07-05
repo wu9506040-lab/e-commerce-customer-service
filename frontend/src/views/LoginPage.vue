@@ -104,8 +104,9 @@ async function onRegister() {
   }
 }
 
+// P0-B：demo 体验最直观的入口是 /chat（让访客立刻看到 AI 客服），不再是 /shop
 function onAuthSuccess(_user: User) {
-  const redirect = (route.query.redirect as string) || '/shop';
+  const redirect = (route.query.redirect as string) || '/chat';
   router.push(redirect);
 }
 

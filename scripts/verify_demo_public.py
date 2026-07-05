@@ -40,7 +40,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 # 测试账号
 DEMO_ACCOUNT = ("demotest", "demotest123")  # seed 注入
-REVIEWER = ("reviewer_demo", "Reviewer#2026")  # 演示现场注册
+REVIEWER = ("reviewer_demo_v2", "Reviewer#2026")  # 2026-07-05：原 reviewer_demo 名字已被前次跑占用导致 409，改为带版本后缀
 
 # 全局状态
 results: dict = {}
@@ -88,6 +88,27 @@ async def shoot(page: Page, name: str, path: str, wait_ms: int = 1800) -> bool:
         return False
 
 
+async def settle_screenshot(page: Page, name: str, wait_ms: int = 2500) -> bool:
+    """
+    在交互后截图（不重新 goto）：等 networkidle + 多等 wait_ms
+    解决"wait_for_url 后立即截图，JS 还没渲染完"的字节重复问题。
+    """
+    try:
+        # 等所有网络请求结束（fetch / SSE handshake / metrics 等）
+        try:
+            await page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass  # SSE 长连接可能永不 idle，超时也继续
+        await page.wait_for_timeout(wait_ms)
+        out = OUT / f"{name}.png"
+        await page.screenshot(path=str(out), full_page=True)
+        print(f"  SCREEN: {out.name} ({out.stat().st_size // 1024} KB)")
+        return True
+    except Exception as e:
+        print(f"  SCREEN FAILED ({name}): {e}")
+        return False
+
+
 async def step1_homepage(page: Page) -> bool:
     """1. 演示首页"""
     ok = await shoot(page, "demo-01-home", "/", wait_ms=1200)
@@ -116,8 +137,7 @@ async def step2_demo_login(page: Page) -> bool:
         await page.click(".btn-demo")
         # 等跳转离开 /login
         await page.wait_for_url(lambda url: "/login" not in url, timeout=15000)
-        await page.wait_for_timeout(1500)
-        await page.screenshot(path=str(OUT / "demo-02-after-demo-login.png"), full_page=True)
+        await settle_screenshot(page, "demo-02-after-demo-login")
         print(f"  跳转后 URL: {page.url}")
         return _print_step("2. 一键 demo 登录", "/login" not in page.url,
                            f"已跳转到 {page.url.split('/')[-1]}")
@@ -142,8 +162,7 @@ async def step3_register(page: Page) -> bool:
             await pwd_inputs[1].fill(REVIEWER[1])
         await page.click("button[type='submit']")
         await page.wait_for_url(lambda url: "/login" not in url, timeout=15000)
-        await page.wait_for_timeout(1500)
-        await page.screenshot(path=str(OUT / "demo-03-after-register.png"), full_page=True)
+        await settle_screenshot(page, "demo-03-after-register")
         return _print_step("3. 新账号注册 + 自动登录", "/login" not in page.url,
                            f"已进 {page.url.split('/')[-1]}")
     except Exception as e:
@@ -161,8 +180,7 @@ async def step4_account_login(page: Page) -> bool:
         await page.fill("input[autocomplete='current-password']", DEMO_ACCOUNT[1])
         await page.click("button[type='submit']")
         await page.wait_for_url(lambda url: "/login" not in url, timeout=15000)
-        await page.wait_for_timeout(1500)
-        await page.screenshot(path=str(OUT / "demo-04-account-login.png"), full_page=True)
+        await settle_screenshot(page, "demo-04-account-login")
         return _print_step("4. demotest 账号登录", "/login" not in page.url,
                            f"已跳转到 {page.url.split('/')[-1]}")
     except Exception as e:
@@ -188,7 +206,7 @@ async def step6_chat_rag(page: Page) -> bool:
         await page.fill("input[type='text'], textarea", "退货政策是什么？")
         await page.keyboard.press("Enter")
         await page.wait_for_timeout(8000)  # 等 SSE 流式回答
-        await page.screenshot(path=str(OUT / "demo-06-chat-rag.png"), full_page=True)
+        await settle_screenshot(page, "demo-06-chat-rag")
         content = await page.content()
         # 验证：RAG 回答里出现知识库特征词
         rag_markers = ["7 天" in content or "七天" in content,
@@ -213,7 +231,7 @@ async def step7_refund_langgraph(page: Page) -> bool:
         await page.fill("input[type='text'], textarea", "ORD20260101001")
         await page.keyboard.press("Enter")
         await page.wait_for_timeout(8000)
-        await page.screenshot(path=str(OUT / "demo-07-refund-langgraph.png"), full_page=True)
+        await settle_screenshot(page, "demo-07-refund-langgraph")
         content = await page.content()
         # LangGraph 路径特征：状态词、订单号、time/days 关键词
         lg_markers = ["ORD" in content,

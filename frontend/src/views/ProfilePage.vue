@@ -75,12 +75,15 @@ const ordersByStatus = computed(() => {
   return groups;
 });
 
+// M10 闭环：订单状态 6 个 tab 完整覆盖（refunded/completed 也得能筛到，否则退款/完成订单点 tab 就消失）
 const STATUS_TABS = [
   { key: 'all', label: '全部', count: () => orders.value.length },
   { key: 'pending', label: '待付款', count: () => ordersByStatus.value.pending.length },
   { key: 'paid', label: '待发货', count: () => ordersByStatus.value.paid.length },
   { key: 'shipped', label: '运输中', count: () => ordersByStatus.value.shipped.length },
   { key: 'delivered', label: '已签收', count: () => ordersByStatus.value.delivered.length },
+  { key: 'completed', label: '已完成', count: () => ordersByStatus.value.completed.length },
+  { key: 'refunded', label: '已退款', count: () => ordersByStatus.value.refunded.length },
 ];
 const activeStatus = ref('all');
 

@@ -77,12 +77,13 @@ function goLogin() {
 /**
  * M13 cloud：首页"立即体验"直跳 + 一键 demo
  * 公开 demo 站点访客无需注册，秒进系统
+ * P0-B：demo 体验的目的是让用户立刻看到 AI 客服 → 跳 /chat（最有说服力），而不是 /shop
  */
 async function goDemo() {
   try {
     const { demoLogin } = await import('../api');
     await demoLogin();
-    router.push({ name: 'shop' });
+    router.push({ name: 'chat' });
   } catch (e) {
     console.error('demo 登录失败:', e);
     // fallback 跳登录页
