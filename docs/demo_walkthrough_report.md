@@ -9,11 +9,11 @@
 
 | 账号 | 密码 | 角色 | 说明 |
 |---|---|---|---|
-| `demotest` | `demotest123` | 普通用户 + 8 笔全状态订单 | **推荐演示用** |
+| `demotest` | `demotest123` | 普通用户 + 7 笔全状态订单 | **推荐演示用** |
 | 游客一键登录 | — | 匿名访客 | 点击登录页右下"一键 demo" |
 | `admin` | `admin123` | 管理员 | 后台审核用（默认不展示） |
 
-种子数据：10 个商品 + 8 笔订单覆盖 pending(2) / paid(1) / shipped(1) / delivered(1) / refunded(2) / completed(1) 全 6 种状态。
+种子数据：10 个商品 + 7 笔订单覆盖 pending(2) / paid(1) / shipped(1) / delivered(1) / completed(1) / refunded(1) 全 6 种状态。
 
 ---
 
@@ -111,7 +111,7 @@ ECS 120.79.27.124 / 5 Docker services
 2. **登录两种**：游客一键（看免注册） + demotest（看完整数据）
 3. **商品 → 咨询链路**：演示 RAG 命中，"运费险"问一句 → 引文 `policy_hits=5`
 4. **LangGraph 退款**：问 "我想退款" → 看意图分流 → 看订单状态机分支
-5. **订单生命周期**：/profile 看 8 笔订单覆盖全 6 种状态
+5. **订单生命周期**：/profile 看 7 笔订单覆盖全 6 种状态
 6. **防滥用展示**：guard 拦截日志（在 admin 后台可见，本 demo 范围外）
 
 ---
