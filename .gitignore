@@ -160,3 +160,10 @@ docs/_private/
 # =============================================================
 frontend/_screenshots/audit/
 frontend/_screenshots/bugrepro/
+
+# =============================================================
+# 内部测试报告（idor / regression_m13 / 性能压测等，含漏洞细节 + 压测数据，不上传公开仓库）
+# 2026-07-05：所有 _report.json 不再 tracked，已 git rm --cached
+# 仅保留 frontend/_screenshots/walkthrough/ 下的 demo 截图 + 公开 walkthrough/report.json
+# =============================================================
+frontend/_screenshots/*_report.json
