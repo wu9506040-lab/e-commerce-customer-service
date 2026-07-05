@@ -21,7 +21,7 @@
 
 | # | 路径 | 验证点 |
 |---|---|---|
-| 1 | `/` | 4 个数字锚点（75 pytest / 0 token Guard / LangGraph 6 节点 / 5 服务部署） |
+| 1 | `/` | 4 个数字锚点（122 pytest / 0 token Guard / LangGraph 6 节点 / 5 服务部署） |
 | 2 | `/login?tab=login` → "一键 demo" | 游客登录 → /chat（直接进入 AI 对话页，省去浏览商品环节） |
 | 3 | `/shop` | 10 个商品卡片 |
 | 4 | `/shop/SKU001` | 商品详情 + 加入购物车 |
@@ -107,7 +107,7 @@ ECS 120.79.27.124 / 5 Docker services
 
 ## 6. 演示流程要点
 
-1. **首页开场**：4 个数字锚点（0 token 拦截 + LangGraph 6 节点 + 5 服务 + 75 pytest）→ 量化技术资产
+1. **首页开场**：4 个数字锚点（0 token 拦截 + LangGraph 6 节点 + 5 服务 + 122 pytest）→ 量化技术资产
 2. **登录两种**：游客一键（看免注册） + demotest（看完整数据）
 3. **商品 → 咨询链路**：演示 RAG 命中，"运费险"问一句 → 引文 `policy_hits=5`
 4. **LangGraph 退款**：问 "我想退款" → 看意图分流 → 看订单状态机分支
