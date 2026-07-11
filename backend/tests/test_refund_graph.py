@@ -127,16 +127,17 @@ class TestEscalate:
 class TestRefundGraph:
     """测试 StateGraph 的路径分支"""
 
-    @patch("app.services.refund_graph.qwen_chat")
+    @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.PolicyService")
     @patch("app.services.refund_graph.OrderTool")
-    def test_path1_refundable_with_policy(self, mock_tool, mock_policy, mock_llm):
+    def test_path1_refundable_with_policy(self, mock_tool, mock_policy, mock_provider):
         """路径 1：可退 + 查政策 + 合成答案"""
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
         mock_policy.search_policy.return_value = [
             {"text": "七天无理由退货规则..."},
             {"text": "已发货商品退款流程..."},
         ]
+        mock_llm = mock_provider.return_value.chat
         mock_llm.return_value = {"reply": "您的订单符合 7 天无理由退货条件，可以退。"}
 
         from app.services.refund_graph import refund_graph_app
@@ -151,9 +152,9 @@ class TestRefundGraph:
         assert mock_policy.search_policy.called
         assert mock_llm.called
 
-    @patch("app.services.refund_graph.qwen_chat")
+    @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.OrderTool")
-    def test_path2_quality_issue_escalate(self, mock_tool, mock_llm):
+    def test_path2_quality_issue_escalate(self, mock_tool, mock_provider):
         """路径 2：质量问题无凭证 → 升级人工（不调 LLM）"""
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
 
@@ -167,13 +168,14 @@ class TestRefundGraph:
 
         assert "人工" in result["final_answer"]
         # 升级路径不调 LLM
-        assert not mock_llm.called
+        assert not mock_provider.return_value.chat.called
 
-    @patch("app.services.refund_graph.qwen_chat")
+    @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.OrderTool")
-    def test_path3_over_7_days(self, mock_tool, mock_llm):
+    def test_path3_over_7_days(self, mock_tool, mock_provider):
         """路径 3：超过 7 天 → 不可退 → 直接合成答案"""
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=15)
+        mock_llm = mock_provider.return_value.chat
         mock_llm.return_value = {"reply": "您的订单已超过 7 天，不符合退款条件。"}
 
         from app.services.refund_graph import refund_graph_app
@@ -187,11 +189,12 @@ class TestRefundGraph:
         # 不可退路径不查政策
         assert mock_llm.called
 
-    @patch("app.services.refund_graph.qwen_chat")
+    @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.OrderTool")
-    def test_path4_already_refunded(self, mock_tool, mock_llm):
+    def test_path4_already_refunded(self, mock_tool, mock_provider):
         """路径 4：已退款 → 直接合成答案"""
         mock_tool.get_order_by_no.return_value = make_order("refunded", days_ago=3)
+        mock_llm = mock_provider.return_value.chat
         mock_llm.return_value = {"reply": "该订单已退款。"}
 
         from app.services.refund_graph import refund_graph_app

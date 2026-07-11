@@ -71,14 +71,14 @@ def test_product_not_found_but_kb_hit_goes_llm():
 
     with patch("app.services.synthesizer.ProductTool") as pt_mock, \
          patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.qwen_stream_chat") as qwen_mock:
+         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
         pt_mock.get_by_sku.return_value = None
         pt_mock.search_by_keyword.return_value = []
         # KB 命中 1 条
         ps_mock.search_policy.return_value = [
             {"text": "ZP2 是测试商品，续航 10 小时。", "source": "products.json", "score": 0.85}
         ]
-        qwen_mock.return_value = iter(fake_llm_chunks)
+        provider_mock.return_value.stream_chat.return_value = iter(fake_llm_chunks)
 
         from app.services.synthesizer import Synthesizer
         events, _ = _drain(Synthesizer._handle_product(
@@ -88,7 +88,7 @@ def test_product_not_found_but_kb_hit_goes_llm():
         ))
 
     # 应该调 LLM（KB 有命中可以兜底回答）
-    assert qwen_mock.called, "KB 命中时应调 LLM 用 KB 内容回答"
+    assert provider_mock.called, "KB 命中时应调 LLM 用 KB 内容回答"
     # meta 应有 kb_hits=1
     meta_data = [d for t, d in events if t == "meta"][0]
     assert meta_data["kb_hits"] == 1, f"meta 应显示 kb_hits=1, 实际={meta_data['kb_hits']}"
@@ -106,11 +106,11 @@ def test_product_found_normal():
 
     with patch("app.services.synthesizer.ProductTool") as pt_mock, \
          patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.qwen_stream_chat") as qwen_mock:
+         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
         pt_mock.get_by_sku.return_value = fake_product
         pt_mock.search_by_keyword.return_value = [fake_product]
         ps_mock.search_policy.return_value = []
-        qwen_mock.return_value = iter(fake_llm_chunks)
+        provider_mock.return_value.stream_chat.return_value = iter(fake_llm_chunks)
 
         from app.services.synthesizer import Synthesizer
         events, _ = _drain(Synthesizer._handle_product(
@@ -119,7 +119,7 @@ def test_product_found_normal():
             history=[],
         ))
 
-    assert qwen_mock.called, "商品命中时应调 LLM"
+    assert provider_mock.called, "商品命中时应调 LLM"
     meta_data = [d for t, d in events if t == "meta"][0]
     assert meta_data["products_found"] == 1
 
