@@ -103,7 +103,7 @@ def test_handle_product_empty_uses_safe_fallback():
     """
     with patch("app.services.synthesizer.ProductTool") as pt_mock, \
          patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.qwen_stream_chat") as qwen_mock:
+         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
         pt_mock.get_by_sku.return_value = None
         pt_mock.search_by_keyword.return_value = []
         ps_mock.search_policy.return_value = []
@@ -116,7 +116,7 @@ def test_handle_product_empty_uses_safe_fallback():
         ))
 
     # 必须没调 LLM
-    assert not qwen_mock.called, "商品+KB 双空时不应调 LLM"
+    assert not provider_mock.called, "商品+KB 双空时不应调 LLM"
     # meta + token (兜底) + done
     event_types = [e[0] for e in events]
     assert "meta" in event_types and "token" in event_types and "done" in event_types
@@ -145,10 +145,11 @@ def test_handle_product_with_real_data_uses_tagged_prompt():
 
     with patch("app.services.synthesizer.ProductTool") as pt_mock, \
          patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.qwen_stream_chat", side_effect=mock_qwen):
+         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
         pt_mock.get_by_sku.return_value = fake_product
         pt_mock.search_by_keyword.return_value = [fake_product]
         ps_mock.search_policy.return_value = []
+        provider_mock.return_value.stream_chat.side_effect = mock_qwen
 
         from app.services.synthesizer import Synthesizer
         list(Synthesizer._handle_product(
@@ -177,11 +178,12 @@ def test_handle_order_with_data_uses_tagged_prompt():
         return iter(["订单在运输中"])
 
     with patch("app.services.synthesizer.OrderService") as os_mock, \
-         patch("app.services.synthesizer.qwen_stream_chat", side_effect=mock_qwen):
+         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
         os_mock.get_order_detail.return_value = {
             "order": fake_order, "items": [{"product_name": "ZP1", "qty": 1, "subtotal": 2999}],
             "logistics": fake_logistics,
         }
+        provider_mock.return_value.stream_chat.side_effect = mock_qwen
 
         from app.services.synthesizer import Synthesizer
         list(Synthesizer._handle_order(
@@ -208,11 +210,12 @@ def test_handle_policy_prompt_has_numbered_refs():
         return iter(["7天无理由政策..."])
 
     with patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.qwen_stream_chat", side_effect=mock_qwen):
+         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
         ps_mock.search_policy.return_value = [
             {"text": "7天无理由退货政策", "source": "policy_return", "score": 0.92},
             {"text": "运费险说明", "source": "policy_shipping", "score": 0.85},
         ]
+        provider_mock.return_value.stream_chat.side_effect = mock_qwen
 
         from app.services.synthesizer import Synthesizer
         list(Synthesizer._handle_policy(
