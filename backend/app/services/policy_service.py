@@ -52,10 +52,10 @@ class PolicyService:
             - rerank_score: None 表示未走 rerank（USE_RERANK=false 或 rerank 降级）
             - rrf_score: 仅混合检索时存在
         """
-        from app.core.embedding import embed_text
+        from app.core.providers.embedding import get_embedding_provider
 
         try:
-            query_vec = embed_text(query)
+            query_vec = get_embedding_provider().embed_text(query)
         except Exception as e:
             logger.warning(f"PolicyService.embed_text 失败: {e}")
             return []

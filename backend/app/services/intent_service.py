@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Optional
 
-from app.core.qwen import chat as qwen_chat
+from app.core.providers.llm import get_llm_provider
 from app.schemas.intent import IntentEntities, IntentType
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,7 @@ Q: 我的快递怎么还没到 → {{"intent": "order_query", "confidence": 0.93
 用户问题：{query}
 JSON："""
 
-        result = qwen_chat(
+        result = get_llm_provider().chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,  # 分类任务低温度
             max_tokens=80,

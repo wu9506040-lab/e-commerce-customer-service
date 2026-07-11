@@ -17,7 +17,7 @@ import logging
 from typing import List, Optional
 
 from app.clients.redis_client import get_client as redis_get
-from app.core.embedding import EMBEDDING_DIM, EmbeddingError, embed_texts
+from app.core.providers.embedding import EmbeddingError, get_embedding_provider
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def _get_cached_centroid() -> Optional[List[float]]:
         if not raw:
             return None
         vec = json.loads(raw)
-        if not isinstance(vec, list) or len(vec) != EMBEDDING_DIM:
+        if not isinstance(vec, list) or len(vec) != get_embedding_provider().get_dim():
             logger.warning(f"centroid 缓存格式异常: type={type(vec)} dim={len(vec) if isinstance(vec, list) else 'N/A'}")
             return None
         return vec
@@ -114,7 +114,7 @@ def get_domain_centroid() -> Optional[List[float]]:
         BATCH = 10
         for i in range(0, len(CENTROID_SEEDS), BATCH):
             batch = CENTROID_SEEDS[i : i + BATCH]
-            batch_embs = embed_texts(batch)
+            batch_embs = get_embedding_provider().embed_texts(batch)
             if not batch_embs or len(batch_embs) != len(batch):
                 logger.error(f"embed_texts batch 异常: got={len(batch_embs) if batch_embs else 0}, expected={len(batch)}")
                 return None

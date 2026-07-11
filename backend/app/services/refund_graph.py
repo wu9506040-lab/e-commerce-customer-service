@@ -23,7 +23,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from app.core.qwen import chat as qwen_chat
+from app.core.providers.llm import get_llm_provider
 from app.services.policy_service import PolicyService
 from app.tools.order_tool import OrderTool
 
@@ -276,7 +276,7 @@ def synthesize_answer(state: RefundState) -> RefundState:
     )
 
     # 5. 调 LLM — temperature=0.3 降低随机性
-    result = qwen_chat(
+    result = get_llm_provider().chat(
         [{"role": "user", "content": prompt}],
         temperature=0.3,
     )

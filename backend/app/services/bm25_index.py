@@ -24,7 +24,6 @@ import threading
 from typing import List, Dict, Any, Optional, Tuple
 
 from app.clients.qdrant import search as qdrant_search, QDRANT_COLLECTION
-from app.core.embedding import embed_text
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)

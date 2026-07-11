@@ -28,7 +28,7 @@ import time
 from typing import Optional
 
 from app.clients.redis_client import get_client as redis_get
-from app.core.embedding import EMBEDDING_DIM, EmbeddingError, embed_text
+from app.core.providers.embedding import EmbeddingError, get_embedding_provider
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def get_semantic(query: str, user_id: int) -> Optional[str]:
     try:
         # 1. 算 query embedding
         try:
-            q_emb = embed_text(query)
+            q_emb = get_embedding_provider().embed_text(query)
         except EmbeddingError as e:
             logger.warning(f"[rcache] sem embed 失败（放行）: {e}")
             return None
@@ -157,7 +157,7 @@ def put_semantic(query: str, user_id: int, answer: str) -> None:
         return
     try:
         try:
-            q_emb = embed_text(query)
+            q_emb = get_embedding_provider().embed_text(query)
         except EmbeddingError as e:
             logger.warning(f"[rcache] sem put embed 失败: {e}")
             return

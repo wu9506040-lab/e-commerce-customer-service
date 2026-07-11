@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from app.clients.mysql_client import with_safe_session
 from app.clients.qdrant import ensure_collection, upsert_points
-from app.core.embedding import embed_texts
+from app.core.providers.embedding import get_embedding_provider
 from app.models.knowledge_document import KnowledgeDocument
 
 logger = logging.getLogger(__name__)
@@ -217,7 +217,7 @@ def ingest_text(
     ensure_collection()
 
     # 3. 批量 embedding
-    vectors = embed_texts(chunks)
+    vectors = get_embedding_provider().embed_texts(chunks)
 
     # 4. 构造 PointStruct（用 uuid5 保证同 source 重跑幂等）
     chunk_ids: List[str] = []
