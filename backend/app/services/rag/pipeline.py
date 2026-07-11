@@ -17,8 +17,8 @@ M8：埋点 retrieve_hits + hit@K（用"检索到结果"作为命中代理标志
 import logging
 from typing import Dict, List, Any, Optional, Generator, Tuple
 
-from app.core.embedding import embed_text
-from app.core.qwen import chat as qwen_chat, stream_chat as qwen_stream_chat
+from app.core.providers.embedding import get_embedding_provider
+from app.core.providers.llm import get_llm_provider
 from app.clients.qdrant import search as qdrant_search
 from app.services.metrics import metrics
 
@@ -139,7 +139,7 @@ def run_stream(
     )
 
     # 1. embed + search（同步，快，先拿到 contexts）
-    query_vec = embed_text(query)
+    query_vec = get_embedding_provider().embed_text(query)
     hits = qdrant_search(query_vec, top_k=top_k)
     contexts = [_extract_text(h.get("payload") or {}) for h in hits]
     scores = [float(h.get("score") or 0.0) for h in hits]
@@ -171,7 +171,7 @@ def run_stream(
 
     # 3. 流式 LLM
     full_answer = ""
-    for chunk in qwen_stream_chat(messages, temperature=0.3):
+    for chunk in get_llm_provider().stream_chat(messages, temperature=0.3):
         full_answer += chunk
         yield ("token", chunk)
 

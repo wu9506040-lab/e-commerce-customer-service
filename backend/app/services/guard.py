@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.clients.redis_client import get_client as redis_get
-from app.core.embedding import EmbeddingError, embed_text_or_mock
+from app.core.providers.embedding import EmbeddingError, get_embedding_provider
 from app.services.guard_centroid import get_domain_centroid
 
 logger = logging.getLogger(__name__)
@@ -184,9 +184,8 @@ class InputGuard:
         try:
             # embed_text_or_mock 失败时返零向量，但 zero vector cosine=0 会被判闲聊
             # 为了避免误伤 embedding 失败的情况，单独 try 一遍
-            from app.core.embedding import embed_text
             try:
-                q_emb = embed_text(query)
+                q_emb = get_embedding_provider().embed_text(query)
             except EmbeddingError as e:
                 logger.warning(f"[guard L2] embed_text 失败，跳过闲聊识别: {e}")
                 return None

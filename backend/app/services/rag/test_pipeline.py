@@ -20,7 +20,7 @@ import uuid
 
 from qdrant_client.models import PointStruct
 
-from app.core.embedding import embed_text, embed_texts
+from app.core.providers.embedding import get_embedding_provider
 from app.clients.qdrant import (
     upsert_points,
     get_collection_info,
@@ -73,7 +73,7 @@ def seed_knowledge_base():
     ensure_collection()
 
     texts = [d["text"] for d in SAMPLE_DOCS]
-    vectors = embed_texts(texts)
+    vectors = get_embedding_provider().embed_texts(texts)
 
     points = []
     for doc, vec in zip(SAMPLE_DOCS, vectors):

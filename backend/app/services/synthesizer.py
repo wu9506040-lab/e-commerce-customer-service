@@ -22,7 +22,7 @@ import threading
 from typing import Any, Generator, Optional, Tuple
 
 from app.core.config import settings
-from app.core.qwen import stream_chat as qwen_stream_chat
+from app.core.providers.llm import get_llm_provider
 from app.services.intent_service import IntentService
 from app.services.metrics import metrics  # M8
 from app.services.order_service import OrderService
@@ -890,7 +890,7 @@ class Synthesizer:
         full_answer = ""
         # semaphore 包住整个流式调用：>10 并发时排队，超出请求首 token 延迟增大但不会 429
         with _LLM_SEMAPHORE:
-            for chunk in qwen_stream_chat(messages, temperature=0.3, max_tokens=256):
+            for chunk in get_llm_provider().stream_chat(messages, temperature=0.3, max_tokens=256):
                 full_answer += chunk
                 yield ("token", chunk)
         # M8：粗估 token 数（中文 ~1 char ≈ 1.5 token；这里简化为 char 数）

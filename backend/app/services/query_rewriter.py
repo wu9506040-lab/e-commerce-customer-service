@@ -22,7 +22,7 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
-from app.core.qwen import chat as qwen_chat
+from app.core.providers.llm import get_llm_provider
 from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ def rewrite_query(
     user_prompt = REWRITE_USER_TEMPLATE.format(history=history_str, query=query)
 
     try:
-        result = qwen_chat(
+        result = get_llm_provider().chat(
             [
                 {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
