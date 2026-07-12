@@ -30,6 +30,9 @@ RUN pip install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirror
 # 应用代码
 COPY app/ ./app/
 
+# 业务配置（Prompt YAML 等；Sprint 2 起）
+COPY config/ ./config/
+
 # 暴露端口
 EXPOSE 8000
 

@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_COLLECTION: str = "knowledge_base"
 
+    # ---- Prompt 加载器（Sprint 2）----
+    # 相对 backend 根目录的路径；绝对路径可直接覆盖
+    # 例如：容器内 /app/config/prompts → PROMPT_DIR=/app/config/prompts
+    # docker compose 默认 cwd=/app，相对路径 "config/prompts" 即可（推荐）
+    PROMPT_DIR: str = "config/prompts"
+
     # ---- LLM (DashScope OpenAI 兼容) ----
     QWEN_API_KEY: str = ""
     DASHSCOPE_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
