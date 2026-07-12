@@ -1,5 +1,5 @@
 """
-Synthesizer 退款路径集成测试（Mock 版）
+Synthesizer 退款路径集成测试（Mock 版）— Sprint 3 更新到 chat.refund_handler 命名空间
 
 策略：mock 外部依赖（OrderTool / PolicyService / qwen_chat），
        验证 synthesizer.run_stream 在 refund_query 意图下的：
@@ -7,6 +7,10 @@ Synthesizer 退款路径集成测试（Mock 版）
        - USE_LANGGRAPH_REFUND=true 走 V3 LangGraph 版
        - V3 异常时 fallback 到 V2
        - V3 SSE 协议正确（meta / token）
+
+Sprint 3 拆分后：
+- _handle_refund_v3 / _handle_refund_v2 从 Synthesizer class 移到 chat.refund_handler 模块级函数
+- tests patches 改为 chat.refund_handler / chat.stream_dispatcher / chat.orchestrator 三个 namespace
 
 不依赖 MySQL / Qdrant / LLM API，可独立运行。
 """
@@ -56,11 +60,11 @@ def collect_events(generator):
 class TestRefundDispatch:
     """测试 run_stream 的 refund_query 分派逻辑"""
 
-    @patch("app.services.synthesizer.v12_rag_run_stream")
+    @patch("app.services.chat.orchestrator.v12_rag_run_stream")
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.PolicyService")
     @patch("app.services.refund_graph.OrderTool")
-    @patch("app.services.synthesizer.OrderService")
+    @patch("app.services.chat.refund_handler.OrderService")
     def test_default_uses_v2(self, mock_order_svc, mock_tool, mock_policy, mock_provider, mock_v12):
         """默认 USE_LANGGRAPH_REFUND=False → 走 V2"""
         # V2 用的 service
@@ -69,7 +73,7 @@ class TestRefundDispatch:
         # V2 不直接调 LangGraph 的 tool/policy/qwen，但 V1.2 fallback 可能调 v12
         mock_v12.return_value = iter([])
 
-        from app.services.synthesizer import Synthesizer
+        from app.services.chat.orchestrator import Synthesizer
         events = collect_events(Synthesizer.run_stream(
             query="能退吗",
             user_id=42,
@@ -80,8 +84,8 @@ class TestRefundDispatch:
         # 通过 mock OrderService.list_user_orders 是否被调用判断（V2 兜底 order_no 用它）
         assert mock_order_svc.list_user_orders.called
 
-    @patch("app.services.synthesizer.OrderService")
-    @patch("app.services.synthesizer.settings")
+    @patch("app.services.chat.refund_handler.OrderService")
+    @patch("app.services.chat.orchestrator.settings")
     def test_v3_when_env_true(self, mock_settings, mock_order_svc):
         """USE_LANGGRAPH_REFUND=True → 走 V3 LangGraph 版"""
         mock_settings.USE_LANGGRAPH_REFUND = True
@@ -99,7 +103,7 @@ class TestRefundDispatch:
             mock_policy.search_policy.return_value = [{"text": "7天无理由"}]
             mock_provider.return_value.chat.return_value = {"reply": "可以退"}
 
-            from app.services.synthesizer import Synthesizer
+            from app.services.chat.orchestrator import Synthesizer
             events = collect_events(Synthesizer.run_stream(
                 query="三天前买的能退吗",
                 user_id=42,
@@ -107,21 +111,21 @@ class TestRefundDispatch:
                 history=None,
             ))
 
-            # V3 路径：应该调 LangGraph 内部的 OrderTool（不是 synthesizer.OrderService）
+            # V3 路径：应该调 LangGraph 内部的 OrderTool（不是 refund_handler.OrderService）
             assert mock_tool.get_order_by_no.called
             assert mock_provider.return_value.chat.called
 
 
-# ============ 测试 _handle_refund_v3 4 条路径 ============
+# ============ 测试 handle_refund_v3 4 条路径 ============
 
 class TestHandleRefundV3:
-    """测试 _handle_refund_v3 的 4 条路径"""
+    """测试 chat.refund_handler.handle_refund_v3 的 4 条路径"""
 
-    @patch("app.services.synthesizer.OrderService")
+    @patch("app.services.chat.refund_handler.OrderService")
     def test_unauthenticated_user(self, mock_order_svc):
         """未登录用户：返回「请登录」模板"""
-        from app.services.synthesizer import Synthesizer
-        events = collect_events(Synthesizer._handle_refund_v3(
+        from app.services.chat.refund_handler import handle_refund_v3
+        events = collect_events(handle_refund_v3(
             query="能退吗",
             user_id=0,  # ANONYMOUS_USER_ID
             intent_result=make_intent_result(),
@@ -132,13 +136,13 @@ class TestHandleRefundV3:
         assert any(ev[0] == "token" and "登录" in ev[1] for ev in events)
         assert not mock_order_svc.called  # 不查订单
 
-    @patch("app.services.synthesizer.OrderService")
+    @patch("app.services.chat.refund_handler.OrderService")
     def test_no_orders(self, mock_order_svc):
         """没订单：返回「请提供订单号」模板"""
         mock_order_svc.list_user_orders.return_value = []
 
-        from app.services.synthesizer import Synthesizer
-        events = collect_events(Synthesizer._handle_refund_v3(
+        from app.services.chat.refund_handler import handle_refund_v3
+        events = collect_events(handle_refund_v3(
             query="能退吗",
             user_id=42,
             intent_result=make_intent_result(),
@@ -149,15 +153,15 @@ class TestHandleRefundV3:
 
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.OrderTool")
-    @patch("app.services.synthesizer.OrderService")
+    @patch("app.services.chat.refund_handler.OrderService")
     def test_path1_refundable_with_policy(self, mock_order_svc, mock_tool, mock_provider):
         """路径 1：可退 + 查政策 → synthesize"""
         mock_order_svc.list_user_orders.return_value = [make_order()]  # 兜底 order_no
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
         mock_provider.return_value.chat.return_value = {"reply": "符合 7 天无理由"}
 
-        from app.services.synthesizer import Synthesizer
-        events = collect_events(Synthesizer._handle_refund_v3(
+        from app.services.chat.refund_handler import handle_refund_v3
+        events = collect_events(handle_refund_v3(
             query="三天前买的能退吗",
             user_id=42,
             intent_result=make_intent_result(),
@@ -185,14 +189,14 @@ class TestHandleRefundV3:
         assert any("符合" in ev[1] for ev in token_events)
 
     @patch("app.services.refund_graph.OrderTool")
-    @patch("app.services.synthesizer.OrderService")
+    @patch("app.services.chat.refund_handler.OrderService")
     def test_path2_quality_issue_escalate(self, mock_order_svc, mock_tool):
         """路径 2：质量问题无凭证 → escalate"""
         mock_order_svc.list_user_orders.return_value = [make_order()]
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
 
-        from app.services.synthesizer import Synthesizer
-        events = collect_events(Synthesizer._handle_refund_v3(
+        from app.services.chat.refund_handler import handle_refund_v3
+        events = collect_events(handle_refund_v3(
             query="质量有问题能退吗",
             user_id=42,
             intent_result=make_intent_result(),
@@ -206,15 +210,15 @@ class TestHandleRefundV3:
 
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.OrderTool")
-    @patch("app.services.synthesizer.OrderService")
+    @patch("app.services.chat.refund_handler.OrderService")
     def test_path3_over_7_days(self, mock_order_svc, mock_tool, mock_provider):
         """路径 3：超过 7 天 → 不可退 → synthesize"""
         mock_order_svc.list_user_orders.return_value = [make_order(days_ago=15)]
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=15)
         mock_provider.return_value.chat.return_value = {"reply": "已超过 7 天，不符合退款条件"}
 
-        from app.services.synthesizer import Synthesizer
-        events = collect_events(Synthesizer._handle_refund_v3(
+        from app.services.chat.refund_handler import handle_refund_v3
+        events = collect_events(handle_refund_v3(
             query="能退吗",
             user_id=42,
             intent_result=make_intent_result(order_no="ORD002"),
@@ -237,9 +241,9 @@ class TestFallback:
     """LangGraph 异常时 fallback 到 V2"""
 
     @patch("app.services.refund_graph.OrderTool")
-    @patch("app.services.synthesizer.OrderService")
-    @patch("app.services.synthesizer.RefundService")
-    @patch("app.services.synthesizer.get_llm_provider")
+    @patch("app.services.chat.refund_handler.OrderService")
+    @patch("app.services.chat.refund_handler.RefundService")
+    @patch("app.services.chat.stream_dispatcher.get_llm_provider")
     def test_langgraph_failure_fallback_to_v2(
         self, mock_provider, mock_refund_svc, mock_order_svc, mock_tool,
     ):
@@ -257,8 +261,8 @@ class TestFallback:
         # LangGraph 内部抛异常
         mock_tool.get_order_by_no.side_effect = RuntimeError("DB down")
 
-        from app.services.synthesizer import Synthesizer
-        events = collect_events(Synthesizer._handle_refund_v3(
+        from app.services.chat.refund_handler import handle_refund_v3
+        events = collect_events(handle_refund_v3(
             query="能退吗",
             user_id=42,
             intent_result=make_intent_result(),
@@ -279,7 +283,7 @@ class TestSSEProtocol:
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.PolicyService")
     @patch("app.services.refund_graph.OrderTool")
-    @patch("app.services.synthesizer.OrderService")
+    @patch("app.services.chat.refund_handler.OrderService")
     def test_meta_payload_structure(self, mock_order_svc, mock_tool, mock_policy, mock_provider):
         """meta 事件 payload 应包含 V3 特有字段"""
         mock_order_svc.list_user_orders.return_value = [make_order()]
@@ -287,8 +291,8 @@ class TestSSEProtocol:
         mock_policy.search_policy.return_value = [{"text": "..."}]
         mock_provider.return_value.chat.return_value = {"reply": "OK"}
 
-        from app.services.synthesizer import Synthesizer
-        events = collect_events(Synthesizer._handle_refund_v3(
+        from app.services.chat.refund_handler import handle_refund_v3
+        events = collect_events(handle_refund_v3(
             query="能退吗",
             user_id=42,
             intent_result=make_intent_result(),

@@ -31,9 +31,10 @@ from app.models.user import User
 from app.schemas.chat import ChatRequest
 from app.services.audit_service import try_log_action
 from app.services.behavior_monitor import behavior_monitor  # M11.5 P2
+from app.services.chat.orchestrator import Synthesizer  # Sprint 3：从 services/synthesizer 切到 services/chat/orchestrator
+from app.services.chat.prompt_assembler import _build_meta_contexts  # Sprint 3：原 services/synthesizer
 from app.services.metrics import metrics  # M8
 from app.services.policy_service import PolicyService
-from app.services.synthesizer import _build_meta_contexts  # P0-H: cache_hit 也暴露 contexts
 from app.services.session_service import (
     ANONYMOUS_USER_ID,
     append_exchange,
@@ -41,7 +42,6 @@ from app.services.session_service import (
     load_history_with_fallback,
     persist_to_mysql,
 )
-from app.services.synthesizer import Synthesizer
 from app.services.guard import guard as input_guard
 from app.services.intent_service import IntentService
 from app.services.response_cache import get_cached_answer, put_cached_answer
@@ -257,7 +257,7 @@ async def chat(
         chat_start = time.perf_counter()  # M8：记录 chat 总耗时
         # 把 Synthesizer.run_stream 包装成 async iterator
         # （它原本是同步 generator，用 to_thread 异步化）
-        from app.services.synthesizer import Synthesizer as _S
+        from app.services.chat.orchestrator import Synthesizer as _S
         # M9.5：把 sku/order_no context 传给 synthesizer（让 LLM 知道当前商品/订单）
         sync_iter = iter(_S.run_stream(
             payload.query, user_id, history,

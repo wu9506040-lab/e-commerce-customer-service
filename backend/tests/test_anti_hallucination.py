@@ -30,15 +30,17 @@ def _drain(gen):
 
 def test_product_not_found_no_llm():
     """场景 1：商品 DB 空 + KB 空 → 不调 LLM，返兜底"""
-    with patch("app.services.synthesizer.ProductTool") as pt_mock, \
-         patch("app.services.synthesizer.PolicyService") as ps_mock:
-        # 商品全空
+    with patch("app.services.chat.orchestrator.ProductTool") as pt_mock, \
+         patch("app.services.chat.stream_dispatcher.ProductTool") as pt_mock_stream, \
+         patch("app.services.chat.orchestrator.PolicyService") as ps_mock:
+        # 商品全空（两个 namespace 都要 patch：orchestrator + stream_dispatcher）
         pt_mock.get_by_sku.return_value = None
         pt_mock.search_by_keyword.return_value = []
+        pt_mock_stream.search_by_keyword.return_value = []
         # KB 全空
         ps_mock.search_policy.return_value = []
 
-        from app.services.synthesizer import Synthesizer
+        from app.services.chat.orchestrator import Synthesizer
         events, llm_called = _drain(Synthesizer._handle_product(
             query="ZP2 续航怎么样",  # 不存在的商品
             intent_result={"intent": "product_query", "entities": {"sku": "ZP2"}, "confidence": 0.9, "method": "rule"},
@@ -69,18 +71,20 @@ def test_product_not_found_but_kb_hit_goes_llm():
     """场景 2：商品 DB 空 + KB 命中 → 仍走 LLM（KB 兜底）"""
     fake_llm_chunks = ["ZP2", "是一款", "测试商品", "。"]
 
-    with patch("app.services.synthesizer.ProductTool") as pt_mock, \
-         patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
+    with patch("app.services.chat.orchestrator.ProductTool") as pt_mock, \
+         patch("app.services.chat.stream_dispatcher.ProductTool") as pt_mock_stream, \
+         patch("app.services.chat.orchestrator.PolicyService") as ps_mock, \
+         patch("app.services.chat.stream_dispatcher.get_llm_provider") as provider_mock:
         pt_mock.get_by_sku.return_value = None
         pt_mock.search_by_keyword.return_value = []
+        pt_mock_stream.search_by_keyword.return_value = []
         # KB 命中 1 条
         ps_mock.search_policy.return_value = [
             {"text": "ZP2 是测试商品，续航 10 小时。", "source": "products.json", "score": 0.85}
         ]
         provider_mock.return_value.stream_chat.return_value = iter(fake_llm_chunks)
 
-        from app.services.synthesizer import Synthesizer
+        from app.services.chat.orchestrator import Synthesizer
         events, _ = _drain(Synthesizer._handle_product(
             query="ZP2 续航怎么样",
             intent_result={"intent": "product_query", "entities": {"sku": "ZP2"}, "confidence": 0.9, "method": "rule"},
@@ -104,15 +108,17 @@ def test_product_found_normal():
     }
     fake_llm_chunks = ["ZP1", "售价", "2999元", "。"]
 
-    with patch("app.services.synthesizer.ProductTool") as pt_mock, \
-         patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
+    with patch("app.services.chat.orchestrator.ProductTool") as pt_mock, \
+         patch("app.services.chat.stream_dispatcher.ProductTool") as pt_mock_stream, \
+         patch("app.services.chat.orchestrator.PolicyService") as ps_mock, \
+         patch("app.services.chat.stream_dispatcher.get_llm_provider") as provider_mock:
         pt_mock.get_by_sku.return_value = fake_product
         pt_mock.search_by_keyword.return_value = [fake_product]
+        pt_mock_stream.search_by_keyword.return_value = [fake_product]
         ps_mock.search_policy.return_value = []
         provider_mock.return_value.stream_chat.return_value = iter(fake_llm_chunks)
 
-        from app.services.synthesizer import Synthesizer
+        from app.services.chat.orchestrator import Synthesizer
         events, _ = _drain(Synthesizer._handle_product(
             query="ZP1 多少钱",
             intent_result={"intent": "product_query", "entities": {"sku": "SKU001"}, "confidence": 0.9, "method": "rule"},
