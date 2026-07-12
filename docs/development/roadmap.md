@@ -4,7 +4,7 @@
 > **生成方式**：基于 2026-07-11 实际代码扫描（10,290 行 Python）生成，**不基于理想架构**
 > **替换关系**：取代 `docs/development/archive/2026-07-11_roadmap_v1_archived.md`
 > **维护者**：Tech Lead
-> **最近更新**：2026-07-11
+> **最近更新**：2026-07-12（Sprint 2 完成，更新 G6 关闭 + S2 章节状态）
 
 ---
 
@@ -111,7 +111,7 @@ backend/
 | G2  | 无 `EmbeddingProvider` Protocol            | 🔴 P0  | 8 文件 `from app.core.embedding import embed_text*`（bm25_index/guard/guard_centroid/policy_service/rag/ingest/rag/pipeline/rag/test_pipeline/response_cache） | §9.1.1 + §9.3.3 | **S1**      |
 | G4  | 无 `VectorStore` Protocol（V3+ 推迟）       | 🟠 P1  | `services/policy_service.py` 直接 `from app.clients.qdrant import search as qdrant_search`                                                            | §9.3.3            | **V3+ 推迟** |
 | G5  | Prompt 硬编码在业务代码                    | 🔴 P0  | 5 文件含 prompt 字面量（synthesizer/intent_service/query_rewriter/rerank/rag/pipeline/guard）                                                       | §9.6              | **S3**（主要）|
-| G6  | 无 `config/prompts/` 目录                  | 🔴 P0  | 目录不存在                                                                                                                                          | §9.6              | **S2 + S3**  |
+| G6  | 无 `config/prompts/` 目录                  | 🔴 P0  | 目录不存在                                                                                                                                          | §9.6              | **S2 ✅ + S3**（S2 已建架子；S3 抽 5 个业务 YAML） |
 | G7  | `synthesizer.py` 928 行万能模块            | 🔴 P0  | 8 个跨模块直接 import（intent_service/order_service/policy_service/refund_service/rag/pipeline/query_rewriter/tools/product_tool/session_service） | §9.2.1            | **S3**（降低）|
 | G8  | 业务规则硬编码（阈值/常量）                 | 🟠 P1  | `guard.py:55-67` 等多处硬编码阈值 + `synthesizer.py:42` 硬编码 semaphore 值                                                                          | §9.4.2            | **S4**      |
 | G9  | 9 张表均无 `tenant_id`                      | 🟢 P2  | `grep tenant_id backend/app` 0 命中                                                                                                                  | §9.4.3            | **S6**      |
@@ -170,6 +170,10 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 ---
 
 ### 3.3 S2 — Prompt 配置化（5 个核心）
+
+> **状态**：✅ 已完成（2026-07-12，4 commit：`1f705fc` / `910663c` / `05d5965` / `68d5700`）
+> **ADR**：`docs/decisions/2026-07-12-sprint-2-prompt-loader.md`
+> **结果**：21 测试 PASS；全量 150 PASS；prompt_loader.py 194 行；关闭 G6
 
 | 项     | 内容                                                                                                                                                                                                                                                                                                                                                                                |
 |--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|

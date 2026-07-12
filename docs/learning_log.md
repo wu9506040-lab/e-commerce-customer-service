@@ -3019,3 +3019,66 @@ M12 是 RAG 链路最后一公里优化：
 - **M12 = RAG 召回优化（query 改写，指代补全）**
 
 让"用户问得越随意，系统召回越准"。
+
+---
+
+## 26. Sprint 2 Prompt 基础设施（2026-07-12）
+
+**文件**：`backend/app/services/prompt_loader.py`（194 行）+ `backend/config/prompts/` + `tests/test_prompt_loader.py`（21 用例）
+
+### What
+新增统一 Prompt 加载器（Protocol + YAML 实现 + 工厂）：
+- `PromptLoader` Protocol（`@runtime_checkable`）
+- `YAMLPromptLoader` 基于文件系统 + mtime 缓存（热更新免重启）
+- `get_prompt_loader()` 工厂入口（单例 + 依赖倒置）
+- 4 个自定义异常（`PromptError / PromptNameError / PromptNotFoundError / PromptFormatError`）
+- 配套 `Settings.PROMPT_DIR` 配置 + Dockerfile `COPY config/` 一行
+
+### Why
+- 当前 5 处业务 Prompt 散落在 synthesizer / intent / query_rewriter / rerank / guard 代码中（**G5 硬编码缺口**），无法版本管理 / 热更新 / 多租户覆盖
+- S2 只搭架子（不动业务），S3 拆 synthesizer 时顺手抽 — 单 Sprint 推不动跨 5 个模块改 + 928 行拆分
+- 加载器是"独立可单测"模块：纯文件 I/O + 缓存策略，不依赖 LLM / Embedding / 数据库
+
+### Tech Stack
+- **PyYAML 6.0.2**（锁版本，Sprint 2 唯一新依赖）
+- **Protocol + Factory**（沿用 Sprint 1 Provider 抽象的模式）
+- **threading.Lock**（单进程读多写少场景；写并发留 V3+）
+- **pytest tmp_path fixture**（文件隔离测试）
+
+### Flow
+```
+业务调用 get_prompt_loader().load("intent")
+    ↓
+_resolve_base_dir() 解析 PROMPT_DIR（env 覆盖 > 相对 backend 根）
+    ↓
+name 白名单正则 + resolve 后前缀双重校验
+    ↓
+exists() 检查 → 不存在抛 PromptNotFoundError
+    ↓
+stat().st_mtime  对比缓存 → 命中直返；否则 yaml.safe_load
+    ↓
+data["content"] strip → 缓存 + 返回
+```
+
+### Problem → Fix
+- **路径越权风险**：`name = "../etc/passwd"` 可能绕过白名单
+  - 防御：双层校验 + 双重前缀匹配（Windows `\` 和 Unix `/` 都覆盖）
+- **mtime 测试 flaky**：Windows 100ns 精度 / Linux ext4 1s 精度不一致
+  - 解决：`time.sleep(0.05)` 让 fs 刷新 mtime（双平台稳）
+- **stat() 顺序 bug**：`stat()` 在 `exists()` 之前调用导致文件不存在时抛 `FileNotFoundError` 而非业务异常
+  - 修复：测试第 1 次发现 → 第 1 次修复（最小改动：把 exists() 移前）
+- **PROMPT_DIR 相对路径与 cwd 耦合**：本地 / 容器 / 测试 3 种 cwd 行为不一致
+  - 解决：用 `Path(__file__).resolve().parents[2]` 计算 backend 根，env 覆盖支持绝对路径
+
+### Architecture Role
+属于 `services/` 层（业务基础设施），按 §9.7 Interface First 落地：
+- 业务模块 → `from app.services.prompt_loader import get_prompt_loader`（依赖抽象）
+- 当前唯一实现：`YAMLPromptLoader`（基於 YAML 文件）
+- 未来扩展位：多租户覆盖（V3+）→ 加 `TenantAwarePromptLoader`，工厂按 context 切换
+
+**Phase 1 进度**：S1 ✅ + S2 ✅ = 2/3；S3（拆 synthesizer + 抽 5 个 prompt）待启动。
+
+---
+
+> 提示：Sprint 3 启动时新建 `docs/decisions/2026-XX-XX-sprint-3-synthesizer-split.md`；
+> 5 个业务 prompt YAML 命名沿用 `config/prompts/README.md` 约定（intent.yaml / rerank.yaml / ...）。
