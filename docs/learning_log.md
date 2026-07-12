@@ -3082,3 +3082,116 @@ data["content"] strip → 缓存 + 返回
 
 > 提示：Sprint 3 启动时新建 `docs/decisions/2026-XX-XX-sprint-3-synthesizer-split.md`；
 > 5 个业务 prompt YAML 命名沿用 `config/prompts/README.md` 约定（intent.yaml / rerank.yaml / ...）。
+
+---
+
+## 27. Sprint 3 Synthesizer 拆分（928 → 5 模块）（2026-07-12）
+
+**文件**：
+- `backend/app/services/chat/`（子包 6 个文件，共 1056 行）
+  - `__init__.py`（空，0 行）
+  - `orchestrator.py`（402 行，Synthesizer 主类）
+  - `prompt_assembler.py`（276 行，7 个纯字符串处理函数）
+  - `stream_dispatcher.py`（78 行，stream_llm + 滑窗检索）
+  - `refund_handler.py`（222 行，handle_refund_v2/v3）
+  - `citation_formatter.py`（14 行，占位 + 扩展注释）
+- `backend/app/services/synthesizer.py`（928 → 64 行，薄壳 re-export）
+- `backend/app/api/chat.py`（import 路径切换）
+- `backend/config/prompts/agent.yaml` + `no_login.yaml`（Range A 抽取 2/5）
+- `backend/tests/test_chat_prompt_assembler.py`（11 用例）+ `test_chat_meta_contexts.py`（7 用例）
+
+### What
+按 `docs/decisions/2026-07-12-sprint-3-synthesizer-split.md` 5-commit 计划落地：
+1. **commit 1（ADR）**：明确范围 A 决议（仅抽 2/5 Prompt，业务逻辑零变更）
+2. **commit 2（YAML）**：把 synthesizer.py:42 SYSTEM_PROMPT_BASE / :53 NO_LOGIN_PROMPT 提到 YAML
+3. **commit 3（cp 安全网）**：完整 cp 4 个新模块到 `chat/` 子包，不动旧代码
+4. **commit 4（切换）**：api/chat.py 切换到 `chat.orchestrator`，旧 synthesizer 改薄壳，refund_v2/v3 移到 `chat/refund_handler.py`
+5. **commit 5（测试+文档）**：18 个纯函数单测 + 文档收尾（本节）
+
+**新模块边界**：
+| 模块 | 职责 | 行数 |
+|------|------|------|
+| `orchestrator.py` | Synthesizer.run_stream 主流程 + 4 个 `_handle_<intent>` 意图分发 | 402 |
+| `prompt_assembler.py` | `_build_chat_prompt` / `_format_tool_result` / `_format_policy_docs` / `_format_history` / `_build_meta_contexts` / `_extract_order_no_from_history` | 276 |
+| `stream_dispatcher.py` | `stream_llm` / `stream_simple` / `search_by_keyword_window` + `_LLM_SEMAPHORE` | 78 |
+| `refund_handler.py` | `handle_refund_v2`（V2.x 双轨制）+ `handle_refund_v3`（V3 LangGraph） | 222 |
+| `citation_formatter.py` | 占位（未来 citation 渲染扩展位） | 14 |
+
+**已知预算偏离**（ADR §6 标注）：
+- orchestrator.py 402 vs ADR 预算 < 350（+52）
+- prompt_assembler.py 276 vs ADR 预算 < 250（+26）
+- chat/ 6 文件 vs ADR 预算 ≤ 4（+2）
+- 原因：orchestrator 主类承担太多意图分发（M9.5+ 防串单、多意图路由、退款 V2/V3 选择）；二次拆分需要等 S4 业务规则 YAML 化后才能继续拆。
+
+### Why
+- **G5 硬编码缺口**：当前 5 处业务 Prompt 散落在 synthesizer / intent / query_rewriter / rerank / guard 代码中，无法版本管理 / 热更新 / 多租户覆盖
+- **G7 单文件过大**：synthesizer.py 928 行（含 5 个 prompt + 4 个意图分支 + 退款双轨 + 流式 + 元数据 + 兜底回答），单文件维护窗口已超限
+- **S2 → S3 分阶段**：S2 先搭 prompt_loader 架子 + 缓存 + 防御；S3 在 S2 基础上拆 synthesizer 同时抽 2 个 synthesizer 范围内的 Prompt（agent + no_login），跨模块的 3 个 intent / query_rewriter / rerank 留 S4
+- **Range A 决议**：单 Sprint 同时拆 928 行 + 抽 5 个跨模块 Prompt 工作量爆炸；用户决议"先拆 synthesizer，抽 2/5 Prompt（synthesizer 范围内），余下 3 个降级 Sprint 4"
+
+### Tech Stack
+- **薄壳 re-export 模式**：synthesizer.py 改为纯 re-export，兜住历史 import 路径（`from app.services.synthesizer import Synthesizer` 仍可用）
+- **模块就近原则（§7.3）**：调用方只 import `chat.orchestrator.Synthesizer`；chat 子包内部模块之间就近引用
+- **Python parenthesis 字符串拼接**（YAML 多行内容 + 注释保留技巧）：
+  ```python
+  SYSTEM_PROMPT_BASE = (
+      get_prompt_loader().load("agent")  # 业务提示词来自 YAML
+  )
+  ```
+- **YAML block string**（`content: |` 保留多行缩进 + 不替换转义）
+- **pytest 纯函数测试**（无 I/O / 无 DB / 无 LLM 依赖，可独立跑）
+
+### Flow
+```
+旧：api/chat.py → Synthesizer.run_stream → (synthesizer.py 内: prompt + 4 个 _handle_* + refund_v2/v3 + stream_llm)
+新：api/chat.py → chat.orchestrator.Synthesizer.run_stream
+       ↓
+       _handle_<intent>  （chat/orchestrator.py）
+       ↓
+       chat.prompt_assembler._build_chat_prompt  （7 段优先级拼接）
+       ↓
+       chat.stream_dispatcher.stream_llm  （调 get_llm_provider）
+       ↓
+       SSE (meta/token/done)
+
+退款分支：api/chat.py → chat.refund_handler.handle_refund_v3 → refund_graph_app.stream → （异常 fallback）→ handle_refund_v2
+```
+
+### Problem → Fix
+- **16 个测试失败**（commit 4 切换后）：
+  - **根因 1**：test patches `app.services.synthesizer.OrderService` 不拦截 `chat.refund_handler.OrderService`（不同 binding）
+  - **修复 1**：所有 3 个测试文件（test_anti_hallucination / test_source_attribution / test_synthesizer_refund）的 patches 改打到 `chat.refund_handler.*` / `chat.orchestrator.*` / `chat.stream_dispatcher.*` 三个 namespace
+  - **根因 2**：`Synthesizer._handle_refund_v3(...)` 直接调用不存在（refund 方法已移到 chat.refund_handler 模块级函数）
+  - **修复 2**：tests 改为 `from app.services.chat.refund_handler import handle_refund_v3; handle_refund_v3(...)`
+  - **根因 3**：`@patch("app.services.chat.orchestrator.get_llm_provider")` 报 AttributeError
+  - **修复 3**：get_llm_provider 由 chat.stream_dispatcher import，不在 chat.orchestrator 命名空间；patch 改打到 stream_dispatcher
+  - **根因 4**：MySQL OperationalError（test_product_not_found_no_llm）
+  - **修复 4**：stream_dispatcher 与 orchestrator 各自 import ProductTool，独立 binding；tests 必须 patch 两个位置
+
+- **orchestrator.py 596 行 > 350 ADR 预算**：二次拆分 `_handle_refund_v2/v3` 到 `chat/refund_handler.py`，降到 402 行（仍超 52 行，记录到 roadmap 已知偏离）
+
+- **第一次薄壳设计误判**：一度把 settings / OrderService / PolicyService / RefundService / v12_rag_run_stream / get_llm_provider 也加进 synthesizer.py re-export，让测试走老路径
+  - **反思**：违反"单一源真（single source of truth）"原则；最终选择迁移测试到 chat.* 命名空间而非让薄壳变厚
+
+- **M13 订单号字母后缀**：用户订单号格式 `ORD20260704899EBA` 包含字母，原始正则 `ORD\d+` 会截断
+  - **修复**：正则改为 `ORD\d{8}[A-Z0-9]{3,6}`（8 位日期 + 3-6 位字母数字混合），由 M9.5+ 在 prompt_assembler 里兜底提取
+
+### Architecture Role
+属于 `services/` 层（业务编排核心），按 §7.3 模块就近原则：
+- **调用方**：`api/chat.py` 只 import `chat.orchestrator.Synthesizer`（不直接进 chat 子包内部模块）
+- **子包内部**：orchestrator / prompt_assembler / stream_dispatcher / refund_handler 互为就近依赖（同包内 import）
+- **降级兜底**：`synthesizer.py` 薄壳 re-export 保证下游 0 改动升级；删除计划 = **S4 末**
+- **测试架构**：单文件纯函数测试（test_chat_prompt_assembler / test_chat_meta_contexts）与 Mock 集成测试（test_synthesizer_refund）分层；纯函数测试覆盖契约，集成测试覆盖流式协议
+
+**Phase 1 进度**：S1 ✅ + S2 ✅ + S3 ✅ = 3/3；S4（业务规则 YAML 化 + 余 3 Prompt 抽取 + 删除 legacy 薄壳）待启动。
+
+---
+
+**Sprint 3 关键决策回顾**（详见 ADR）：
+| 决策点 | 决议 | 理由 |
+|--------|------|------|
+| 拆分粒度 | 5 模块（orchestrator + prompt_assembler + stream_dispatcher + refund_handler + citation_formatter） | 按职责聚合，4 模块时 refund 流占 orchestrator 60% 太重 |
+| Prompt 抽取范围 | Range A：仅 2/5（agent + no_login 在 synthesizer 范围内） | 单 Sprint 工作量爆炸；余 3 个跨模块的留 S4 |
+| 旧 synthesizer 处理 | 薄壳 re-export（64 行） | 下游零改动升级 + 删除计划 S4 末 |
+| 退款双轨制 | V2/V3 整块移到 chat/refund_handler.py（不在 orchestrator） | 退款业务独立、LangGraph 异常 fallback 逻辑自成一体 |
+| 二次拆分 | 推迟到 S4 | orchestrator 二次拆需先 YAML 化业务规则（阈值 / 转人工 / 退款判定） |

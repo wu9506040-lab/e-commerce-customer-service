@@ -1,4 +1,4 @@
-# 项目当前状态 · 恢复记忆（2026-07-12 暂停点）
+# 项目当前状态 · 恢复记忆（2026-07-12 Sprint 3 完成时）
 
 > 本文件是**会话级恢复记忆**，不是长期文档基线。
 > 长期基线：`CLAUDE.md`（V2.1） / `docs/architecture/business.md` / `docs/development/roadmap.md`。
@@ -8,9 +8,9 @@
 
 ## 0. 一句话状态
 
-**Phase 0 治理 + Sprint 1 AI Provider 抽象 + Sprint 2 Prompt 基础设施全部完成；进入 Sprint 3 待启动。**
+**Phase 0 治理 + Sprint 1 AI Provider 抽象 + Sprint 2 Prompt 基础设施 + Sprint 3 Synthesizer 拆分全部完成；进入 Sprint 4 待启动。**
 
-8 个 commit 已提交（Sprint 1: 24fed9a / 674ac50 / 54a4b52 / afd6b50；Sprint 2: 1f705fc / 910663c / 05d5965 / 68d5700），全量 pytest 150 passed，工作树干净（仅 Sprint 1 范围外的旧修改与新临时文件残留）。
+13 个 commit 已提交（Sprint 1: 24fed9a / 674ac50 / 54a4b52 / afd6b50；Sprint 2: 1f705fc / 910663c / 05d5965 / 68d5700；Sprint 3: 63e7044 / 7f343fd / a8bea00 / 5ee01f6 / [c5 pending]），全量 pytest 168 passed（新增 18 个纯函数测试），工作树待 commit 5 归档。
 
 ---
 
@@ -21,9 +21,9 @@
 | Phase 0 治理（CLAUDE.md V2.1 + docs/ 子目录化） | ✅ 完成 | docs/README.md / business.md / governance/ai_development_rules.md 仍 untracked（待单独收尾 commit） |
 | Sprint 1（AI Provider 抽象） | ✅ 完成 | G1/G2/G10 三个 Roadmap 缺口关闭 |
 | Sprint 2（Prompt 基础设施） | ✅ 完成 | **G6** 缺口关闭；G5 部分关闭（架子就位；业务抽取由 S3 完成） |
-| Sprint 3（Synthesizer 拆分） | ⏸ 待启动 | 下一次开发入口 |
+| Sprint 3（Synthesizer 拆分 928→5 模块） | ✅ 完成 | **G5 主要关闭 + G7 降级**（928→64 薄壳 + 5 子模块；仅抽 2/5 Prompt，Range A 决议） |
 
-**Roadmap V2**（`docs/development/roadmap.md`）共 6 个 Sprint，目前完成 1/6。
+**Roadmap V2**（`docs/development/roadmap.md`）共 6 个 Sprint，目前完成 3/6。
 
 ---
 
@@ -43,56 +43,78 @@
 | `54a4b52` | test(core) | Provider 契约测试 + mock 同步 | 5 |
 | `afd6b50` | chore(core) | legacy qwen/embedding 标 deprecated + 文档同步 | 4 |
 
+### Sprint 2：Prompt 基础设施（4 个 commit）
+
+| commit | 类型 | 内容 | 文件数 |
+|--------|------|------|--------|
+| `1f705fc` | chore(deps) | 新增 PyYAML==6.0.2 锁版本 | 1 |
+| `910663c` | feat(services) | 新增 prompt_loader 统一加载器 | 4 |
+| `05d5965` | chore(config) | PROMPT_DIR + config/prompts 架子 + Dockerfile COPY | 3 |
+| `68d5700` | test(services) | prompt_loader 单元测试 21 用例 + mtime 顺序 bugfix | 1 |
+
+### Sprint 3：Synthesizer 拆分 928→5 模块（5 个 commit）
+
+| commit | 类型 | 内容 | 文件数 |
+|--------|------|------|--------|
+| `63e7044` | docs(sprint3) | Sprint 3 启动 ADR（Synthesizer 拆分 + 范围 A 决议） | 1 |
+| `7f343fd` | feat(prompts) | 新建 agent + no_login YAML（Sprint 3 抽 2/5 Prompt） | 2 |
+| `a8bea00` | feat(chat) | cp 完整 4 个新模块（安全网，不动旧代码） | 6 |
+| `5ee01f6` | refactor(synthesizer) | 切换 import + 旧 synthesizer 薄壳化 + refund_v2/v3 移出 | 9 |
+| `[c5]` | test+docs | 新增 18 个纯函数单测 + 文档收尾（roadmap S3 ✅ + 本文件 v3 + learning_log §27） | 5 |
+
 ---
 
-## 3. 本次会话实际修改的文件清单
+## 3. Sprint 3 本次会话实际修改的文件清单
 
-### 新建（10）
+### 新建 6（chat/ 子包）
 ```
-backend/app/core/providers/__init__.py
-backend/app/core/providers/llm/{__init__.py, protocols.py, qwen_provider.py}
-backend/app/core/providers/embedding/{__init__.py, protocols.py, qwen_provider.py}
-backend/app/core/providers/rerank/{__init__.py, protocols.py, qwen_provider.py}
-backend/tests/test_provider_protocols.py
-```
-
-### 改造业务调用（13）
-```
-backend/app/services/synthesizer.py        # LLM stream_chat
-backend/app/services/intent_service.py     # LLM chat
-backend/app/services/query_rewriter.py     # LLM chat
-backend/app/services/refund_graph.py       # LLM chat
-backend/app/services/rag/pipeline.py       # LLM stream_chat + Embedding embed_text
-backend/app/services/rag/ingest.py         # Embedding embed_texts
-backend/app/services/rag/test_pipeline.py  # Embedding embed_texts
-backend/app/services/policy_service.py     # Embedding embed_text（懒加载）
-backend/app/services/guard.py              # Embedding embed_text + EmbeddingError
-backend/app/services/guard_centroid.py     # Embedding embed_texts + EMBEDDING_DIM → provider.get_dim()
-backend/app/services/response_cache.py     # Embedding embed_text + EmbeddingError
-backend/app/services/bm25_index.py         # 清理 dead import
-backend/app/services/rerank.py             # 改为薄垫片，业务迁入 core/providers/rerank
+backend/app/services/chat/__init__.py                  # 空
+backend/app/services/chat/orchestrator.py              # Synthesizer 主类
+backend/app/services/chat/prompt_assembler.py          # 7 个纯字符串拼接函数
+backend/app/services/chat/stream_dispatcher.py         # stream_llm + 滑窗检索
+backend/app/services/chat/refund_handler.py            # handle_refund_v2/v3
+backend/app/services/chat/citation_formatter.py        # 占位（未来扩展位）
 ```
 
-### 测试 mock 同步（4）
+### 新建 2（Prompt YAML · Range A）
 ```
-backend/tests/test_anti_hallucination.py    # patch qwen_stream_chat → patch get_llm_provider
-backend/tests/test_refund_graph.py          # patch qwen_chat → patch get_llm_provider
-backend/tests/test_source_attribution.py    # 同上
-backend/tests/test_synthesizer_refund.py    # 同上
+backend/config/prompts/agent.yaml                      # SYSTEM_PROMPT_BASE
+backend/config/prompts/no_login.yaml                   # NO_LOGIN_PROMPT
 ```
 
-### Deprecated 注释 + docstring 修复（2）
+### 改造 3
 ```
-backend/app/core/qwen.py                   # 顶部加 ⚠️ DEPRECATED 注释
-backend/app/core/embedding.py              # 顶部加 ⚠️ DEPRECATED 注释 + 修复 M7 commit 留下的 docstring 截断 bug
+backend/app/services/synthesizer.py     # 928 → 64 行（薄壳 re-export）
+backend/app/api/chat.py                 # import 路径切换到 chat.orchestrator
+backend/tests/test_synthesizer_refund.py # patches 切到 chat.* 命名空间
 ```
 
-### 文档同步（3，已 commit）
+### 测试 mock 同步（3）
 ```
-docs/development/roadmap.md                # S1 涉及路径 core/llm → core/providers
-docs/architecture/system.md                # RAG + Agent 行路径同步
-CLAUDE.md §9.9                             # 路径表同步（CLAUDE.md 本地保留，未 commit）
+backend/tests/test_anti_hallucination.py    # patch chat.orchestrator.ProductTool + chat.stream_dispatcher.ProductTool
+backend/tests/test_source_attribution.py    # 同上 + import 从 synthesizer → chat.prompt_assembler
+backend/tests/test_synthesizer_refund.py    # patches → chat.refund_handler.* + chat.orchestrator.* + chat.stream_dispatcher.*
 ```
+
+### 新增测试 2（commit 5 · 本次）
+```
+backend/tests/test_chat_prompt_assembler.py    # 11 用例（纯字符串处理函数）
+backend/tests/test_chat_meta_contexts.py       # 7 用例（meta contexts 结构契约）
+```
+
+### 文档（commit 5）
+```
+docs/development/roadmap.md        # G6 行修订 + §3.4 S3 标 ✅
+docs/development/current_status.md # v3（本文件）
+docs/learning_log.md               # 追加 §27
+```
+
+---
+
+## 3.1 Sprint 1-2 文件清单（历史归档 · 不再维护）
+
+> Sprint 1 / Sprint 2 的文件清单已分别写入对应 commit message 与 docs/learning_log.md §25-26；本文件 v3 起只保留 Sprint 3 当下文件清单，避免冗长历史拖慢恢复效率。
+> 需要查询 Sprint 1 / Sprint 2 文件范围时：`git log --stat <commit-sha>`。
 
 ---
 
@@ -115,13 +137,22 @@ services/  ──→  core/providers/{llm,embedding,rerank}/
 
 **未引入**（故意保持最小）：`health_check` / `switch_model` / `fallback` / `metrics` / `cost` / `retry` / `breaker`。V2+ 真实需要时再加。
 
-### 4.3 单文件规模（全部 < 200 行目标）
-最大：`rerank/qwen_provider.py` = 199 行（业务逻辑完整保留，未拆分）
-其余：< 60 行
+### 4.3 单文件规模（Sprint 3 拆分后）
+| 文件 | 行数 | 备注 |
+|------|------|------|
+| `chat/orchestrator.py` | **402** | ADR 预算 < 350，超 52 行（已知偏离，已记录到 roadmap S3） |
+| `chat/prompt_assembler.py` | **276** | ADR 预算 < 250，超 26 行（已知偏离；7 个纯函数聚集） |
+| `chat/refund_handler.py` | **222** | < 250，符合 |
+| `chat/stream_dispatcher.py` | **78** | < 100，符合 |
+| `chat/citation_formatter.py` | **14** | 占位文件，注释说明未来扩展位 |
+| `synthesizer.py`（薄壳） | **64** | re-export + 文档说明删除计划 |
+
+**已知偏离原因**：Sprint 3 把 928 行单体拆 5 模块时，发现 orchestrator 主类承担太多意图分发逻辑（M9.5+ 修复、多意图路由、退款 V2/V3 选择等），二次拆分需要更多业务理解；S4 业务规则 YAML 化后会更易拆。
 
 ### 4.4 删除计划（重要）
 - `core/qwen.py` / `core/embedding.py` / `services/rerank.py` 删除计划 = **S4 末**
-- S2 / S3 期间必须保留（防止回归）
+- `app/services/synthesizer.py`（薄壳）删除计划 = **S4 末**
+- S3 / S4 期间必须保留（防止回归 + 兜住历史 import 路径）
 
 ---
 
@@ -129,10 +160,12 @@ services/  ──→  core/providers/{llm,embedding,rerank}/
 
 | 项 | 结果 |
 |----|------|
-| 全量 pytest | **129 passed**（含 14 个新 Provider 契约测试） |
+| 全量 pytest（Sprint 3 末） | **168 passed**（含 18 个新纯函数测试：11 prompt_assembler + 7 meta_contexts） |
+| Sprint 2 末 | 150 passed |
+| Sprint 1 末 | 129 passed |
 | 调用点 grep | `grep "from app.core.qwen\|from app.core.embedding" backend/app/services/` → **0 命中** |
 | 反向依赖 grep | `grep "from app.services" backend/app/core/providers/` → **0 命中** |
-| Smoke test | 3 个 Provider 工厂返回正确类型，13 个业务模块 import 全部 OK |
+| 旧 import 路径兜住 | `from app.services.synthesizer import Synthesizer` 仍可用（薄壳 re-export） |
 | Step 6 AI Review | 5 项检查全部通过（解耦 / 反向依赖 / Protocol 最小化 / Factory 简洁 / 单文件规模） |
 
 **测试启动方式**：
@@ -150,8 +183,8 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 |--------|------|--------|----------|------|
 | S1 | AI 三件套 Provider 抽象 | 🔴 P0 | G1/G2/G10 | ✅ 完成 |
 | S2 | Prompt 基础设施（loader + 目录） | 🔴 P0 | G6 | ✅ 完成 |
-| S3 | Synthesizer 拆分（928 → 4 模块） | 🔴 P0 | G5（主要）降 G7 | ⏸ 待启动 |
-| S4 | 业务规则配置化（阈值 YAML 化） | 🟠 P1 | G8 | ⏸ 待办 |
+| S3 | Synthesizer 拆分（928 → 5 模块 + 2 Prompt） | 🔴 P0 | G5（主要）+ G7 降级 | ✅ 完成 |
+| S4 | 业务规则配置化（阈值 YAML 化 + 余 3 Prompt） | 🟠 P1 | G8 + G5 残留 | ⏸ 待办 |
 | S5 | 目录对齐 CLAUDE.md §7.1（仅文档） | 🟢 P2 | G11-G13 | ⏸ 待办 |
 | S6 | 多租户 MVP 预备 | 🟢 P2 | G9 | ⏸ 待办 |
 
@@ -161,30 +194,28 @@ Roadmap V1 已归档：`docs/development/archive/2026-07-11_roadmap_v1_archived.
 
 ## 7. 下一次恢复开发的入口
 
-### 7.1 启动 Sprint 3 之前必读
-1. `docs/development/roadmap.md` §S3（确认 G5/G7 范围）
-2. `docs/decisions/2026-07-12-sprint-2-prompt-loader.md`（Sprint 2 ADR + S3 启动前置）
+### 7.1 启动 Sprint 4 之前必读
+1. `docs/development/roadmap.md` §S4（业务规则配置化范围）
+2. `docs/decisions/2026-07-12-sprint-3-synthesizer-split.md`（S3 ADR + S4 启动前置）
 3. `docs/governance/ai_development_rules.md`（AI 开发规则）
-4. 本文件 §4（确认 Provider 抽象约束未被破坏）
+4. 本文件 §4（确认 Provider 抽象 + chat/ 子包约束未被破坏）
 
-### 7.2 Sprint 3 任务模板（Synthesizer 拆分）
-- **Step 1 任务分析**：列出涉及模块（synthesizer.py → 4 个新模块 + api/chat.py + 5 个 prompt YAML）
-- **Step 2 方案设计**：拆分边界图（orchestrator / prompt_assembler / citation_formatter / stream_dispatcher）
-- **Step 3 等待确认**：跨模块改动按 §4.2 列四要素（业务原因 / 接口变化 / 影响范围 / 隔离策略）
-- **Step 4 开发**：参考 Sprint 1 模式（Protocol 优先 → 实现 → 工厂入口 → 切换调用方 → 测试）
-- **Step 5 提交归档**：建议按 Sprint 1/2 同样 4 commit 节奏
-- **Step 6 AI Review**：同 Sprint 1 五项检查单
+### 7.2 Sprint 4 范围预告
+- 业务规则配置化（阈值 / 转人工 / 情绪 → YAML）
+- **剩余 3 个业务 Prompt 抽取**（Sprint 3 仅抽 2/5，余下跨模块的 3 个由 S4 完成）：intent / query_rewriter / rerank
+- 删除 `core/qwen.py` / `core/embedding.py` / `services/rerank.py` / `synthesizer.py` 薄壳（S4 末）
+- orchestrator.py 402 行 + prompt_assembler.py 276 行二次拆分（依赖 S4 YAML 化后才能继续拆）
 
-### 7.3 Sprint 2 启动时环境准备
-- 工作树当前 M 文件：`scripts/eval_hitk.py`（非 Sprint 1 修改，可能是其他任务遗留，**不要混入 Sprint 2 commit**）
+### 7.3 工作树清理
+- 工作树当前 M 文件：`scripts/eval_hitk.py`（非 Sprint 修改，旧任务遗留，**不要混入 Sprint 4 commit**）
 - 工作树当前 ?? 文件：`docs/README.md` / `docs/architecture/business.md` / `docs/governance/` / `chat_*.json` / `*.py` 临时文件 → 启动前评估是否清理
 
 ---
 
 ## 8. 未完成任务
 
-### 8.1 Sprint 1 范围内：全部完成 ✅
-### 8.2 项目整体（不属于 Sprint 1）
+### 8.1 Sprint 1-3 范围内：全部完成 ✅
+### 8.2 项目整体（不属于 Sprint 1-3）
 | 项 | 性质 | 说明 |
 |----|------|------|
 | `scripts/eval_hitk.py` 修改未 commit | 旧任务遗留 | 应单独评估归属（可能是 eval hit@K 脚本） |
@@ -193,7 +224,7 @@ Roadmap V1 已归档：`docs/development/archive/2026-07-11_roadmap_v1_archived.
 | `docs/governance/ai_development_rules.md` untracked | Phase 0 收尾 | AI 开发规则 |
 | `chat_*.json` / `add_terms.py` / `insert_sections.py` / `merge_extra.py` / `restore_prefix.py` / `extra_sections.md` | 临时调试残留 | 启动前判断是否清理或归档 |
 
-### 8.3 Sprint 2-S6
+### 8.3 Sprint 4-S6
 详见 §6 表格。
 
 ---
@@ -202,15 +233,17 @@ Roadmap V1 已归档：`docs/development/archive/2026-07-11_roadmap_v1_archived.
 
 | # | 禁止 | 原因 |
 |---|------|------|
-| 1 | 删除 `core/qwen.py` / `core/embedding.py` / `services/rerank.py` | 删除计划 S4 末；S2/S3 期间作为兼容垫片保留 |
+| 1 | 删除 `core/qwen.py` / `core/embedding.py` / `services/rerank.py` / `app/services/synthesizer.py` | 删除计划 S4 末；S3/S4 期间作为兼容垫片保留 |
 | 2 | 引入 `VectorStore` Protocol | YAGNI（V3+） |
 | 3 | 引入第二个 Provider 实现（GPT / Claude / BGE） | YAGNI；当前 1 个实现 |
 | 4 | 往 Provider 加 health_check / switch_model / fallback / metrics / cost / retry / breaker 等扩展方法 | YAGNI；真实需要时再加 |
 | 5 | Provider 直接 `new` 具体类（绕过 `get_xxx_provider()`） | 违反依赖倒置；所有调用必须走工厂 |
 | 6 | `core/providers/*.py` 反向依赖 `services/` | 破坏 §9.2.3 单向依赖 |
-| 7 | 启动 Sprint 3+ | 必须先 Sprint 2 完成且归档 |
-| 8 | 把 Sprint 1 范围外的 untracked 文件混入 Sprint 2 commit | 违反 §5 Scope Lock |
-| 9 | 把 Provider 改造反向迁移回 `from app.core.qwen import` 旧风格 | Sprint 1 切换成果回滚 |
+| 7 | `chat/` 子包之外的代码直接调用 chat 子包内部模块（违反就近原则） | §7.3 接口就近；调用方只能 import `chat.orchestrator.Synthesizer` |
+| 8 | 启动 Sprint 4+ | 必须先 Sprint 3 完成且归档 |
+| 9 | 把 Sprint 1-3 范围外的 untracked 文件混入 Sprint 4 commit | 违反 §5 Scope Lock |
+| 10 | 把 Provider 改造反向迁移回 `from app.core.qwen import` 旧风格 | Sprint 1 切换成果回滚 |
+| 11 | 把 synthesizer.py 厚壳化（恢复业务逻辑） | Sprint 3 切换成果回滚 |
 
 ---
 
@@ -234,8 +267,8 @@ Roadmap V1 已归档：`docs/development/archive/2026-07-11_roadmap_v1_archived.
 
 下次启动：
 ```
-读 CLAUDE.md V2.1 → 读 roadmap.md S2 → 读本文件 §4/§9 确认约束
-→ 启动 Sprint 2 Step 1 任务分析（Prompt 基础设施）
+读 CLAUDE.md V2.1 → 读 roadmap.md S4 → 读本文件 §4/§9 确认约束
+→ 启动 Sprint 4 Step 1 任务分析（业务规则 YAML 化 + 余 3 Prompt 抽取）
 ```
 
 ---
@@ -258,5 +291,5 @@ grep -nE "health_check|switch_model|fallback|metrics|cost" backend/app/core/prov
 
 ---
 
-**文件版本**：v2 · 2026-07-12 Sprint 2 完成时更新
-**下次更新**：Sprint 3 启动前（轻量修订） / Sprint 3 完成时（重写 Sprint 段落）
+**文件版本**：v3 · 2026-07-12 Sprint 3 完成时更新
+**下次更新**：Sprint 4 启动前（轻量修订） / Sprint 4 完成时（重写 Sprint 段落）
