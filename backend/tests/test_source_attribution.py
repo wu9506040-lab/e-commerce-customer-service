@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def test_system_prompt_has_anti_hallucination_constraints():
     """测试 1：SYSTEM_PROMPT_BASE 含 4 条防幻觉硬约束"""
-    from app.services.synthesizer import SYSTEM_PROMPT_BASE
+    from app.services.chat.prompt_assembler import SYSTEM_PROMPT_BASE
     required = [
         "严禁编造",         # 不允许自由发挥
         "引用标签",         # 强制溯源
@@ -39,7 +39,7 @@ def test_system_prompt_has_anti_hallucination_constraints():
 
 def test_format_tool_result_order_query_has_tag():
     """测试 2：order_query 的 tool_result 加 [订单] 标签"""
-    from app.services.synthesizer import _format_tool_result
+    from app.services.chat.prompt_assembler import _format_tool_result
 
     # 场景 A: 订单列表
     out = _format_tool_result("order_query", {
@@ -66,7 +66,7 @@ def test_format_tool_result_order_query_has_tag():
 
 def test_format_tool_result_refund_query_has_tag():
     """测试 3：refund_query 的 tool_result 加 [退款] 标签"""
-    from app.services.synthesizer import _format_tool_result
+    from app.services.chat.prompt_assembler import _format_tool_result
     out = _format_tool_result("refund_query", {
         "refundable": True, "reason": "7天无理由", "order_status": "delivered", "days_since_order": 3
     })
@@ -84,7 +84,7 @@ def test_format_tool_result_refund_query_has_tag():
 
 def test_format_policy_docs_has_numbered_refs():
     """测试 4：policy docs 加 [1][2] 编号"""
-    from app.services.synthesizer import _format_policy_docs
+    from app.services.chat.prompt_assembler import _format_policy_docs
     out = _format_policy_docs([
         {"text": "7天无理由退货政策", "source": "policy_return", "score": 0.9},
         {"text": "运费险说明", "source": "policy_shipping", "score": 0.8},
@@ -101,14 +101,16 @@ def test_handle_product_empty_uses_safe_fallback():
 
     这是 P0-J 已加的防护。溯源版本需要确认标签也加了 [商品]。
     """
-    with patch("app.services.synthesizer.ProductTool") as pt_mock, \
-         patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
+    with patch("app.services.chat.orchestrator.ProductTool") as pt_mock, \
+         patch("app.services.chat.stream_dispatcher.ProductTool") as pt_mock_stream, \
+         patch("app.services.chat.orchestrator.PolicyService") as ps_mock, \
+         patch("app.services.chat.stream_dispatcher.get_llm_provider") as provider_mock:
         pt_mock.get_by_sku.return_value = None
         pt_mock.search_by_keyword.return_value = []
+        pt_mock_stream.search_by_keyword.return_value = []
         ps_mock.search_policy.return_value = []
 
-        from app.services.synthesizer import Synthesizer
+        from app.services.chat.orchestrator import Synthesizer
         events = list(Synthesizer._handle_product(
             query="ZP99 续航怎么样",
             intent_result={"intent": "product_query", "entities": {"sku": "ZP99"}, "confidence": 0.9, "method": "rule"},
@@ -143,15 +145,17 @@ def test_handle_product_with_real_data_uses_tagged_prompt():
         captured_prompts.append(messages[1]["content"])
         return iter(["ZP1 售价 2999 元"])
 
-    with patch("app.services.synthesizer.ProductTool") as pt_mock, \
-         patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
+    with patch("app.services.chat.orchestrator.ProductTool") as pt_mock, \
+         patch("app.services.chat.stream_dispatcher.ProductTool") as pt_mock_stream, \
+         patch("app.services.chat.orchestrator.PolicyService") as ps_mock, \
+         patch("app.services.chat.stream_dispatcher.get_llm_provider") as provider_mock:
         pt_mock.get_by_sku.return_value = fake_product
         pt_mock.search_by_keyword.return_value = [fake_product]
+        pt_mock_stream.search_by_keyword.return_value = [fake_product]
         ps_mock.search_policy.return_value = []
         provider_mock.return_value.stream_chat.side_effect = mock_qwen
 
-        from app.services.synthesizer import Synthesizer
+        from app.services.chat.orchestrator import Synthesizer
         list(Synthesizer._handle_product(
             query="ZP1 多少钱",
             intent_result={"intent": "product_query", "entities": {"sku": "SKU001"}, "confidence": 0.9, "method": "rule"},
@@ -177,15 +181,15 @@ def test_handle_order_with_data_uses_tagged_prompt():
         captured_prompts.append(messages[1]["content"])
         return iter(["订单在运输中"])
 
-    with patch("app.services.synthesizer.OrderService") as os_mock, \
-         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
+    with patch("app.services.chat.orchestrator.OrderService") as os_mock, \
+         patch("app.services.chat.stream_dispatcher.get_llm_provider") as provider_mock:
         os_mock.get_order_detail.return_value = {
             "order": fake_order, "items": [{"product_name": "ZP1", "qty": 1, "subtotal": 2999}],
             "logistics": fake_logistics,
         }
         provider_mock.return_value.stream_chat.side_effect = mock_qwen
 
-        from app.services.synthesizer import Synthesizer
+        from app.services.chat.orchestrator import Synthesizer
         list(Synthesizer._handle_order(
             query="ORD001 物流",
             user_id=7,
@@ -209,15 +213,15 @@ def test_handle_policy_prompt_has_numbered_refs():
         captured_prompts.append(messages[1]["content"])
         return iter(["7天无理由政策..."])
 
-    with patch("app.services.synthesizer.PolicyService") as ps_mock, \
-         patch("app.services.synthesizer.get_llm_provider") as provider_mock:
+    with patch("app.services.chat.orchestrator.PolicyService") as ps_mock, \
+         patch("app.services.chat.stream_dispatcher.get_llm_provider") as provider_mock:
         ps_mock.search_policy.return_value = [
             {"text": "7天无理由退货政策", "source": "policy_return", "score": 0.92},
             {"text": "运费险说明", "source": "policy_shipping", "score": 0.85},
         ]
         provider_mock.return_value.stream_chat.side_effect = mock_qwen
 
-        from app.services.synthesizer import Synthesizer
+        from app.services.chat.orchestrator import Synthesizer
         list(Synthesizer._handle_policy(
             query="7天无理由退货运费谁出",
             intent_result={"intent": "policy_query", "entities": {}, "confidence": 0.9, "method": "rule"},
