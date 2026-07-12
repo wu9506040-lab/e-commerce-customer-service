@@ -110,15 +110,16 @@ class YAMLPromptLoader:
                     full_str.startswith(base_str + "/")):
                 raise PromptNameError(f"name 越权: {name!r}")
 
-        # 3. mtime 缓存：未命中或 mtime 变化 → 重读
+        # 3. 先检查文件存在性（fail-fast，比让 stat() 抛 FileNotFoundError 更友好）
+        if not full_path.exists():
+            raise PromptNotFoundError(f"prompt 不存在: {name}")
+
+        # 4. mtime 缓存：未命中或 mtime 变化 → 重读
         mtime = full_path.stat().st_mtime
         with self._lock:
             cached = self._cache.get(name)
             if cached is not None and cached[0] == mtime:
                 return cached[1]
-
-            if not full_path.exists():
-                raise PromptNotFoundError(f"prompt 不存在: {name}")
 
             try:
                 data = yaml.safe_load(full_path.read_text(encoding="utf-8"))
