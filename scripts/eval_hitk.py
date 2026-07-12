@@ -87,13 +87,14 @@ def load_eval_set(path: Path) -> List[Dict[str, str]]:
 # =============================================================
 # 2. 单条评估
 # =============================================================
-def evaluate_single(item: Dict[str, str], use_rerank: bool = False) -> Dict[str, Any]:
+def evaluate_single(item: Dict[str, str], use_rerank: bool = False, use_bm25: bool = False) -> Dict[str, Any]:
     """
     对单条 query 做 embedding + Qdrant top-K 检索，记录结果
 
     Args:
         item: 评估集单项
         use_rerank: 是否启用 LLM cross-encoder rerank
+        use_bm25: 是否启用 BM25 稀疏召回 + RRF 融合
 
     Returns:
         {
@@ -111,13 +112,30 @@ def evaluate_single(item: Dict[str, str], use_rerank: bool = False) -> Dict[str,
     t0 = time.perf_counter()
     query_vector = embed_text(query)
 
-    if use_rerank:
-        # 两阶段：top-20 候选 → LLM rerank → top-10
-        from app.services.rerank import rerank
+    # 候选路选择
+    if use_bm25:
+        # 三种模式：hybrid 仅 BM25+RRF / hybrid_rerank 加 rerank / baseline rerank
         candidates = qdrant_search(query_vector, top_k=RERANK_K)
+        try:
+            from app.services.bm25_index import bm25_search
+            from app.services.rrf import rrf_fuse
+            bm25_hits = bm25_search(query, top_k=RERANK_K)
+            if bm25_hits:
+                fused = rrf_fuse([candidates, bm25_hits], k=60)
+                candidates = fused[:RERANK_K]
+            else:
+                logger.debug(f"BM25 空结果，仅用 dense candidates: query={query!r}")
+        except Exception as e:
+            logger.warning(f"BM25 检索失败，降级到纯 dense: {e}")
+    else:
+        candidates = qdrant_search(query_vector, top_k=RERANK_K)
+
+    if use_rerank:
+        # 两阶段：top-RERANK_K 候选 → LLM rerank → top-TOP_K_MAX
+        from app.services.rerank import rerank
         results = rerank(query, candidates, top_n=TOP_K_MAX)
     else:
-        results = qdrant_search(query_vector, top_k=TOP_K_MAX)
+        results = candidates[:TOP_K_MAX]
 
     latency_ms = (time.perf_counter() - t0) * 1000
 
@@ -233,9 +251,17 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="评估集 JSON 路径")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="详细结果输出")
     parser.add_argument("--rerank", action="store_true", help="启用 LLM cross-encoder rerank（top-20→rerank→top-10）")
+    parser.add_argument("--bm25", action="store_true", help="启用 BM25 稀疏召回 + RRF 融合（与 --rerank 可叠加）")
     args = parser.parse_args()
 
-    mode = "rerank" if args.rerank else "baseline"
+    if args.bm25 and args.rerank:
+        mode = "hybrid_rerank"
+    elif args.bm25:
+        mode = "hybrid"
+    elif args.rerank:
+        mode = "rerank"
+    else:
+        mode = "baseline"
     logger.info(f"加载评估集: {args.input}")
     eval_set = load_eval_set(args.input)
     logger.info(f"  共 {len(eval_set)} 条，模式={mode}")
@@ -244,7 +270,7 @@ def main() -> int:
     results: List[Dict[str, Any]] = []
     for i, item in enumerate(eval_set, 1):
         try:
-            r = evaluate_single(item, use_rerank=args.rerank)
+            r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25)
             results.append(r)
         except Exception as e:
             logger.error(f"[{i}/{len(eval_set)}] query='{item['query']}' 评估失败: {e}")
