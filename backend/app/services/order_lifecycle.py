@@ -27,13 +27,18 @@ from app.clients.mysql_client import with_safe_session
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
 from app.models.refund import Refund, RefundStatus
+from app.services.config_loader import get_config_loader
 
 logger = logging.getLogger(__name__)
 
-# 业务常量：从「下单时间」到「默认签收时间」的天数偏移
-# 用于 delivered 订单的 7 天无理由窗口计算（实际签收时间 = 下单时间 + 偏移天数）
+# 业务规则（启动期加载一次，来自 config/business_rules/refund.yaml）
+# 单一真相源：与 refund_graph / RefundTool 共享同一份 YAML
+_RULES = get_config_loader().load("refund")
+
+# 签收日偏移：用于 delivered 订单的 7 天无理由窗口计算（实际签收时间 = 下单时间 + 偏移天数）
 # 业务含义：演示场景里没有真实物流系统，假设平均 2 天送达
-DELIVERY_OFFSET_DAYS = 2
+# 来自 refund.yaml（迁移前硬编码为 2）
+DELIVERY_OFFSET_DAYS: int = _RULES["DELIVERY_OFFSET_DAYS"]
 
 
 class OrderLifecycleError(Exception):

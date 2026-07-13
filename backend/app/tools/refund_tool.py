@@ -12,13 +12,18 @@ from sqlalchemy import select
 from app.clients.mysql_client import with_safe_session
 from app.models.order import Order, OrderStatus
 from app.models.refund import Refund
+from app.services.config_loader import get_config_loader
+
+# 业务规则（启动期加载一次，来自 config/business_rules/refund.yaml）
+# 单一真相源：与 refund_graph / order_lifecycle 共享同一份 YAML
+_REFUND_RULES = get_config_loader().load("refund")
 
 
 class RefundTool:
     """退款查询工具"""
 
-    # 7 天无理由：已签收后超过 7 天不可退
-    REFUND_WINDOW_DAYS = 7
+    # 7 天无理由：已签收后超过 7 天不可退（来自 refund.yaml）
+    REFUND_WINDOW_DAYS: int = _REFUND_RULES["REFUND_WINDOW_DAYS"]
 
     @staticmethod
     def list_user_refunds(user_id: int, limit: int = 20) -> list[dict]:

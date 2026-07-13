@@ -24,6 +24,7 @@ from typing import TypedDict
 from langgraph.graph import END, StateGraph
 
 from app.core.providers.llm import get_llm_provider
+from app.services.config_loader import get_config_loader
 from app.services.policy_service import PolicyService
 from app.tools.order_tool import OrderTool
 
@@ -94,10 +95,17 @@ def fetch_order(state: RefundState) -> RefundState:
     return {"order_info": order, "days_since_order": days}
 
 
-# 7 天无理由窗口常量（与 RefundTool.REFUND_WINDOW_DAYS 保持一致）
-REFUND_WINDOW_DAYS = 7
-# 签收日偏移（与 OrderTool.get_logistics 一致；Order 模型暂无 delivery_time 字段）
-DELIVERY_OFFSET_DAYS = 2
+# =============================================================
+# 业务规则（启动期加载一次，来自 config/business_rules/refund.yaml）
+# 单一真相源：与 RefundTool / OrderLifecycle 共享同一份 YAML（迁移前是 3 处硬编码同一数值）
+# 改阈值 → 改 YAML → 重启服务（roadmap §3.5 不参与热更新）
+# =============================================================
+_RULES = get_config_loader().load("refund")
+
+# 7 天无理由退货窗口
+REFUND_WINDOW_DAYS: int = _RULES["REFUND_WINDOW_DAYS"]
+# 签收日偏移（Order 模型暂无 delivery_time 字段；create_time + N 天作为签收日推算）
+DELIVERY_OFFSET_DAYS: int = _RULES["DELIVERY_OFFSET_DAYS"]
 
 # 状态中文映射（用于 prompt 注入和 reason 拼接）
 _STATUS_ZH = {
