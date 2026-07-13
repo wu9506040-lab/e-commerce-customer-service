@@ -3195,3 +3195,99 @@ data["content"] strip → 缓存 + 返回
 | 旧 synthesizer 处理 | 薄壳 re-export（64 行） | 下游零改动升级 + 删除计划 S4 末 |
 | 退款双轨制 | V2/V3 整块移到 chat/refund_handler.py（不在 orchestrator） | 退款业务独立、LangGraph 异常 fallback 逻辑自成一体 |
 | 二次拆分 | 推迟到 S4 | orchestrator 二次拆需先 YAML 化业务规则（阈值 / 转人工 / 退款判定） |
+
+---
+
+## 28. Sprint 4 业务规则 YAML 化 — 阶段 1/2/3（2026-07-13）
+
+**文件**：
+
+| 类型 | 路径 | 说明 |
+|------|------|------|
+| 新增 YAML | `backend/config/business_rules/refund.yaml` | 阶段 3 新增，2 字段 |
+| 新增加载器 | `backend/app/services/config_loader.py` | 阶段 1 新增，Protocol + 工厂 + 单例 + 异常体系 |
+| 新增测试 | `backend/tests/test_refund_config.py` | 阶段 3 新增，9 用例（3 文件 YAML 同步 / 公共 API / fail-fast） |
+| 改造 | `backend/app/services/refund_graph.py` | 顶部 2 常量 → YAML 引用 |
+| 改造 | `backend/app/tools/refund_tool.py` | `RefundTool.REFUND_WINDOW_DAYS` 类属性 → YAML 引用 |
+| 改造 | `backend/app/services/order_lifecycle.py` | `DELIVERY_OFFSET_DAYS` 模块级常量 → YAML 引用 |
+| 修复 | `backend/tests/test_guard_config.py` | 加 post-only autouse fixture + 放宽 `is` 断言为 `==` |
+
+### What
+Sprint 4 分阶段落地业务规则配置化（roadmap §3.5）：
+- **阶段 1**（commit `38932ab`）：新增统一加载器 `config_loader.py`，提供 Protocol 抽象（CLAUDE.md §9.3.3）+ 工厂单例 + name 白名单 + 路径越权拦截 + fail-fast 异常体系
+- **阶段 2**（commit `5132176`）：guard.py 7 个阈值 + 6 条闲聊话术迁出到 `guard.yaml`，首次验证 config_loader 通路
+- **阶段 3**（commit `70e5a3e` + `efa729b`）：**跨 3 文件共享常量**迁出到 `refund.yaml`，单一真相源落地 + 修复 test 污染
+
+### Why
+- **G8 业务规则配置化**：CLAUDE.md §9.4.2 禁止业务规则硬编码；改阈值需改 YAML + 重启，不需改代码
+- **3 文件常量重复定义（关键发现）**：`REFUND_WINDOW_DAYS = 7` 在 `refund_graph.py` + `refund_tool.py` 两处硬编码；`DELIVERY_OFFSET_DAYS = 2` 在 `refund_graph.py` + `order_lifecycle.py` 两处硬编码 — 迁移单个文件会保留"双真相源"风险，按 CLAUDE.md §5.2 跨模块四要素一次迁移
+
+### Tech Stack
+- **PyYAML**（已锁 6.0.2，Sprint 2 引入）
+- **Protocol + runtime_checkable**（CLAUDE.md §9.3.3 抽象模式，业务模块通过 `get_config_loader()` 获取实例，禁止直接 `new`）
+- **dict 缓存 + threading.Lock**（启动期一次加载，roadmap §3.5 不参与热更新）
+- **三层防御**（path resolve + name 白名单正则 + base dir 越权检查）— 防 name 注入
+
+### Flow
+```
+get_config_loader() → _resolve_base_dir() 读 settings.BUSINESS_RULES_DIR
+    ↓ (绝对路径直用 / 相对路径解析 backend 根)
+YAMLConfigLoader(base_dir).load(name)
+    ↓
+1. name 白名单校验 ^[a-z0-9_]+$
+2. 路径 resolve 后越权检查
+3. 查 _cache → 命中直接返回
+4. 未命中：full_path.exists() 检查 → 解析 YAML → 顶层 dict 校验 → 写入 _cache
+    ↓
+返回 dict（业务模块顶部一次性解引用到模块级常量）
+```
+
+### Problem → Fix
+
+#### Problem 1：跨 3 文件常量重复定义（最关键）
+- **发现**：grep 阶段扫描到 `REFUND_WINDOW_DAYS = 7` 在 `app/services/refund_graph.py:98` + `app/tools/refund_tool.py:21` 两处硬编码，`DELIVERY_OFFSET_DAYS = 2` 在 `refund_graph.py:100` + `order_lifecycle.py:36` 两处硬编码
+- **决策**：按 CLAUDE.md §5.2 跨模块四要素（业务原因 / 接口变化 / 影响范围 / 隔离策略）一次迁移 3 文件
+- **方案**：3 文件顶部统一 `_RULES = get_config_loader().load("refund")`，常量赋值保持原名（同名引用透明替换），保留调用方零改动
+
+#### Problem 2：test 污染（最深坑）
+- **现象**：单独跑 `test_refund_config.py` 9 个测试全过，全量 pytest 跑 6/9 失败（`ConfigNotFoundError: refund`）
+- **根因二分定位**：`test_guard_config.py` 在 test_refund_config.py 前跑，其 fail-fast 测试 `TestGuardFailFast::test_missing_guard_yaml_raises_at_import` 通过 `monkeypatch.setattr(config.settings, "BUSINESS_RULES_DIR", str(empty_dir))` 改 BUSINESS_RULES_DIR 后 `reload(app.services.guard)`
+  - `get_config_loader()` 内部 `_loader = YAMLConfigLoader(base)` 赋值发生在 `load("guard")` **之前**
+  - `load("guard")` 抛 ConfigNotFoundError 被 pytest.raises 接住
+  - monkeypatch 撤销 BUSINESS_RULES_DIR，但 `_loader` 仍指向 monkeypatch 后的目录
+  - 下个文件 `test_refund_config.py` 第一行 `get_config_loader().load("refund")` → 拿到污染的 loader → 失败
+- **修复**：
+  1. `test_guard_config.py` 加 post-only autouse fixture（文件末尾 reset `_loader = None`）
+  2. `test_refund_config.py` 同款 autouse
+  3. `test_guard_chitchat_is_same_object_as_yaml_dict` 的 `is` 断言改为 `==`（autouse 在测试间 reset cache → guard 模块顶层绑定的旧 dict 与新 load 出的 dict 不是同一对象）
+- **最小修改**：只动 test 文件，不动生产代码（loader 工厂缓存语义改起来是更大动作，单独 PR）
+
+#### Problem 3：`is` 断言脆弱（次坑）
+- **原理**：pre+post autouse fixture 会清 cache → 同一模块两次 `load()` 返回不同 dict 对象（虽然内容相等）
+- **决策**：保留生产代码"共享同一对象"的语义（业务模块顶部一次性赋值），但测试用 `==` 等值断言而非 `is` 同一对象断言
+- **trade-off**：放弃"启动期 dict 复用"的优化断言（验证 hot-reload 准备的代码层），保留"内容一致"语义
+
+### Architecture Role
+属于 `services/` 层的基础设施 + `config/business_rules/` 配置层：
+- **`config_loader.py`**：基础能力（CLAUDE.md §9.1 三大铁律 · Interface First），业务模块只能通过 `get_config_loader()` 工厂入口（禁止直接 `new` YAMLConfigLoader）
+- **business_rules YAML**：配置与业务逻辑分离（CLAUDE.md §9.4.2），启动期一次加载，不参与热更新（roadmap §3.5 明确）
+- **未来扩展位**：S6 多租户可在 loader 层加 tenant 维度（`load(name, tenant_id=None)`），MVP 阶段不实现
+
+### 配套测试（9 用例）
+- **TestRefundModuleLoadsYAML**（5）：YAML 含 2 字段 / 3 文件值与 YAML 一致 / 单一真相源（3 文件值必须全相等）
+- **TestRefundPublicAPI**（3）：`refund_graph` / `RefundTool` / `order_lifecycle` 公共 API 兼容（保留类属性语法 + 模块级常量）
+- **TestRefundFailFast**（1）：YAML 缺失 → import 阶段 ConfigError
+
+### Phase 2 进度
+S4 ✅ 3/4 阶段（config_loader + guard + refund）；阶段 4（intent.yaml + query_rewriter.yaml）+ 删除 legacy 薄壳待办。
+
+### 已知限制
+- 启动期一次加载，不参与热更新（roadmap §3.5 明确；如需热更 → 重启服务）
+- name 仅单层 `[a-z0-9_]+`，不支持分层（与 prompt_loader 区别）
+- MVP 无租户级覆盖（S6 范围）
+- 无 Pydantic schema 校验（YAGNI：业务代码访问字段时自然抛 KeyError/TypeError）
+
+### 反思（教训沉淀）
+- **常量扫描先 grep 再迁移**：迁移前必须 grep 找出所有重复定义；3 文件共享常量是隐性技术债
+- **monkeypatch + reload + factory singleton 是污染三件套**：测试隔离必须用 autouse fixture 强制重置工厂单例
+- **`is` vs `==` 在 fixture 重置场景下的取舍**：测试要反映"生产实际能跑"，但不要 over-specify 生产未保证的优化（如 hot-reload 共享 dict 对象）

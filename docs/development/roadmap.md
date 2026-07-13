@@ -219,6 +219,24 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 | **验证** | • 全量 9 测试无回归<br>• 改 YAML 中某阈值 → 重启服务后行为变化<br>• `grep -rn "^[A-Z_]\+\s*=\s*[0-9]" backend/app/services/` 命中应显著减少（仅留实现细节如重试次数默认值） |
 | **风险** | 1. 阈值漏改导致线上行为变化 → YAML 默认值必须与原常量完全一致，单元测试比对<br>2. 类型转换错 → YAML 加载时做 schema 校验 |
 
+#### 3.5.1 S4 实绩记录（2026-07-13 截至）
+
+| 阶段 | commit | 状态 | 关闭缺口 |
+|------|--------|------|----------|
+| **阶段 1**：config_loader 基础设施 | `38932ab feat(services): Sprint 4 阶段 1 - 业务规则配置加载器（config_loader）` | ✅ 完成 | G8 启动基础 |
+| **阶段 2**：guard 业务规则 YAML 化 | `5132176 feat(services): Sprint 4 阶段 2 - guard 业务规则 YAML 化` | ✅ 完成 | G8（guard 阈值） |
+| **阶段 3**：refund 业务规则 YAML 化（3 文件共享 1 YAML） | `70e5a3e feat(services): Sprint 4 阶段 3 - refund 业务规则 YAML 化`<br>`efa729b test(services): test_guard_config 加 autouse fixture 隔离 config_loader 单例` | ✅ 完成 | G8（refund 阈值） |
+| **阶段 4**：intent + query_rewriter 业务规则 YAML 化 | - | ⏸ 待办 | G8（intent + query_rewriter） |
+
+**S4 关闭缺口累计**：G8 = 3/5 YAML（guard / refund / config_loader 架子；intent / query_rewriter 待 S4 阶段 4）
+
+**S4 阶段 3 关键发现（沉淀到 learning_log §28）**：
+- `REFUND_WINDOW_DAYS = 7` / `DELIVERY_OFFSET_DAYS = 2` 在 3 个文件硬编码（refund_graph / refund_tool / order_lifecycle），按 CLAUDE.md §5.2 跨模块四要素一次迁移，单一真相源落地
+- test 污染修复：fail-fast 测试 reload 模块时 `get_config_loader()` 在 `load()` 抛错前就把 `_loader` 全局指向 monkeypatch 后的目录 → 加 post-only autouse fixture 隔离（pre+post 会破坏同文件 `is` 断言）
+- pytest 全量 198/198 PASS，GitHub Actions CI run #7 success
+
+**下一阶段进入条件**：用户决定是否启动 S4 阶段 4（intent.yaml + query_rewriter.yaml）或先 Phase 4（query_rewriter.py 业务能力增强）
+
 ---
 
 ### 3.6 S5 — 目录对齐 CLAUDE.md §7.1（仅文档）
