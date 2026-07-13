@@ -9,6 +9,7 @@
 [![Qdrant](https://img.shields.io/badge/Qdrant-v1.10-DC244C)](https://qdrant.tech)
 [![Docker](https://img.shields.io/badge/Docker_Compose-5_services-2496ED?logo=docker)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![CI](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml/badge.svg)](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml)
 <!-- Status badge: 填入真实 healthcheck.io UUID 后会显示实时 ECS 健康状态 -->
 <!-- 注册地址：https://healthcheck.io → 新建 check → Period=5min → 复制 UUID 替换下方 YOUR-UUID-HERE -->
 <!-- 文档：docs/HEALTHCHECK.md -->
