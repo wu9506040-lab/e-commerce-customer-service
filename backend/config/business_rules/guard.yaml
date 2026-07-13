@@ -1,0 +1,37 @@
+# guard.py 业务规则（Sprint 4 阶段 2）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("guard")
+# 启动期一次加载（不参与热更新）；改完需重启服务（roadmap §3.5）
+#
+# 字段分类：
+#   L1 规则阈值（0 token 拦截）：MIN_LEN / MAX_LEN / MIN_CHAR_DIVERSITY / MIN_CHINESE_RATIO
+#   L2 Embedding 领域相关性阈值：DOMAIN_RELEVANCE_THRESHOLD
+#   L3 重复检测窗口：REPEAT_WINDOW_SECONDS / REPEAT_MAX_IN_WINDOW
+#   闲聊 / 拒答话术：CHITCHAT_RESPONSES（6 条）
+
+# === L1 规则阈值（0 token 拦截）===
+MIN_LEN: 2
+MAX_LEN: 500
+# 字符多样性（不同字符数 / 总字符数），防"啊啊啊啊"类
+MIN_CHAR_DIVERSITY: 0.15
+# 中文字符占比（特例：含英文 SKU 可豁免）
+MIN_CHINESE_RATIO: 0.20
+
+# === L2 Embedding 领域相关性阈值 ===
+# 经验值 0.4 太松（"今天天气"类闲聊仍会过），提到 0.55 更稳
+# 含义：与"电商领域 30 条代表 query"的平均向量 cosine 至少 0.55 才算领域内
+DOMAIN_RELEVANCE_THRESHOLD: 0.55
+
+# === L3 重复检测窗口 ===
+REPEAT_WINDOW_SECONDS: 60
+REPEAT_MAX_IN_WINDOW: 3
+
+# === 闲聊 / 拒答 话术模板 ===
+# 命中 L1/L2/L3 时直接返给用户的话术（黑名单命中走静默，不在话术内）
+CHITCHAT_RESPONSES:
+  no_service: "您好，我是电商客服小智，专注解答订单、商品、物流、退换货相关问题哦～"
+  irrelevant: "您的问题似乎与购物无关，如果需要其他帮助，可以联系平台客服。"
+  too_short: "请告诉我您要咨询的问题～"
+  too_long: "您的问题较长，建议精简后重新提问，或联系人工客服。"
+  spam: "您已多次发送相同内容，请稍候再试。"
+  english_no_sku: "请用中文描述您的问题，方便我更快为您解答。"

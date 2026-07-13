@@ -32,39 +32,37 @@ from typing import Optional
 
 from app.clients.redis_client import get_client as redis_get
 from app.core.providers.embedding import EmbeddingError, get_embedding_provider
+from app.services.config_loader import get_config_loader
 from app.services.guard_centroid import get_domain_centroid
 
 logger = logging.getLogger(__name__)
 
 
 # =============================================================
-# 闲聊 / 拒答 话术模板
+# 业务规则（启动期加载一次，来自 config/business_rules/guard.yaml）
+# 改阈值 / 话术 → 改 YAML → 重启服务（roadmap §3.5 不参与热更新）
+# 加载失败 → RuntimeError（启动期 fail-fast，不在运行时隐藏错误）
 # =============================================================
-CHITCHAT_RESPONSES = {
-    "no_service": "您好，我是电商客服小智，专注解答订单、商品、物流、退换货相关问题哦～",
-    "irrelevant": "您的问题似乎与购物无关，如果需要其他帮助，可以联系平台客服。",
-    "too_short": "请告诉我您要咨询的问题～",
-    "too_long": "您的问题较长，建议精简后重新提问，或联系人工客服。",
-    "spam": "您已多次发送相同内容，请稍候再试。",
-    "english_no_sku": "请用中文描述您的问题，方便我更快为您解答。",
-}
+_RULES = get_config_loader().load("guard")
 
-# =============================================================
-# 阈值配置
-# =============================================================
-MIN_LEN = 2
-MAX_LEN = 500
-MIN_CHAR_DIVERSITY = 0.15  # 字符多样性（set/len）
-MIN_CHINESE_RATIO = 0.20  # 中文占比（特例：含英文 SKU 可豁免）
+# === L1 规则阈值（0 token 拦截）===
+MIN_LEN: int = _RULES["MIN_LEN"]
+MAX_LEN: int = _RULES["MAX_LEN"]
+MIN_CHAR_DIVERSITY: float = _RULES["MIN_CHAR_DIVERSITY"]
+MIN_CHINESE_RATIO: float = _RULES["MIN_CHINESE_RATIO"]
 
-# Embedding 领域相关性阈值
+# === L2 Embedding 领域相关性阈值 ===
 # 经验值 0.4 太松（"今天天气" 类闲聊仍会过），提到 0.55 更稳
 # 0.55 含义：与"电商领域 30 条代表 query"的平均向量 cosine 至少 0.55 才算领域内
-DOMAIN_RELEVANCE_THRESHOLD = 0.55
+DOMAIN_RELEVANCE_THRESHOLD: float = _RULES["DOMAIN_RELEVANCE_THRESHOLD"]
 
-# 行为检测
-REPEAT_WINDOW_SECONDS = 60
-REPEAT_MAX_IN_WINDOW = 3
+# === L3 重复检测窗口 ===
+REPEAT_WINDOW_SECONDS: int = _RULES["REPEAT_WINDOW_SECONDS"]
+REPEAT_MAX_IN_WINDOW: int = _RULES["REPEAT_MAX_IN_WINDOW"]
+
+# === 闲聊 / 拒答 话术模板 ===
+CHITCHAT_RESPONSES: dict = _RULES["CHITCHAT_RESPONSES"]
+
 # 重复检测的 Redis key 前缀
 _REPEAT_KEY_PREFIX = "guard:repeat:"
 
