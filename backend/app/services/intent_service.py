@@ -17,63 +17,45 @@ from typing import Optional
 
 from app.core.providers.llm import get_llm_provider
 from app.schemas.intent import IntentEntities, IntentType
+from app.services.config_loader import get_config_loader
 
 logger = logging.getLogger(__name__)
 
 
-# 意图分类规则（PROJECT_DESIGN.md §7 草案 + 扩展）
-# 顺序敏感：先匹配 refund（含"买"语义）→ order → product → policy 兜底
-INTENT_RULES: list[tuple[IntentType, list[str]]] = [
-    # refund_query：退款/退货/换货（带个人意愿更稳，避免和"怎么申请退款"误命中）
-    ("refund_query", [
-        # 必须含明确个人意愿（"我要/想/能/可以" + 退 OR 明确动作），避免询问流程被误命中
-        r"我要退款", r"我要退货", r"我要退换", r"我要换货",
-        r"我要申请退款", r"我要申请退货", r"我要发起退款",
-        r"想退", r"想退掉", r"想退款",
-        r"想申请退款", r"想申请退货", r"想发起退款",
-        r"不想要了",
-        r"能退吗", r"可以退", r"能不能退", r"还能退吗", r"能退款吗",
-        r"能申请退款吗", r"可以申请退款吗",
-        # 注：去掉裸 r"申请退款"/r"申请退货"/r"发起退款" — "怎么申请退款"是询问流程，应走 policy_query
-    ]),
-    # policy_query：政策类（保修/活动/促销/包邮/发票 等通用规则 + 退货条件咨询）
-    # 注意："7 天无理由"放在这 — 用户问"7 天无理由退货运费谁出"是政策咨询，不是真要退
-    ("policy_query", [
-        r"7\s*天无理由", r"七天无理由", r"无理由退",
-        # M13 修复：流程咨询类（"怎么申请退款" / "如何退款"等）走政策，不是退款
-        r"怎么.*退款", r"怎么.*退货", r"怎么.*退换",
-        r"如何.*退款", r"如何.*退货",
-        r"退款流程", r"退货流程", r"退款怎么", r"退货怎么",
-        # M5 修复：发货时效 / 电池保修 — 这两类之前被 order/product 规则抢匹配
-        r"什么时候发货", r"多久发货", r"几天发货", r"发货时间",
-        r"电池.*保修", r"电池.*质保", r"保修多久", r"质保多久", r"保修期多久",
-        # 注：去掉 r"保修" / r"质保" — 含 sku 的"ZP1 保修多久"应走 product_query
-        # 未命中其他 3 类时，policy_query 作为兜底（见 _rule_classify 默认逻辑）
-        r"包邮", r"邮费", r"运费", r"发票",
-        r"活动", r"促销", r"折扣", r"优惠券", r"满减",
-    ]),
-    # order_query：订单/物流/快递/发货
-    ("order_query", [
-        r"我的订单", r"我的那.*订单", r"订单状态",
-        r"物流", r"快递", r"到哪", r"到货", r"发货", r"派送",
-        r"签收", r"运单", r"单号",
-    ]),
-    # product_query：商品参数/价格/库存
-    ("product_query", [
-        r"多少钱", r"价格", r"参数", r"配置", r"规格",
-        r"续航", r"电池", r"内存", r"颜色", r"尺码", r"尺寸",
-        r"有没有货", r"库存", r"在哪买", r"推荐",
-        r"ZP\d", r"BP\d", r"LP\d",  # 我们的 SKU 前缀
-    ]),
-    # policy_query：兜底（保修/活动/促销/包邮/发票 等通用政策）
-    # 放在最后：未命中前 3 类默认就是 policy_query
-]
+# =============================================================
+# 业务规则（启动期加载一次，来自 config/business_rules/intent.yaml）
+# 改阈值/规则 → 改 YAML → 重启服务（roadmap §3.5 不参与热更新）
+# 单一真相源：intent_service.py 是唯一消费者
+# 注：app/services/chat/prompt_assembler.py 有 _ORDER_NO_RE 独立副本（M13 同步过），
+#     本次不合并（跨模块 + YAGNI），记录到 learning_log §29 已知限制
+# =============================================================
+_RULES = get_config_loader().load("intent")
 
-# 实体抽取正则
-# M13 修复：原 regex `\bORD\d{3,}\b` 不能匹配字母后缀订单（如 ORD20260704899EBA）
-# 与 synthesizer._ORDER_NO_RE 对齐：ORD + 8位日期 + 3-6位大写字母数字
-ORDER_NO_RE = re.compile(r"ORD\d{8}[A-Z0-9]{3,6}", re.IGNORECASE)
-SKU_RE = re.compile(r"\b(?:ZP|BP|LP)\d{1,3}\b", re.IGNORECASE)
+# IntentType 是 Literal["order_query", "refund_query", "product_query", "policy_query"]
+# YAML key 在运行时就是 str（Literal 的运行时类型就是 str），但加载时必须校验合法
+_VALID_INTENTS = frozenset(IntentType.__args__)
+
+# 意图分类规则（顺序敏感；dict 保序：Python 3.7+ dict 迭代顺序 = 插入顺序）
+# 顺序：refund_query → policy_query → order_query → product_query（与原 INTENT_RULES 一致）
+INTENT_RULES: dict[str, list[str]] = {}
+for _intent, _patterns in _RULES["INTENT_RULES"].items():
+    if _intent not in _VALID_INTENTS:
+        raise ValueError(
+            f"intent.yaml 含非法 intent: {_intent!r}（合法值: {sorted(_VALID_INTENTS)}）"
+        )
+    INTENT_RULES[_intent] = list(_patterns)  # 复制防止外部 mutate
+
+# 实体抽取正则（启动期编译一次；运行时 re.search 直接复用）
+# YAML 的 ORDER_NO_RE_FLAGS / SKU_RE_FLAGS 是字符串（如 "IGNORECASE"），
+# getattr(re, name) 查找 re 模块对应属性；非法名 → AttributeError（启动期 fail-fast）
+ORDER_NO_RE = re.compile(
+    _RULES["ORDER_NO_RE_PATTERN"],
+    getattr(re, _RULES["ORDER_NO_RE_FLAGS"]),
+)
+SKU_RE = re.compile(
+    _RULES["SKU_RE_PATTERN"],
+    getattr(re, _RULES["SKU_RE_FLAGS"]),
+)
 
 
 class IntentService:
@@ -125,7 +107,7 @@ class IntentService:
     @staticmethod
     def _rule_classify(query: str) -> Optional[dict]:
         """规则匹配：命中即返回"""
-        for intent, patterns in INTENT_RULES:
+        for intent, patterns in INTENT_RULES.items():  # dict 保序 → 与原 tuple 列表顺序一致
             for pattern in patterns:
                 if re.search(pattern, query, re.IGNORECASE):
                     return {

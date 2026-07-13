@@ -1,0 +1,116 @@
+# intent_service.py 业务规则（Sprint 4 阶段 4）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("intent")
+# 启动期一次加载；改完需重启服务（roadmap §3.5）
+#
+# ⚠️ 单一真相源：app/services/intent_service.py 是唯一消费者
+#   注意：app/services/chat/prompt_assembler.py 有 _ORDER_NO_RE 独立副本
+#         （与本文件 ORDER_NO_RE_PATTERN 语义相同；M13 同步过）
+#         本次不合并（跨模块 + YAGNI）；后续 Sprint 可单独立项消除双源
+
+# 意图分类规则（顺序敏感：refund_query → policy_query → order_query → product_query → policy_query 兜底）
+# 顺序说明：
+#   1. refund_query 必须最先（"我要退款" 不能被 "怎么退款" 误命中 — policy 在前会抢匹配）
+#   2. policy_query 含 "7 天无理由"（询问类应走 policy）+ 流程咨询（"怎么退款"）+ 通用政策（包邮/发票/促销）
+#   3. order_query 订单/物流/快递
+#   4. product_query 商品参数/价格/SKU
+# 未命中前 3 类默认走 policy_query（见 intent_service.classify 默认逻辑）
+INTENT_RULES:
+  # refund_query：退款/退货/换货（必须含明确个人意愿，避免询问流程被误命中）
+  refund_query:
+    - '我要退款'
+    - '我要退货'
+    - '我要退换'
+    - '我要换货'
+    - '我要申请退款'
+    - '我要申请退货'
+    - '我要发起退款'
+    - '想退'
+    - '想退掉'
+    - '想退款'
+    - '想申请退款'
+    - '想申请退货'
+    - '想发起退款'
+    - '不想要了'
+    - '能退吗'
+    - '可以退'
+    - '能不能退'
+    - '还能退吗'
+    - '能退款吗'
+    - '能申请退款吗'
+    - '可以申请退款吗'
+  # policy_query：政策类（保修/活动/促销/包邮/发票/流程咨询/发货时效 等通用规则）
+  policy_query:
+    - '7\s*天无理由'
+    - '七天无理由'
+    - '无理由退'
+    - '怎么.*退款'
+    - '怎么.*退货'
+    - '怎么.*退换'
+    - '如何.*退款'
+    - '如何.*退货'
+    - '退款流程'
+    - '退货流程'
+    - '退款怎么'
+    - '退货怎么'
+    - '什么时候发货'
+    - '多久发货'
+    - '几天发货'
+    - '发货时间'
+    - '电池.*保修'
+    - '电池.*质保'
+    - '保修多久'
+    - '质保多久'
+    - '保修期多久'
+    - '包邮'
+    - '邮费'
+    - '运费'
+    - '发票'
+    - '活动'
+    - '促销'
+    - '折扣'
+    - '优惠券'
+    - '满减'
+  # order_query：订单/物流/快递/发货
+  order_query:
+    - '我的订单'
+    - '我的那.*订单'
+    - '订单状态'
+    - '物流'
+    - '快递'
+    - '到哪'
+    - '到货'
+    - '发货'
+    - '派送'
+    - '签收'
+    - '运单'
+    - '单号'
+  # product_query：商品参数/价格/库存/SKU
+  product_query:
+    - '多少钱'
+    - '价格'
+    - '参数'
+    - '配置'
+    - '规格'
+    - '续航'
+    - '电池'
+    - '内存'
+    - '颜色'
+    - '尺码'
+    - '尺寸'
+    - '有没有货'
+    - '库存'
+    - '在哪买'
+    - '推荐'
+    - 'ZP\d'
+    - 'BP\d'
+    - 'LP\d'
+
+# 订单号格式（M13 修复：原 regex `\bORD\d{3,}\b` 不能匹配字母后缀订单如 ORD20260704899EBA）
+# 与 prompt_assembler._ORDER_NO_RE 对齐：ORD + 8位日期 + 3-6位大写字母数字
+ORDER_NO_RE_PATTERN: 'ORD\d{8}[A-Z0-9]{3,6}'
+ORDER_NO_RE_FLAGS: IGNORECASE
+
+# SKU 前缀格式：ZP / BP / LP 开头，1-3 位数字（边界 \b 防止匹配到商品描述里的 "ZP1"）
+SKU_RE_PATTERN: '\b(?:ZP|BP|LP)\d{1,3}\b'
+SKU_RE_FLAGS: IGNORECASE
