@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # docker compose 默认 cwd=/app，相对路径 "config/prompts" 即可（推荐）
     PROMPT_DIR: str = "config/prompts"
 
+    # ---- 业务规则加载器（Sprint 4）----
+    # 相对 backend 根目录的路径；绝对路径可直接覆盖
+    # 例如：容器内 /app/config/business_rules → BUSINESS_RULES_DIR=/app/config/business_rules
+    # 业务规则启动时加载，不参与热更新（roadmap §3.5：改规则需重启服务）
+    BUSINESS_RULES_DIR: str = "config/business_rules"
+
     # ---- LLM (DashScope OpenAI 兼容) ----
     QWEN_API_KEY: str = ""
     DASHSCOPE_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
