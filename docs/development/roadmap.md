@@ -226,16 +226,23 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 | **阶段 1**：config_loader 基础设施 | `38932ab feat(services): Sprint 4 阶段 1 - 业务规则配置加载器（config_loader）` | ✅ 完成 | G8 启动基础 |
 | **阶段 2**：guard 业务规则 YAML 化 | `5132176 feat(services): Sprint 4 阶段 2 - guard 业务规则 YAML 化` | ✅ 完成 | G8（guard 阈值） |
 | **阶段 3**：refund 业务规则 YAML 化（3 文件共享 1 YAML） | `70e5a3e feat(services): Sprint 4 阶段 3 - refund 业务规则 YAML 化`<br>`efa729b test(services): test_guard_config 加 autouse fixture 隔离 config_loader 单例` | ✅ 完成 | G8（refund 阈值） |
-| **阶段 4**：intent + query_rewriter 业务规则 YAML 化 | - | ⏸ 待办 | G8（intent + query_rewriter） |
+| **阶段 4**：intent 业务规则 YAML 化（81 pattern + 2 实体正则） | `1338a09 feat(services): Sprint 4 阶段 4 - intent 业务规则 YAML 化` | ✅ 完成 | G8（intent） |
 
-**S4 关闭缺口累计**：G8 = 3/5 YAML（guard / refund / config_loader 架子；intent / query_rewriter 待 S4 阶段 4）
+**S4 关闭缺口累计**：G8 = 4/5 YAML（guard / refund / intent / config_loader 架子；query_rewriter 待后续）
 
 **S4 阶段 3 关键发现（沉淀到 learning_log §28）**：
 - `REFUND_WINDOW_DAYS = 7` / `DELIVERY_OFFSET_DAYS = 2` 在 3 个文件硬编码（refund_graph / refund_tool / order_lifecycle），按 CLAUDE.md §5.2 跨模块四要素一次迁移，单一真相源落地
 - test 污染修复：fail-fast 测试 reload 模块时 `get_config_loader()` 在 `load()` 抛错前就把 `_loader` 全局指向 monkeypatch 后的目录 → 加 post-only autouse fixture 隔离（pre+post 会破坏同文件 `is` 断言）
 - pytest 全量 198/198 PASS，GitHub Actions CI run #7 success
 
-**下一阶段进入条件**：用户决定是否启动 S4 阶段 4（intent.yaml + query_rewriter.yaml）或先 Phase 4（query_rewriter.py 业务能力增强）
+**S4 阶段 4 关键发现（沉淀到 learning_log §29）**：
+- `IntentType` 是 `Literal` 非 `Enum`，不能 `IntentType(str)` 构造；用 `frozenset(IntentType.__args__)` 在 YAML 加载期校验 key 合法性（fail-fast）
+- `INTENT_RULES` 由 `list[tuple]` 改 `dict` 保序（Python 3.7+），行为不变；`_rule_classify` 改 `.items()` 迭代
+- flags 用 `getattr(re, "IGNORECASE")` 动态解析；测试用按位与判断（compile 后 flags=34 含 UNICODE 默认位，非 `==2`）
+- `prompt_assembler._ORDER_NO_RE` 双源保留，本阶段不合并（YAGNI + 跨模块）
+- pytest 全量 212/212 PASS，GitHub Actions CI run #9 success
+
+**下一阶段进入条件**：用户决定是否启动 Phase 4（query_rewriter.py 业务能力增强，含其 YAML 化）或其他
 
 ---
 

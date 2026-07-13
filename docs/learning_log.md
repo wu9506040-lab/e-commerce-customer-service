@@ -3291,3 +3291,36 @@ S4 ✅ 3/4 阶段（config_loader + guard + refund）；阶段 4（intent.yaml +
 - **常量扫描先 grep 再迁移**：迁移前必须 grep 找出所有重复定义；3 文件共享常量是隐性技术债
 - **monkeypatch + reload + factory singleton 是污染三件套**：测试隔离必须用 autouse fixture 强制重置工厂单例
 - **`is` vs `==` 在 fixture 重置场景下的取舍**：测试要反映"生产实际能跑"，但不要 over-specify 生产未保证的优化（如 hot-reload 共享 dict 对象）
+
+---
+
+## 29. Sprint 4 业务规则 YAML 化 — 阶段 4：intent（2026-07-13）
+
+### What
+将 `intent_service.py` 的 81 条意图分类 pattern（4 类意图）+ 2 组实体抽取正则（订单号 / SKU），迁移到 `config/business_rules/intent.yaml`，启动期一次加载。commit `1338a09`。
+
+### Why
+CLAUDE.md §9.4.2「业务规则禁止硬编码」+ roadmap G8 缺口。意图 pattern 是典型业务规则，改一条关键词需改 Python 代码，应配置化。
+
+### Tech Stack
+- config_loader（阶段 1 基础设施）`.load("intent")`
+- YAML dict + Python 3.7+ dict 保序 → 意图顺序敏感逻辑不变
+- `frozenset(IntentType.__args__)` 校验 YAML key 合法（Literal 非 Enum）
+- `getattr(re, flags_name)` 动态解析正则 flags
+
+### Flow
+`get_config_loader().load("intent")` → 校验 key ∈ IntentType → 构建 `INTENT_RULES: dict[str, list[str]]` + 编译 `ORDER_NO_RE` / `SKU_RE` → `classify()` 行为不变
+
+### Problem → Fix
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| `IntentType(str)` 报 TypeError | `IntentType` 是 `Literal` 非 `Enum`，不可构造 | 改用 `frozenset(IntentType.__args__)` 做成员校验 |
+| `for i, p in INTENT_RULES:` 解包失败 | 结构从 `list[tuple]` 改 `dict` | 改 `.items()` 迭代 |
+| 测试 `flags == re.IGNORECASE` 失败（34≠2） | `re.compile` 后 flags 含 UNICODE 默认位 | 测试改按位与 `flags & re.IGNORECASE` |
+
+### 配套测试（14 用例）
+`test_intent_config.py`：YAML 字段/意图/pattern 计数、常量↔YAML 一一对应（防偏移）、顺序敏感、正则匹配、classify 3 类行为一致性、订单号抽取、fail-fast（YAML 缺失 → import 抛错）。全量 212/212 PASS，CI run #9 success。
+
+### 已知限制
+- `prompt_assembler._ORDER_NO_RE` 与 `intent.yaml` ORDER_NO_RE_PATTERN 语义相同但物理双源（M13 同步过）；本阶段不合并（YAGNI + 跨模块），后续 Sprint 可单独立项消除双源
+- query_rewriter.py 业务规则仍待迁移（Phase 4 范围）
