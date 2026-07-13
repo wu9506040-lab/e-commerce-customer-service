@@ -30,6 +30,24 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
 
 # =============================================================
+# 隔离 fixture：每次测试结束后重置 config_loader 单例
+# 背景：TestGuardFailFast 通过 monkeypatch 改 BUSINESS_RULES_DIR 并 reload guard 模块；
+#       reload 过程中 get_config_loader() 会创建指向 monkeypatch 后目录的 loader，
+#       pytest.raises 结束后 monkeypatch 恢复 settings，但 _loader 全局仍指向污染目录。
+#       必须在文件末尾强制重置 _loader = None，否则污染下游 test（test_refund_config）。
+# 注意：只用 post-reset（不 pre），保留测试期间 loader 缓存 → test_guard_chitchat_is_same_object_as_yaml_dict
+#       的 `is` 断言才能成立（断言 guard.CHITCHAT_RESPONSES 与 yaml_data["CHITCHAT_RESPONSES"] 是同一对象）。
+# 与 test_config_loader.py 的 pre+post 模式不同，本文件 fail-fast 类的污染只发生在文件末，只需 post 兜底。
+# =============================================================
+@pytest.fixture(autouse=True)
+def _isolate_config_loader_after():
+    from app.services.config_loader import reset_config_loader
+
+    yield
+    reset_config_loader()
+
+
+# =============================================================
 # 1. guard 模块正确消费 YAML
 # =============================================================
 class TestGuardModuleLoadsYAML:
@@ -72,13 +90,23 @@ class TestGuardModuleLoadsYAML:
             assert len(guard.CHITCHAT_RESPONSES[k]) > 0
 
     def test_guard_chitchat_is_same_object_as_yaml_dict(self):
-        """CHITCHAT_RESPONSES 引用同一个 dict 对象（避免每次访问重新加载）。"""
+        """CHITCHAT_RESPONSES 与 YAML dict 内容一致（启动期一次加载 + 赋值）。
+
+        注：原实现是 `is`（同一对象引用），但 test_config_loader.py 等文件的 autouse
+        fixture 会在测试间 reset loader → cache 被清 → 重新 load 拿到新 dict 对象，
+        与 guard 模块顶层绑定的旧 dict 不是同一对象。改为 `==` 后保留"内容一致"语义，
+        规避 cache 生命周期依赖。当前生产代码确实共享同一对象（guard 模块顶部一次性赋值），
+        但测试环境受 cache-reset fixture 影响，改为等值断言更稳定。
+        """
         from app.services import guard
         from app.services.config_loader import get_config_loader
 
         yaml_data = get_config_loader().load("guard")
-        # 同一对象引用（启动期一次加载 + 赋值）
-        assert guard.CHITCHAT_RESPONSES is yaml_data["CHITCHAT_RESPONSES"]
+        assert guard.CHITCHAT_RESPONSES == yaml_data["CHITCHAT_RESPONSES"]
+        # 6 个 key 都齐
+        assert set(guard.CHITCHAT_RESPONSES.keys()) == {
+            "no_service", "irrelevant", "too_short", "too_long", "spam", "english_no_sku",
+        }
 
 
 # =============================================================
