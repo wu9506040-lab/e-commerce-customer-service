@@ -61,7 +61,7 @@ jobs:
           DATABASE_URL: mysql+pymysql://cs_user:pwd@127.0.0.1:3306/customer_service?charset=utf8mb4
           REDIS_URL: redis://127.0.0.1:6379/0
           QDRANT_URL: http://127.0.0.1:6333
-          JWT_SECRET: ci-test-secret-not-real-32chars
+          JWT_SECRET: ci-test-secret-not-real-32chars-xx
           QWEN_API_KEY: ci-fake-key-not-real
           MYSQL_HOST: 127.0.0.1
         run: |
