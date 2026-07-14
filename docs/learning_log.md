@@ -3579,3 +3579,142 @@ else:
 - **本地 import 防循环依赖**：`search_multi_policy` 用 `from app.services.rrf import rrf_fuse`（函数内 import）而非模块顶部 import，避免 `policy_service ↔ rrf` 隐式循环（虽然在当前依赖图里也合法）
 - **eval_hitk 接入是验证标准**：`--multi-query` flag 让 hit@K 报告可量化 Multi-Query 提升幅度，避免「能力上线了但效果未验证」的常见 Sprint 烂尾；同模式可以套到未来 HyDE / 同义词扩展
 
+---
+
+## 32. P2 长程记忆 — user_profiles + profile_service + prompt 注入（2026-07-14）
+
+### What
+P2 backlog 第 2 项落地：在 Sprint 4 + Phase 4 A4 闭环基础上，给客服系统加**跨 session 用户画像**：
+1. 新增 `user_profiles` 表（1:1 → users.id）存 summary / frequent_skus / preferences / interaction_count
+2. 新增 `services/profile_service.py`（get_or_create / update_summary / append_frequent_skus / increment_interaction / clear / to_prompt_block）
+3. `chat/orchestrator.py` 启动期加载 profile → 转 `profile_block` → 注入 `context_block` 末尾
+4. `api/chat.py` done 事件后 best-effort 累加 `interaction_count` + 追加 `frequent_skus`
+5. 灰度开关 `settings.ENABLE_USER_PROFILE=False` 默认关闭（与 Phase 4 A4 同模式）
+6. 27 用例 `tests/test_profile_service.py` 全 mock 测（with_safe_session / UserProfile / 异常路径）
+
+### Why
+CLAUDE.md §9.5.2 可观测要求「单用户级分析」+ 真实场景中用户**跨 session 重复问同一类问题**（如"运费险怎么买"问 3 次），AI 没有长程记忆就只能每次从零答。
+- **业务价值**：让 AI 记住"这位用户上次问过什么、关心什么商品、有什么偏好"，给个性化回复
+- **基础设施就绪**：Sprint 4 已闭环配置层（config_loader + prompt_loader），profile_service 直接复用 `with_safe_session` best-effort 模式
+- **§3.3 YAGNI**：只做"profile 加载 + 自动更新"，不做事件流 / 画像聚类 / 租户级
+
+### Tech Stack
+- `app.models.user_profile.UserProfile`（新增）— ORM 1:1 users.id
+- `app.services.profile_service`（新增）— 5 个写入函数 + 1 个格式化函数（纯函数）
+- `deploy.mysql.init.02_user_profiles.sql`（新增）— Docker init 脚本（与 01_schema.sql 同模式：DROP IF EXISTS + CREATE）
+- `app.core.config.settings`（已有）— +2 字段（ENABLE_USER_PROFILE / USER_PROFILE_PROMPT_MAX_LEN）
+- `app.services.chat.prompt_assembler._build_context_block`（已有）— 扩 `profile_block` 参数
+- `app.services.chat.orchestrator.run_stream`（已有）— 启动期 `profile_service.get_or_create` → `to_prompt_block` → 拼 context
+- `app.api.chat.event_generator`（已有）— done 事件后 `increment_interaction` + `append_frequent_skus`
+
+### Flow
+
+#### 注入侧：每轮 /chat 加载 profile → 注入 context
+```
+user_id = 1, ENABLE_USER_PROFILE = True
+   │
+   ├─ run_stream 启动期
+   │   profile = profile_service.get_or_create(1)        # 不存在则建空
+   │   profile_block = profile_service.to_prompt_block(profile, max_len=200)
+   │
+   ├─ context_block = _build_context_block(
+   │     sku, order_no, user_id, profile_block=profile_block
+   │   )
+   │   # M9.5 context（商品/订单）优先；profile_block 拼末尾（补充信息）
+   │
+   └─ LLM prompt = 【当前场景】M9.5 + 【当前用户画像】profile + 【对话历史】 + 问题
+```
+
+#### 更新侧：每轮 done 后 best-effort 累加
+```
+done 事件触发
+   │
+   ├─ ENABLE_USER_PROFILE and user_id != 0?
+   │   ├─ 否 → 短路（不放行 profile 调用）
+   │   └─ 是 → asyncio.to_thread(profile_service.increment_interaction, user_id, 1)
+   │              # 每轮 +1
+   │              if payload.sku:
+   │                  asyncio.to_thread(profile_service.append_frequent_skus,
+   │                                      user_id, [payload.sku])
+   │
+   └─ 异常 → warning + 放行（不影响 done 响应）
+```
+
+#### to_prompt_block 格式化（核心纯函数）
+```python
+profile = UserProfile(
+    summary="用户近期关注 ZP1 配件",
+    frequent_skus=["ZP1", "ZP2"],
+    preferences={"refund_pref": "fast"},
+    interaction_count=12,
+)
+block = to_prompt_block(profile)
+# → "【当前用户画像】(跨 session 长程记忆，仅作参考，不得编造...)
+#    - 偏好：refund_pref=fast
+#    - 最近提过的商品：ZP1 / ZP2
+#    - 画像摘要：用户近期关注 ZP1 配件
+#    - 累计对话：12 轮"
+# 硬上限 max_len=200（防 prompt 膨胀）
+```
+
+### Problem → Fix
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 测试 mock `with_safe_session` 报 "missing positional argument db" | `_patch_safe_session(db, commit=True)` 签名不匹配：实际是 `with_safe_session(commit=True) as db:` 调用，`db` 由 `__enter__` yield 出来 | 改 `_patch_safe_session_with_db(db)` 工厂，闭包捕获 db；mock 接受 `*, commit=True` |
+| `to_prompt_block` 硬截断没生效（104 字 > max_len=50） | 原实现先 truncate `body`，再拼 prefix label，导致最终 block 超出 max_len | 改：先拼 prefix + body 得到完整 block，再对 block 整体截断 |
+| 真 DB 还没建 user_profiles 表（deploy init 在 fresh DB 才跑） | 当前 dev DB 是手工 migrate 上来；新增表需要新建部署 | `deploy/mysql/init/02_user_profiles.sql` 已就位，新部署自动建；dev DB 需要手工跑或重启容器 |
+| profile 加载失败导致主流程卡死 | profile_service 内部异常未捕获 | profile_service.get_or_create 内部 `try/except + warning + return None`；orchestrator 外层再 try/except 一次（双保险） |
+| 隐私删除链路缺失 | 用户有权清除画像但无入口 | profile_service.clear() 软删接口就位；admin API / 用户自助入口留 V3+ |
+| 反幻觉：LLM 把 profile 内容当真 | profile 是历史摘要，LLM 可能当事实引用 | to_prompt_block 输出带 hard label"仅作参考，不得编造未在 profile 中出现的用户事实"（与 M9.5 同模式） |
+| 灰度开关默认开导致 0 LLM token 失控 | profile 注入增加 prompt tokens（最多 200 字） | `ENABLE_USER_PROFILE=False` 默认关闭；先观察真实效果再开 |
+| YAGNI 越界风险：想加"画像聚类 / 事件流 / 租户级" | 当前 1 表 + 1 service 边界清晰 | §3.3 决策表：仅做"1:1 画像 + best-effort 自动更新"，不做事件流（messages JOIN）/ 派生画像（summary 够用）/ 租户级（profile 跟 user 走） |
+
+### 验证
+- pytest 全量 **270/270 PASS**（243 baseline + 27 profile_service）
+- `ENABLE_USER_PROFILE=False` 灰度基线：现有测试零修改通过（profile_block 始终空串，context_block 行为不变）
+- 新增 27 用例覆盖：get_or_create / update_summary / append_frequent_skus（去重+截断）/ increment_interaction / clear（软删）/ to_prompt_block（结构化+硬截断+反幻觉 label）/ 隐私边界（user_id=0 短路）/ 灰度开关
+- `with_safe_session` mock 模式：与 Sprint 4 refund/guard/intent/query_rewriter 测试同模式（autouse fixture 不需要，因 service 函数本身可幂等）
+
+### Architecture Role
+属于 `services/` 层的**业务能力纵深** + 跨模块编排（orchestrator / api/chat / prompt_assembler / profile_service / user_profile ORM）：
+- **上游**：Sprint 1-4 已落地 Provider + config_loader + prompt_loader + audit_service（best-effort 模式参考）
+- **下游**：`chat/orchestrator` 是唯一串联点（profile 加载 → 注入 context → done 后更新）
+- **依赖方向**：`profile_service` → `models/user_profile` + `clients/mysql_client`（单向）；`chat/orchestrator` → `profile_service`（单向）
+- **CLAUDE.md §9.1 三大铁律**：
+  - Interface First：profile_service 是 5 个**函数**（非类），与 session_service / order_service / policy_service 同模式（业务模块 1 个实现未抽 Protocol，符合 §3.3 YAGNI）
+  - Module Isolation：profile_service 不感知 chat/orchestrator；orchestrator 不感知 UserProfile ORM；api/chat 仅在 done 事件后调 profile_service
+  - Dependency Inversion：业务模块只 `from app.services import profile_service`（工厂模式），不直接 new ORM
+
+### 配套测试（27 用例）
+
+**`tests/test_profile_service.py`（27）**
+- `TestGetOrCreate`（4）：user_id=0 短路 / 行存在返 / 行不存在建空 / DB 异常 None
+- `TestUpdateSummary`（4）：user_id=0 / 行存在更新 / 行不存在插入 / DB 异常 False
+- `TestAppendFrequentSkus`（4）：空 list 短路 / 去重+截断 / 行不存在插入 / DB 异常 False
+- `TestIncrementInteraction`（3）：行存在累加 / 行不存在建 / user_id=0 False
+- `TestClear`（3）：行存在软删 / 行不存在 False / user_id=0 False
+- `TestToPromptBlock`（7）：None 返空 / 全空返空 / 结构化输出 / interaction<3 隐藏 / 硬截断 / preferences 最多 3 / SKUs 最多 5
+- `TestPrivacyBoundary`（1）：匿名 user_id=0 全部写路径短路 + 零 DB 调用
+- `TestGrayscaleSwitch`（1）：to_prompt_block 不读 settings（开关由 orchestrator 把控）
+
+### 阶段进度
+- **P2 长程记忆 ✅ 完成**：1 feature commit（`37614e5`）+ 1 test+docs commit（待 push）
+- **P2 backlog**：5/5 → 1/5 完成（CI 配置增强 / SSE resume / Prompt 版本 / HTTPS 待启动）
+- **§9.5 安全可观测**（架构验收维度）：从"🟡 部分"升级中（profile 给"用户级分析"留基础设施）
+
+### 已知限制
+- profile 自动摘要仍是手动触发（done 后仅累加 interaction + SKUs，不调 LLM 摘要 summary）；summary 字段靠人工编辑 / 后续 LLM 摘要脚本补
+- 跨租户场景（tenant_id 字段）未支持（与 Sprint 6 多租户 MVP 同步；当前 dev 单租户）
+- 用户隐私删除缺 UI/admin API 入口（仅 profile_service.clear() 函数接口）
+- interaction_count 不区分用户消息 / 助手消息（每轮 +1）；如要精确需读 messages.role
+- profile_block 硬截断到 200 字 → summary 字段越长，截断后越模糊；后续 LLM 摘要脚本要控 summary 长度 ≤120 字
+
+### 反思（教训沉淀）
+- **mock 闭包捕获 vs 局部 mock**：`_patch_safe_session(db)` 第一版签名错了，因为 `with_safe_session(commit=True)` 调用方没传 db——是 `__enter__` yield 出来的。正确模式是 mock 工厂闭包捕获 db（`@contextmanager` + 闭包变量）
+- **truncate 时机要正确**：「先 truncate 子内容再拼 prefix」与「先拼 prefix 再 truncate 整体」结果可能不同；硬上限应统一对最终 block 整体截断，避免遗漏 prefix 长度
+- **灰度开关的位置**：to_prompt_block 是纯函数不应感知 ENABLE_USER_PROFILE（开关语义应在外层 caller 把控），这样 unit test 不需要 mock settings；orchestrator 是把控开关的正确层级
+- **best-effort 双保险**：profile_service 内部 try/except + orchestrator 外层 try/except 双重防御；任何一层失效都不会阻塞主流程
+- **隐私边界前置**：user_id=0（匿名）短路写在所有 5 个写函数里（不是顶层 if 判断），确保未来加新写函数时也能强制约束
+- **YAGNI 决策表的实际收益**：当想"加画像聚类 / 事件流"时，§3.3 决策表 + 强制写进 commit message 是有用的刹车（commit 1 已注明"YAGNI 边界：1 张表 + 1 个 service；不做事件流 / 派生画像 / 租户级"）
+
