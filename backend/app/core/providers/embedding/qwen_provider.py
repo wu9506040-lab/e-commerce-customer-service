@@ -3,6 +3,9 @@ QwenEmbeddingProvider — Qwen (DashScope) Embedding 实现
 
 内部委托给 `app.core.embedding` 模块级函数（保留 retry + 降级）。
 不改业务逻辑，仅做方法签名适配 Protocol。
+
+说明：`app.core.embedding` 是 Provider 的内部 DashScope 客户端实现，
+业务模块禁止直接 import，只能通过本 Provider 调用。
 """
 from typing import List
 

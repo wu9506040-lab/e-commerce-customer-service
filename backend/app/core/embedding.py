@@ -1,9 +1,9 @@
 """
 Embedding 客户端 - DashScope text-embedding-v3（OpenAI 兼容模式）
 
-⚠️ DEPRECATED (Sprint 1, 2026-07-11)：
-本模块仍可调用，但业务模块应改用 `app.core.providers.embedding.EmbeddingProvider` 抽象。
-删除计划：S4 末（预计 ~3 周后）。删除前请确认所有调用方已切到 Provider。
+本模块是 `app.core.providers.embedding.QwenEmbeddingProvider` 的内部 DashScope 客户端，
+保存实际的 HTTP / retry / 降级逻辑。**业务模块禁止直接 import 本模块**，
+应通过 Provider 抽象调用：`from app.core.providers.embedding import get_embedding_provider`。
 
 按 §6 规则：core/ 层只做核心能力（embedding 转换）
 - 不调外部 HTTP API 路由

@@ -1,9 +1,9 @@
 """
 千问 (DashScope OpenAI 兼容) 客户端封装
 
-⚠️ DEPRECATED (Sprint 1, 2026-07-11)：
-本模块仍可调用，但业务模块应改用 `app.core.providers.llm.LLMProvider` 抽象。
-删除计划：S4 末（预计 ~3 周后）。删除前请确认所有调用方已切到 Provider。
+本模块是 `app.core.providers.llm.QwenLLMProvider` 的内部 DashScope 客户端，
+保存实际的 HTTP / retry / 断路器逻辑。**业务模块禁止直接 import 本模块**，
+应通过 Provider 抽象调用：`from app.core.providers.llm import get_llm_provider`。
 
 使用 OpenAI 兼容协议调用 DashScope：
 https://dashscope.aliyuncs.com/compatible-mode/v1

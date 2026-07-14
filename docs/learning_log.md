@@ -3324,3 +3324,82 @@ CLAUDE.md §9.4.2「业务规则禁止硬编码」+ roadmap G8 缺口。意图 p
 ### 已知限制
 - `prompt_assembler._ORDER_NO_RE` 与 `intent.yaml` ORDER_NO_RE_PATTERN 语义相同但物理双源（M13 同步过）；本阶段不合并（YAGNI + 跨模块），后续 Sprint 可单独立项消除双源
 - query_rewriter.py 业务规则仍待迁移（Phase 4 范围）
+
+---
+
+## 30. Sprint 4 业务规则 YAML 化 — 阶段 5 + 收尾（2026-07-14）
+
+### What
+闭环 Sprint 4「业务规则配置化 + 跨模块 Prompt 抽取」整条线：
+1. **阶段 5**：query_rewriter 业务规则（20 代词 + 4 阈值）+ Prompt 抽取（system / user_template）
+2. **收尾**：删 2 个 legacy 薄壳（`services/rerank.py` + `services/synthesizer.py`）；核心客户端（qwen.py / embedding.py）按用户决策保留为 Provider 内部实现，docstring 重写为"Provider 内部 DashScope 客户端"
+3. 跨脚本迁移：`scripts/eval_hitk.py` + `scripts/gen_eval_set.py` 全部切到 Provider
+
+### Why
+- §9.4.2「业务规则禁止硬编码」+ §9.6「Prompt 独立管理」同步推进；query_rewriter 是 Sprint 3 留尾的"余 3 个跨模块 Prompt"之一
+- 阶段 5 让 query_rewriter 服务（被 orchestrator 调，是 RAG 上游）对齐 G8 全员配置化基线
+- 收尾闭合 Sprint 1 以来「qwen.py / embedding.py / rerank.py 薄壳 + synthesizer.py 薄壳」的悬挂清单，删薄壳、留核心（避免 Provider 无限套娃），符合 CLAUDE.md §3.3 YAGNI
+
+### Tech Stack
+- `app.core.retry_utils`（新增）— 抽 `_is_retryable` + `_calc_backoff` 出来作为 `app.core.qwen` 的依赖；qwen.py 改用 `from app.core.retry_utils import is_retryable as _is_retryable, calc_backoff as _calc_backoff` 保持向后兼容
+- `app.core.providers.{llm,embedding,rerank}` 全部已存在（Sprint 1 落地）
+- `app.services.config_loader` + `app.services.prompt_loader`（Sprint 4 阶段 1 落地）
+
+### Flow
+
+#### query_rewriter YAML 化
+```python
+# app.services.query_rewriter
+_RULES = get_config_loader().load("query_rewriter")
+_COREF_PATTERN = re.compile("|".join(re.escape(p) for p in _RULES["COREFERENCE_PATTERNS"]))
+SYSTEM_PROMPT = get_prompt_loader().load("query_rewriter/system")
+USER_TEMPLATE = get_prompt_loader().load("query_rewriter/user_template")
+MAX_HISTORY_TURNS = _RULES["MAX_HISTORY_TURNS"]  # 4
+MAX_HISTORY_MSG_LEN = _RULES["MAX_HISTORY_MSG_LEN"]  # 100
+MAX_REWRITE_RATIO = _RULES["MAX_REWRITE_RATIO"]  # 3
+MAX_REWRITE_EXTRA = _RULES["MAX_REWRITE_EXTRA"]  # 50
+```
+
+#### 收尾 — 删除 vs 保留决策
+
+| 模块 | 决策 | 理由 |
+|------|------|------|
+| `app.services.rerank.py` | **删** | 12 行 wrapper，0 业务逻辑，全仓 0 引用 |
+| `app.services.synthesizer.py` | **删** | 65 行 re-export（兜 Sprint 3 拆分前 import 路径），全仓 0 引用 |
+| `app.core.qwen.py` | **保留** | Provider 内部 DashScope 客户端（保留 retry / 断路器 / 429 重试 / metrics 上报）；删除需重写 3 个 Provider 共 ~150 行 |
+| `app.core.embedding.py` | **保留** | 同上；QwenEmbeddingProvider 委托之 |
+| 3 个 Provider 文件 | **docstring 重写** | 去掉 "legacy" 字样；改为"内部委托给 Provider 内部 DashScope 客户端；业务模块禁止直接 import" |
+
+### Problem → Fix
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| policy_service 切 Provider 后 3 测试 fail | tests 仍 mock `embed_text` / `rerank` 函数旧路径 | 改 mock `get_embedding_provider` / `get_rerank_provider` Provider 工厂入口，构造 `MagicMock(embed_text=MagicMock(return_value=...))` 链式 |
+| 编辑器 Edit 太激进删 query_rewriter 顶部 + 改坏 logger | 单次 old_string 范围过宽 | 拆 2 次 Edit：先恢复 logger，再分块替换常量声明 |
+| 想全删 qwen.py / embedding.py 触 ~150 行 Provider 重写 | Provider 内的 `_legacy_qwen.embed_text(...)` 委托依赖 | 用户决策保留 qwen.py / embedding.py；只改 docstring 表述（业务模块不易误用即可） |
+
+### 验证
+- pytest 全量 **224/224 PASS**（含新 12 个 `test_query_rewriter_config.py` 用例）
+- grep 终验：
+  ```bash
+  grep -rn "from app.services.synthesizer\|from app.services.rerank" backend/  # ✅ 0 命中
+  grep -rn "from app.core.qwen\|from app.core.embedding" backend/app/services/  # ✅ 0 命中（业务层走 Provider）
+  ```
+- `pytest --tb=short` 无 warning 升级
+
+### Phase 4 / Phase 5 进度
+- S4 ✅ 5/5 阶段 + 收尾（config_loader + guard + refund + intent + query_rewriter + 收尾）；Sprint 4 整条线 **100% 闭环**
+- G8（业务规则 YAML 化）= 5/5（guard / refund / intent / query_rewriter / config_loader 架子）
+- §9.6（Prompt 独立管理）= 5/5 YAML（refund / guard_chitchat / orchestrator / intent / query_rewriter）
+
+### 已知限制
+- qwen.py / embedding.py 是 Provider 内部客户端，物理存在但 docstring 已禁止业务 import；后续若写第二个 Provider（如 BGE）需要无痛替换即可触发真"删除"动作
+- retry_utils 当前只被 qwen.py 引用，将来 Provider 跨模块重写时可下沉到 Provider 内部
+- query_rewriter 的 prompt 提取只覆盖 system + user_template 两段，OpenAI 兼容模式下 messages 框架仍由 query_rewriter.py 写，未来若要支持 stream 改写需配套扩展
+
+### 反思（教训沉淀）
+- **Provider 抽象 vs 薄壳的边界模糊**：当 Provider 完全委托给 legacy 时，"删 legacy 重写 Provider" 和 "保留 legacy 改 docstring" 是 2 种合理路径；判断标准 = 当前是否真有第二个 Provider 要落地。本项目没有 → 选保留，docstring 表述 + grep 0 引用 = 双保险
+- **测试 mock 跟随实现升级而漂移**：业务切 Provider 后，测试必须同步切 mock 入口；否则会因 patch 路径变成 no-op 而 hold 旧的真实代码路径（且 assert 失败方式不直观）。建议：Provider 切换时把测试 mock 修复列入 commit checklist
+- **彻底清退要含 scripts**：CLAUDE.md §7 分层里 `scripts/` 不在分层图里，但它会绕过 Provider 直接调旧函数；Sprint 收尾必须 `scripts/` 一起切，否则下次重启就是定时炸弹
+- **§3.3 YAGNI vs 持有成本的真实权衡**：删 12 行薄壳 + 65 行 re-export 是单方向受益（少维护、grep 0 命中）的，不删的 2 个 Provider 内部客户端是要权衡「重写 Provider 引入 regression 风险」的 — 用户协作风格刚好契合：先列出方案差异，再选保守方向
+
