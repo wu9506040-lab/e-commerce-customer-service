@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Tuple
 from app.core.providers.llm import get_llm_provider
 from app.services.config_loader import get_config_loader  # Sprint 4 阶段 5
 from app.services.metrics import metrics
+from app.services.prompt_loader import get_prompt_loader  # Sprint 4 收尾
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 # 业务规则（启动期加载一次，来自 config/business_rules/query_rewriter.yaml）
 # 改阈值/规则 → 改 YAML → 重启服务（roadmap §3.5 不参与热更新）
 # 单一真相源：query_rewriter.py 是唯一消费者
-# 注：REWRITE_SYSTEM_PROMPT / REWRITE_USER_TEMPLATE 在 commit 2 抽到 config/prompts/query_rewriter.yaml
+# 注：REWRITE_SYSTEM_PROMPT / REWRITE_USER_TEMPLATE 已抽到 config/prompts/query_rewriter/{system,user_template}.yaml
 # =============================================================
 _RULES = get_config_loader().load("query_rewriter")
 
@@ -44,22 +45,10 @@ COREFERENCE_PATTERNS = re.compile(
     "|".join(re.escape(p) for p in _RULES["COREFERENCE_PATTERNS"])
 )
 
-# LLM 改写 prompt（精简版，控制 token；commit 2 抽到 config/prompts/）
-REWRITE_SYSTEM_PROMPT = (
-    "你是电商客服 query 改写员。"
-    "任务：把用户问题里的指代词补全为具体实体（商品名/SKU/订单号/颜色等）。"
-    "规则："
-    "1. 仅做指代补全，不改写意图、不补全新信息、不回答问题"
-    "2. 历史里没提到的指代，原样保留"
-    "3. 保留原 query 的语气和长度"
-    "4. 只输出改写后的 query，不要任何解释"
-)
-
-REWRITE_USER_TEMPLATE = (
-    "对话历史：\n{history}\n\n"
-    "当前问题：{query}\n\n"
-    "改写后："
-)
+# LLM 改写 prompt（启动期从 prompt_loader 加载；Sprint 4 收尾迁移）
+# 改 Prompt → 改 YAML → 下次 load() 自动生效（prompt_loader mtime 热更新）
+REWRITE_SYSTEM_PROMPT = get_prompt_loader().load("query_rewriter/system")
+REWRITE_USER_TEMPLATE = get_prompt_loader().load("query_rewriter/user_template")
 
 # 截短 history：避免 prompt 过长（只取最近 MAX_HISTORY_TURNS 条）
 MAX_HISTORY_TURNS = _RULES["MAX_HISTORY_TURNS"]
