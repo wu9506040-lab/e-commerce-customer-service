@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user_optional
+from app.core.config import settings
 from app.core.context import set_session_id, set_user_id  # M8
 from app.models.user import User
 from app.schemas.chat import ChatRequest
@@ -42,6 +43,8 @@ from app.services.session_service import (
     load_history_with_fallback,
     persist_to_mysql,
 )
+# P2 长程记忆：每轮 done 后异步更新 user_profiles（best-effort）
+from app.services import profile_service
 from app.services.guard import guard as input_guard
 from app.services.intent_service import IntentService
 from app.services.response_cache import get_cached_answer, put_cached_answer
@@ -333,6 +336,25 @@ async def chat(
                         logger.warning(
                             f"MySQL 写穿透失败: session={session_id[:12]}..., {e}"
                         )
+                    # P2 长程记忆：每轮 done 后 best-effort 累加 interaction_count；
+                    # 若 payload.sku 非空（用户从商品详情跳转），追加到 frequent_skus。
+                    # 灰度开关：ENABLE_USER_PROFILE=False 时短路（不调 profile_service）
+                    if settings.ENABLE_USER_PROFILE and user_id and user_id != ANONYMOUS_USER_ID:
+                        try:
+                            await asyncio.to_thread(
+                                profile_service.increment_interaction, user_id, 1
+                            )
+                            if payload.sku:
+                                await asyncio.to_thread(
+                                    profile_service.append_frequent_skus,
+                                    user_id,
+                                    [payload.sku],
+                                )
+                        except Exception as e:
+                            # profile 更新失败不影响 done 响应（best-effort）
+                            logger.warning(
+                                f"profile 更新失败（放行）: user_id={user_id}, {e}"
+                            )
                     try_log_action(
                         user=user, action="chat", target_type="session",
                         target_id=session_id, ip=ip, user_agent=ua,

@@ -31,10 +31,18 @@ SYSTEM_PROMPT_BASE = get_prompt_loader().load("agent")
 NO_LOGIN_PROMPT = get_prompt_loader().load("no_login")
 
 
-def _build_context_block(sku: Optional[str], order_no: Optional[str], user_id: Optional[int]) -> str:
+def _build_context_block(
+    sku: Optional[str],
+    order_no: Optional[str],
+    user_id: Optional[int],
+    profile_block: str = "",
+) -> str:
     """M9.5：构建从商品/订单跳转携带的 context 信息（注入 LLM prompt）
 
     让 LLM 知道用户当前在问哪个商品/哪个订单，避免"您问的是哪款"反问。
+
+    P2 长程记忆：扩 profile_block 参数，把跨 session 用户画像拼到 context_block 末尾。
+    profile_block 来自 profile_service.to_prompt_block()，默认空串（开关关闭或匿名）。
 
     Returns:
         多行字符串，每行一个 context 段；无 context 时返回空串。
@@ -81,6 +89,11 @@ def _build_context_block(sku: Optional[str], order_no: Optional[str], user_id: O
         except Exception as e:
             logger.warning(f"加载订单 context 失败 order_no={order_no}: {e}")
             lines.append(f"【当前订单】订单号={order_no}")
+
+    # P2 长程记忆：profile_block（来自 profile_service.to_prompt_block）
+    # 优先级：M9.5 context > profile（profile 是补充信息，不应覆盖当前订单/商品）
+    if profile_block:
+        lines.append(profile_block)
 
     return "\n".join(lines)
 
