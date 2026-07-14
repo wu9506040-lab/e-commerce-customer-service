@@ -100,6 +100,12 @@ class Metrics:
         self.rewrite_total = 0
         self.rewrite_by_reason: Dict[str, int] = {}
 
+        # ----- Phase 4 A4：Multi-Query 多路改写 -----
+        # reason: 'rewritten' | 'skipped_no_coref' | 'skipped_no_history'
+        #         | 'parse_fail' | 'too_long' | 'llm_error' | 'too_few_variants'
+        self.rewrite_multi_total = 0
+        self.rewrite_multi_by_reason: Dict[str, int] = {}
+
     # ----- chat -----
 
     def inc_chat(self, intent: str, v3_engine: str = "-") -> None:
@@ -194,6 +200,17 @@ class Metrics:
             self.rewrite_total += 1
             self.rewrite_by_reason[reason] = self.rewrite_by_reason.get(reason, 0) + 1
 
+    def inc_rewrite_multi(self, reason: str) -> None:
+        """记录一次 Multi-Query 改写结果（Phase 4 A4）
+
+        Args:
+            reason: 'rewritten' | 'skipped_no_coref' | 'skipped_no_history'
+                    | 'parse_fail' | 'too_long' | 'llm_error' | 'too_few_variants'
+        """
+        with self._lock:
+            self.rewrite_multi_total += 1
+            self.rewrite_multi_by_reason[reason] = self.rewrite_multi_by_reason.get(reason, 0) + 1
+
     # ----- snapshot -----
 
     def _hit_at_k(self, k: int) -> float:
@@ -263,6 +280,11 @@ class Metrics:
                 "by_reason": dict(self.rewrite_by_reason),
             }
 
+            rewrite_multi_block = {
+                "total": self.rewrite_multi_total,
+                "by_reason": dict(self.rewrite_multi_by_reason),
+            }
+
             cb_block = circuit_breaker_stats or {}
 
             return {
@@ -274,6 +296,7 @@ class Metrics:
                 "hit_at_k": hit_k_block,
                 "behavior": behavior_block,
                 "rewrite": rewrite_block,
+                "rewrite_multi": rewrite_multi_block,
             }
 
 

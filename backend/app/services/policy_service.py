@@ -18,9 +18,15 @@ P1-检索 B：混合检索（dense vector + BM25 + RRF）
     4. 可选：rerank 精排 → top-3
 - USE_HYBRID_BM25=false 时：仅 dense vector（兼容旧路径）
 - BM25 索引构建失败时降级到仅 vector 路径（业务不崩）
+
+Phase 4 A4: Multi-Query 多路检索
+- queries: List[str]
+- 每条 query 走一遍 search_policy（含 hybrid + rerank）→ 拿到该路的 top-K 候选
+- N 路结果用 RRF 融合 → 截断到 top_k
+- 任一路异常 → 仅该路降级（其他路继续）
 """
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from app.clients.qdrant import QDRANT_COLLECTION, search as qdrant_search
 from app.core.config import settings
@@ -133,3 +139,74 @@ class PolicyService:
             logger.warning(f"PolicyService.search 失败: {e}")
             metrics.record_hit_at_k(0)  # M8：检索失败算未命中
             return []
+
+    # =============================================================
+    # Phase 4 A4: Multi-Query 多路检索（RRF 融合）
+    # =============================================================
+    @staticmethod
+    def search_multi_policy(
+        queries: List[str],
+        top_k: int = 3,
+    ) -> List[dict]:
+        """
+        多路并行检索（每路走 hybrid + rerank，最终 RRF 融合）
+
+        Args:
+            queries: 多路改写后的查询列表（≥ 1）
+            top_k: 返回条数
+
+        Returns:
+            [{"text", "source", "score", "rerank_score", "rrf_score"}, ...]
+            与 search_policy 返回 schema 完全一致（业务侧零改动消费）
+            降级：queries 为空 / 全部检索失败 → 返空 list
+
+        实现细节：
+        - 每路独立调用 search_policy → 拿到该路的 top-K（rerank 后的）
+        - N 路结果用 rrf_fuse 融合 → 截断 top_k
+        - 单路异常：仅该路降级，其他路继续
+        - 含 rerank_score / rrf_score 字段（与单路兼容）
+        """
+        from app.services.rrf import rrf_fuse
+
+        if not queries:
+            return []
+
+        # 每路跑检索 → list of hit lists
+        per_query_hits: List[List[dict]] = []
+        total_hits = 0
+        for idx, q in enumerate(queries):
+            if not q or not q.strip():
+                logger.debug(f"search_multi_policy 跳过空 query at idx={idx}")
+                continue
+            try:
+                hits = PolicyService.search_policy(q, top_k=top_k)
+                # 补 id 字段供 rrf_fuse 用（hit 来源是 payload.source，已存在）
+                for h in hits:
+                    h.setdefault("id", h.get("source", ""))
+                per_query_hits.append(hits)
+                total_hits += len(hits)
+            except Exception as e:
+                logger.warning(
+                    f"search_multi_policy 第 {idx} 路失败 (q='{q[:30]}...'): {e}"
+                )
+                metrics.record_hit_at_k(0)
+                continue
+
+        if not per_query_hits:
+            return []
+
+        # 单路时短路（避免无意义 RRF 融合）
+        if len(per_query_hits) == 1:
+            return per_query_hits[0][:top_k]
+
+        # 多路 RRF 融合
+        try:
+            fused = rrf_fuse(per_query_hits, k=settings.RRF_K)
+            logger.info(
+                f"search_multi_policy: queries={len(queries)} "
+                f"hits_total={total_hits} fused={len(fused)} top_k={top_k}"
+            )
+            return fused[:top_k]
+        except Exception as e:
+            logger.warning(f"search_multi_policy RRF 失败，降级到首路前 {top_k}: {e}")
+            return per_query_hits[0][:top_k]

@@ -1,0 +1,13 @@
+# Phase 4 A4 · query_rewriter Multi-Query User Template
+# 加载入口：app.services.prompt_loader.get_prompt_loader().load("query_rewriter/multi_user_template")
+# 启动期 mtime 缓存加载；改完下次 load 自动生效（prompt_loader 热更新）
+#
+# 用途：query_rewriter.rewrite_query_multi 调 LLM 时的 user prompt 模板，
+#       含 {history} {query} {n} 三个 .format() 占位符（运行时注入）。
+content: |
+  对话历史：
+  {history}
+
+  当前问题：{query}
+
+  改写后（最多 {n} 个变体，JSON 数组，元素为字符串，无 markdown）：
