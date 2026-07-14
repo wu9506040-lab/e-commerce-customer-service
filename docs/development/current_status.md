@@ -1,24 +1,24 @@
-# 项目当前状态 · 恢复记忆（2026-07-14 **Sprint 4 闭环 + Phase 4 A4 完成**后）
+# 项目当前状态 · 恢复记忆（2026-07-14 **Sprint 4 + Phase 4 A4 + P2 长程记忆 完成**后）
 
 > 本文件是**会话级恢复记忆**，不是长期文档基线。
 > 长期基线：`CLAUDE.md`（V2.1） / `docs/architecture/business.md` / `docs/development/roadmap.md`。
 > 本文件下次启动开发时**先读**，然后决定是否仍相关（轻量修订即可）。
 >
-> **本次会话状态**：完成 Phase 4 A4（query_rewriter 多路改写 + policy 多路 RRF 融合），commit 1 `333e01b` 已 push；pytest 全量 **243/243 PASS**。下一动作：commit 2（test+docs+eval）+ push + CI 验证。
+> **本次会话状态**：完成 P2 长程记忆（user_profiles + profile_service + prompt 注入），commit 1 `37614e5` 已 commit；pytest 全量 **270/270 PASS**。下一动作：commit 2（test+docs）+ push + CI 验证。
 
 ---
 
 ## 0. 一句话状态
 
-**Phase 0 治理 + Sprint 1/2/3 + Sprint 4（5 阶段 + 收尾）+ Phase 4 A4（Multi-Query 检索增强）全部完成 ✅。**
+**Phase 0 治理 + Sprint 1/2/3 + Sprint 4（5 阶段 + 收尾）+ Phase 4 A4（Multi-Query 检索增强）+ P2 长程记忆（跨 session 用户画像）全部完成 ✅。**
 
-**24 个 commit 已提交**（Sprint 1：4 / Sprint 2：4 / Sprint 3：5 / Sprint 4：9 / Phase 4 A4：2 [1 push + 1 待 push]），**pytest 243 passed**（含 Phase 4 A4 新增 19 用例），架构验收 🟢 7 / 🟡 4 / 🔴 0。
+**26 个 commit 已提交**（Sprint 1：4 / Sprint 2：4 / Sprint 3：5 / Sprint 4：9 / Phase 4 A4：2 / P2 长程记忆：2 [1 commit + 1 待 commit]），**pytest 270 passed**（含 Phase 4 A4 19 + P2 长程记忆 27 新增用例），架构验收 🟢 7 / 🟡 4 / 🔴 0。
 
-P2 backlog（CI 配置增强 / 长程记忆 / SSE resume / Prompt 版本管理 / HTTPS）或 Phase 4 A5+（并行多路 / RRF 加权 / HyDE / 融合后 rerank）待启动。
+P2 backlog（CI 配置增强 / SSE resume / Prompt 版本管理 / HTTPS · 4/5 待启动）或 Phase 4 A5+（并行多路 / RRF 加权 / HyDE / 融合后 rerank）待启动。
 
 ---
 
-## 1. 已完成的 Sprint（6/6 阶段 = 100%）+ Phase 4 A4
+## 1. 已完成的 Sprint（6/6 阶段 = 100%）+ Phase 4 A4 + P2 长程记忆
 
 | Sprint | 主题 | commit 数 | 行数变化 | 关闭 Roadmap 缺口 | 状态 |
 |--------|------|----------|---------|------------------|------|
@@ -29,7 +29,8 @@ P2 backlog（CI 配置增强 / 长程记忆 / SSE resume / Prompt 版本管理 /
 | S4 阶段 4 | intent 业务规则 YAML 化（81 pattern + 2 实体正则） | 1 | 新增 ~358（intent.yaml + 14 测试）+ 改 intent_service | G8（intent） | ✅ 完成 |
 | S4 阶段 5 | query_rewriter 业务规则 YAML 化 + Prompt 抽取 | 2 | 新增 ~360（YAML + 12 测试 + 2 Prompt）+ 改 query_rewriter + retry_utils 提取 | G8（query_rewriter） + §9.6（5/5） | ✅ 完成 |
 | S4 收尾 | 删 2 legacy 薄壳 + Provider docstring 重写 | 2 | -123 行（薄壳）+ docstring 净增 ~10 行 | Provider 边界清晰化 | ✅ 完成 |
-| **Phase 4 A4** | query_rewriter 多路改写 + policy 多路 RRF 融合 | 2 | +353 / -14（feature）+ test+docs+eval commit 待 push | 业务能力纵深（新增能力层） | ✅ 完成 |
+| Phase 4 A4 | query_rewriter 多路改写 + policy 多路 RRF 融合 | 2 | +353 / -14（feature）+ test+docs+eval | 业务能力纵深（新增能力层） | ✅ 完成 |
+| **P2 长程记忆** | user_profiles + profile_service + prompt 注入 | 2 | +419 / -3（feature）+ test+docs 待 commit | §9.5 用户级分析基础设施 | ✅ 完成 |
 | S5 | 目录对齐 CLAUDE.md §7.1（仅文档） | - | - | G11-G13 | ⏸ 待办 |
 | S6 | 多租户 MVP 预备 | - | - | G9 | ⏸ 待办 |
 
@@ -86,7 +87,13 @@ b3d7f47  docs              Sprint 4 整条线 100% 闭环 - current_status v5
 ### Phase 4 A4：query_rewriter 多路改写 + policy 多路 RRF 融合（2）
 ```
 333e01b  feat(policy)      Phase 4 A4 - query_rewriter 多路改写 + policy 多路 RRF 融合
-<待提交>  test+docs+eval    Phase 4 A4 - 19 用例（12 query_rewriter_multi + 6 policy_service_multi + 1 YAML 配置）+ eval_hitk --multi-query + 学习日志 §31
+aa2eab3  test+docs+eval    Phase 4 A4 - 19 用例（12 query_rewriter_multi + 6 policy_service_multi + 1 YAML 配置）+ eval_hitk --multi-query + 学习日志 §31
+```
+
+### P2 长程记忆：user_profiles + profile_service + prompt 注入（2）
+```
+37614e5  feat(profile)     P2 长程记忆 - user_profiles 表 + profile_service + prompt 注入
+<待提交>  test+docs         P2 长程记忆 - 27 用例（profile_service 全 mock 测）+ 学习日志 §32
 ```
 
 > 注：Sprint 4 阶段 3 实际产生 2 commit（feature + test 修复），按 §3.4 最小修改拆分以便独立回滚。
@@ -208,6 +215,45 @@ docs/development/current_status.md                # v5 → v6（§0-§6 同步 P
 
 ---
 
+## 3c. P2 长程记忆 关键变化（user_profiles + profile_service + prompt 注入）
+
+### 3c.1 新建文件（4）
+
+```
+deploy/mysql/init/02_user_profiles.sql                # user_profiles 表（1:1 → users.id，5 字段 + 时间戳）
+backend/app/models/user_profile.py                    # UserProfile ORM（~30 行）
+backend/app/services/profile_service.py               # 5 写函数 + 1 纯格式化（~250 行）
+backend/tests/test_profile_service.py                 # 27 用例（全 mock with_safe_session + UserProfile）
+```
+
+### 3c.2 改造文件（4 · 含 1 个 prompt_assembler + 1 个 orchestrator + 1 个 api/chat + 1 个 config）
+
+```
+backend/app/core/config.py                           # +5 行 · ENABLE_USER_PROFILE / USER_PROFILE_PROMPT_MAX_LEN
+backend/app/services/chat/prompt_assembler.py         # +10 行 · _build_context_block 扩 profile_block 参数
+backend/app/services/chat/orchestrator.py            # +18 行 · 启动期加载 profile → 注入 context
+backend/app/api/chat.py                              # +18 行 · done 后 increment_interaction + append_frequent_skus
+```
+
+### 3c.3 文档文件（3）
+
+```
+docs/development/roadmap.md                       # §3.9 P2 长程记忆 章节（新增）
+docs/learning_log.md                              # 追加 §32（按 CLAUDE.md §8 六段）
+docs/development/current_status.md                # v6 → v7（§0-§6 同步 P2 长程记忆 状态）
+```
+
+### 3c.4 P2 长程记忆 关键决策（无独立 ADR，按 CLAUDE.md §5.2 跨模块四要素口头审批）
+
+| # | 要素 | 决议 |
+|---|------|------|
+| 1 | 业务原因 | 用户跨 session 重复问同一类问题（"运费险怎么买" 问 3 次），AI 没有长程记忆只能从零答；profile 让 AI 记住"这位用户关心什么" |
+| 2 | 接口变化 | `profile_service` 5 写函数 + 1 纯格式化函数新增；orchestrator 加 `profile_block` 中间变量；ChatRequest 不变（user_id 已在 Depends 注入） |
+| 3 | 影响范围 | 1 新 SQL + 1 新 ORM + 1 新 service + 4 个生产文件改 + 1 新测试文件 + 3 个 doc |
+| 4 | 隔离策略 | 灰度开关 `ENABLE_USER_PROFILE=False` 默认关闭；user_id=0（匿名）所有写路径短路；profile_service 内部 try/except + orchestrator 外层 try/except 双保险 |
+
+---
+
 ## 4. 当前代码架构
 
 ### 4.1 依赖方向（运行时 · 单向 ✅）
@@ -280,18 +326,18 @@ grep -rn "from app.core.qwen\|from app.core.embedding" backend/app/services/  # 
 - 跨脚本（gen_eval_set / eval_hitk）也走 Provider（彻底清退含 scripts）
 - pytest 全量 224/224 PASS
 
-### 4.5 架构验收结论（2026-07-14 Sprint 4 + Phase 4 A4 收尾后更新）
+### 4.5 架构验收结论（2026-07-14 Sprint 4 + Phase 4 A4 + P2 长程记忆 收尾后更新）
 
-**🟢 7 / 🟡 4 / 🔴 0**（Phase 4 A4 0 改动架构维度）
+**🟢 7 / 🟡 4 / 🔴 0**（P2 长程记忆 0 改动架构维度）
 
 | 维度 | 状态 | 说明 |
 |------|------|------|
 | §2 禁止行为 8 项 | 🟢 全过 | 无违反 |
-| §9.1 Interface First | 🟢 Provider/LLM/Prompt + ConfigLoader 抽象 + Phase 4 A4 走 LLMProvider | 业务 Service 1 个实现未抽 Protocol（YAGNI 正确） |
-| §9.1 Module Isolation | 🟢 无循环依赖 | chat/ + config_loader + query_rewriter/policy_service 内部互引方向单向 |
+| §9.1 Interface First | 🟢 Provider/LLM/Prompt + ConfigLoader 抽象 + Phase 4 A4 / P2 长程记忆 走 LLMProvider / with_safe_session | 业务 Service 1 个实现未抽 Protocol（YAGNI 正确） |
+| §9.1 Module Isolation | 🟢 无循环依赖 | chat/ + config_loader + query_rewriter/policy_service/profile_service 内部互引方向单向 |
 | §9.1 Dependency Inversion | 🟢 Sprint 1 成果 0 破坏 + Sprint 4 config_loader + Provider 边界清晰化 | `grep` 验证 0 命中 `from app.core.qwen/embedding` |
-| §9.4.2 配置与逻辑分离 | 🟢 Sprint 4 5 阶段全员完成 + Phase 4 A4 扩 query_rewriter.yaml 3 字段 | guard / refund / intent / query_rewriter 阈值已迁出代码 |
-| §9.5 安全可观测 | 🟡 部分 | metrics import 已预留但未实际调用（推进点：P2 backlog）；Phase 4 A4 加 inc_rewrite_multi 计数器 |
+| §9.4.2 配置与逻辑分离 | 🟢 Sprint 4 5 阶段全员完成 + Phase 4 A4 / P2 长程记忆 扩 query_rewriter.yaml / config.py 灰度字段 | guard / refund / intent / query_rewriter 阈值已迁出代码 |
+| §9.5 安全可观测 | 🟡 部分 → 部分升级 | metrics import 已预留但未实际调用（推进点：P2 backlog）；P2 长程记忆给"用户级分析"留基础设施（user_profiles 表 + profile_service） |
 | §9.6 Prompt 独立管理 | 🟢 7/7 YAML 全部抽取 | refund / guard_chitchat / orchestrator / intent / query_rewriter + 新增 2 multi_* |
 | 单文件预算 | 🟡 3 处偏离 | ADR §6 已声明；S4 阶段 5 收尾同步消化部分偏离 |
 
@@ -301,16 +347,18 @@ grep -rn "from app.core.qwen\|from app.core.embedding" backend/app/services/  # 
 
 | 项 | 结果 |
 |----|------|
-| 全量 pytest（Phase 4 A4 末） | **243 passed**（含 Sprint 4 全 + Phase 4 A4 新增 19 用例） |
+| 全量 pytest（P2 长程记忆 末） | **270 passed**（含 Sprint 4 全 + Phase 4 A4 19 + P2 长程记忆 27 新增用例） |
+| Phase 4 A4 末 | 243 passed |
 | Sprint 4 阶段 5 末 | 224 passed |
 | Sprint 4 阶段 3 末 | 198 passed |
 | Sprint 3 末 | 168 passed |
 | Sprint 2 末 | 150 passed |
 | Sprint 1 末 | 129 passed |
+| P2 长程记忆 新增测试分布 | test_profile_service 27（5 写函数 + 1 纯格式化 + 隐私边界 + 灰度开关）|
 | Phase 4 A4 新增测试分布 | test_query_rewriter_multi 12 + test_policy_service_multi 6 + test_query_rewriter_config (multi_query) 1 |
-| 测试架构分层 | 契约测试（纯函数） + 集成测试（Mock SSE 协议） + 业务回归 + 配置加载（fail-fast） + 多路检索（mock 兼容） |
-| patch namespace 完整性 | 100% 命中 `chat.*`，0 残留旧 `synthesizer.*` 命名空间；Phase 4 A4 mock `app.services.policy_service` / `app.services.rrf` 模块名空间 |
-| CI | GitHub Actions run #11 `success`（Sprint 4 收尾 commit `e9ddc0b`，58s test job）；Phase 4 A4 commit 1 `333e01b` 已 push，CI 待 commit 2 验证 |
+| 测试架构分层 | 契约测试（纯函数） + 集成测试（Mock SSE 协议） + 业务回归 + 配置加载（fail-fast） + 多路检索（mock 兼容） + 长程记忆（mock with_safe_session）|
+| patch namespace 完整性 | 100% 命中 `chat.*`，0 残留旧 `synthesizer.*` 命名空间；Phase 4 A4 mock `app.services.policy_service` / `app.services.rrf` 模块名空间；P2 长程记忆 mock `app.services.profile_service.with_safe_session` / `app.models.user_profile.UserProfile` |
+| CI | GitHub Actions run #11 `success`（Sprint 4 收尾 commit `e9ddc0b`，58s test job）；Phase 4 A4 commit 2 `aa2eab3` CI run #29334266194 success（54s test job）；P2 长程记忆 commit 1 `37614e5` 已 commit，CI 待 commit 2 验证 |
 
 **测试启动方式**：
 ```bash
@@ -320,7 +368,7 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
   python -m pytest tests/ -q
 ```
 
-**预期输出**：`243 passed in ~17.8s`（含 Sprint 4 全 5 阶段 + 收尾 + Phase 4 A4 新增 19 用例）
+**预期输出**：`270 passed in ~19.4s`（含 Sprint 4 全 + Phase 4 A4 19 + P2 长程记忆 27 新增用例）
 
 ---
 
@@ -337,15 +385,15 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 
 **价值**：在 Phase 4 A4 基础上做"性能 + 精度"双优化；按真实流量 hit@K 报告定优先级。
 
-### 6.2 选项 B：P2 backlog（按价值排序）
+### 6.2 选项 B：P2 backlog 余下 4 项
 
-| 序 | 任务 | 价值 |
-|----|------|------|
-| 1 | CI 配置增强（多 Python 版本矩阵 / coverage 上报 / Postgres service）| 中 |
-| 2 | 长程记忆（context 持久化 + 跨会话用户画像）| 高 |
-| 3 | SSE resume（断线重连的 token 流恢复）| 中 |
-| 4 | Prompt 版本管理（按 tenant_id 灰度 + 回滚）| 高 |
-| 5 | HTTPS（生产部署前置）| 高（仅部署相关）|
+| 序 | 任务 | 价值 | 备注 |
+|----|------|------|------|
+| ~~2~~ | ~~长程记忆~~ | ~~高~~ | ✅ 已完成（commit `37614e5` + commit 2 待 push）|
+| 1 | CI 配置增强（多 Python 版本矩阵 / coverage 上报 / Postgres service）| 中 | 工作量最小（仅 .github/workflows/ci.yml） |
+| 3 | SSE resume（断线重连的 token 流恢复）| 中 | 需前后端对齐 |
+| 4 | Prompt 版本管理（按 tenant_id 灰度 + 回滚）| 高 | 与 Sprint 6 多租户 MVP 协同 |
+| 5 | HTTPS（生产部署前置）| 高 | 仅部署相关（nginx + certbot）|
 
 不在本文件详细分析范围。
 
@@ -353,12 +401,12 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 
 最简单的工作量，纯文档同步。详见 roadmap §3.6。
 
-### 6.4 Sprint 4 阶段 4 / Phase 4 A4 启动必读（4 文件）
+### 6.4 P2 长程记忆 / Sprint 4 / Phase 4 A4 启动必读（4 文件）
 
 ```
 1. CLAUDE.md                                            # V2.1 治理基线
-2. docs/development/roadmap.md                           # §3.5 + §3.5.1 S4 实绩 + §3.8 Phase 4 A4
-3. docs/learning_log.md §28-§31                          # Sprint 4 阶段 1+2+3 / 阶段 5 / Phase 4 A4 复盘
+2. docs/development/roadmap.md                           # §3.5 + §3.5.1 S4 实绩 + §3.8 Phase 4 A4 + §3.9 P2 长程记忆
+3. docs/learning_log.md §28-§32                          # Sprint 4 / Phase 4 A4 / P2 长程记忆 复盘
 4. docs/development/current_status.md                   # 本文件 §4-§6
 ```
 
@@ -366,25 +414,27 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 
 **输入**（用户待决）：
 - 选项 A：Phase 4 A5-A8 任一项（A4 已闭环）
-- 选项 B：P2 backlog 任一项
+- 选项 B：P2 backlog 余下 4 项（长程记忆已闭环）
 - 选项 C：纯文档同步（CLAUDE.md §7.1 对齐实际目录）
 
-**当前代码现状**（Phase 4 A4 闭环扫描结果）：
+**当前代码现状**（P2 长程记忆 闭环扫描结果）：
 | 模块 | 状态 |
 |------|------|
 | `services/intent_service.py` | ✅ 已配置化（阶段 4：81 pattern + 2 实体正则 → `config/business_rules/intent.yaml`）|
 | `services/query_rewriter.py` | ✅ 已配置化（阶段 5：20 代词 + 4 阈值 → `config/business_rules/query_rewriter.yaml` + 4 Prompt YAML）|
 | `services/policy_service.py` | ✅ 多路检索就绪（`search_multi_policy` + RRF 融合）|
-| `services/chat/orchestrator.py` | ✅ 灰度开关就绪（`ENABLE_MULTI_QUERY` 默认 false）|
+| `services/profile_service.py` | ✅ 长程记忆就绪（5 写 + 1 纯格式化；`ENABLE_USER_PROFILE` 默认 false）|
+| `services/chat/orchestrator.py` | ✅ 双灰度开关就绪（`ENABLE_MULTI_QUERY` + `ENABLE_USER_PROFILE` 默认 false）|
 | `core/qwen.py` / `core/embedding.py` | ⚠️ 保留为 Provider 内部 DashScope 客户端（docstring 改写 + grep 0 业务直引）|
 | `services/rerank.py` / `services/synthesizer.py` | ✅ 已删（grep 0 引用，12 + 65 行薄壳纯浪费）|
 
 **已知风险（启动下一项前必查）**：
-1. Phase 4 A4 已闭环；启动 Phase 4 A5+ 或 P2 backlog 任一项均需重走 AI 6 步法（CLAUDE.md §4）
-2. 启动前先 `git log --oneline | head -25` 对账预期 commit 数（应见 24+ commit）
+1. Phase 4 A4 + P2 长程记忆 已闭环；启动任一项均需重走 AI 6 步法（CLAUDE.md §4）
+2. 启动前先 `git log --oneline | head -30` 对账预期 commit 数（应见 26+ commit）
 3. 启动前先 `git tag -l | grep sprint-4-complete` 确认本 Sprint 已留印
-4. CI 状态基线：`Sprint 4 收尾` commit `e9ddc0b` CI run #11 success（58s test job）
+4. CI 状态基线：`Phase 4 A4 commit 2` `aa2eab3` CI run #29334266194 success（54s test job）
 5. eval_hitk.py `--multi-query` 接入完成；真实流量 hit@K 验证待跑（需 Qdrant + LLM 双在线）
+6. dev DB 需手工跑 `02_user_profiles.sql` 才能测 profile 功能（deploy init 仅 fresh DB 触发）
 
 ---
 
@@ -394,12 +444,12 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 
 | 序 | 文档 | 路径 | 读的目的 |
 |----|------|------|----------|
-| 1 | 本文件 | `docs/development/current_status.md` | 当前状态 + Sprint 4 / Phase 4 入口 |
+| 1 | 本文件 | `docs/development/current_status.md` | 当前状态 + Sprint 4 / Phase 4 / P2 长程记忆 入口 |
 | 2 | CLAUDE.md | `E:\智能客服\CLAUDE.md` | V2.1 治理基线（AI 6 步法 / 13 反例 / 9 架构规则） |
-| 3 | Roadmap V2 | `docs/development/roadmap.md` | S1-S6 全景 + G 缺口表 + §S4 实绩（§3.5.1）+ Phase 4 A4（§3.8） |
+| 3 | Roadmap V2 | `docs/development/roadmap.md` | S1-S6 全景 + G 缺口表 + §S4 实绩（§3.5.1）+ Phase 4 A4（§3.8）+ P2 长程记忆（§3.9） |
 | 4 | Sprint 3 ADR | `docs/decisions/2026-07-12-sprint-3-synthesizer-split.md` | Sprint 3 架构基线（拆分粒度 / Prompt 范围 / 兜底策略） |
 | 5 | AI 6 步法速查 | `docs/governance/ai_development_rules.md` | 反例清单 13 条 + 跨模块 4 要素 + Stop-Loss 8 问 |
-| 6 | 学习日志 | `docs/learning_log.md` §27-§31 | Sprint 3 / Sprint 4 / Phase 4 A4 复盘（3 文件跨模块迁移 / mock 兼容 / 多路 RRF 融合） |
+| 6 | 学习日志 | `docs/learning_log.md` §27-§32 | Sprint 3 / Sprint 4 / Phase 4 A4 / P2 长程记忆 复盘 |
 | 7 | 业务架构 V3.1 | `docs/architecture/business.md` | 业务边界 + 数据责任（修改业务时必读） |
 
 ---

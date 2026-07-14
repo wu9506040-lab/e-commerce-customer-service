@@ -304,6 +304,27 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 
 ---
 
+### 3.9 P2 长程记忆 — user_profiles + profile_service + prompt 注入（P2 backlog 第 2 项）
+
+> **状态**：✅ 完成（2026-07-14，1 feature + 1 test+docs commit）
+> **ADR**：未独立创建（按 §5.2 跨模块四要素口头审批；与 Phase 4 A4 同结构）
+> **学习日志**：`docs/learning_log.md §32`
+> **当前位置**：P2 backlog 5 项中第 2 项（已完成）；不在 Roadmap V2 6 个 Sprint 内，列为 Phase 业务能力层
+
+| 项     | 内容                                                                                                                                                                                                                                                                                                                                                                                |
+|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **目标** | 在 Sprint 1-4 + Phase 4 A4 闭环基础上，给客服系统加**跨 session 用户画像**：profile 加载 → 注入 prompt → done 后 best-effort 自动更新。零侵入灰度（`ENABLE_USER_PROFILE` 默认 false）。                                                                                                                                                                                                                                                                   |
+| **范围（实绩）** | • 新增 `user_profiles` 表（1:1 → users.id）存 summary / frequent_skus / preferences / interaction_count<br>• `services/profile_service.py`（5 写入函数 + 1 纯格式化函数）：get_or_create / update_summary / append_frequent_skus / increment_interaction / clear / to_prompt_block<br>• `chat/orchestrator.run_stream` 启动期加载 profile → 转 `profile_block` → 注入 `context_block` 末尾<br>• `api/chat.py` done 事件后 best-effort 累加 `interaction_count` + 追加 `frequent_skus`<br>• 灰度开关 `settings.ENABLE_USER_PROFILE=False`（默认关）<br>• 27 测试（test_profile_service.py：全 mock with_safe_session） |
+| **不范围（YAGNI §3.3）** | • **不做事件流**（user_profile_events）→ messages JOIN 即可<br>• **不做派生画像**（user_personas）→ summary 字段够用<br>• **不做租户级画像** → profile 跟 user_id 1:1<br>• **不做 LLM 自动摘要** summary → done 后仅累加 interaction + SKUs；summary 字段靠人工编辑或后续摘要脚本补<br>• **不做情感画像 / 画像聚类** → 当前无第二实现需求<br>• **不做隐私删除 UI** → profile_service.clear() 函数接口就位；admin API / 用户自助入口留 V3+ |
+| **新建** | `deploy/mysql/init/02_user_profiles.sql`（Docker init 脚本，1 张新表）<br>`backend/app/models/user_profile.py`（UserProfile ORM）<br>`backend/app/services/profile_service.py`（~250 行 · 5 写 + 1 纯格式化）<br>`backend/tests/test_profile_service.py`（27 用例：5 写函数 + 1 纯函数 + 隐私边界 + 灰度开关） |
+| **修改** | `backend/app/core/config.py`（+5 行 · `ENABLE_USER_PROFILE` / `USER_PROFILE_PROMPT_MAX_LEN`）<br>`backend/app/services/chat/prompt_assembler.py`（+10 行 · `_build_context_block` 扩 `profile_block` 参数）<br>`backend/app/services/chat/orchestrator.py`（+18 行 · 启动期加载 profile → 注入 context）<br>`backend/app/api/chat.py`（+18 行 · done 后 `increment_interaction` + `append_frequent_skus`） |
+| **关键设计决策** | • **灰度开关默认 false**：`ENABLE_USER_PROFILE=False` 保证全量 270 测试零侵入；现有 chat/orchestrator 行为与 Phase 4 A4 完全一致<br>• **best-effort 双保险**：profile_service 内部 try/except + orchestrator/api 外层 try/except 双重防御；任何一层失效都不阻塞主流程<br>• **反幻觉 hard label**：to_prompt_block 输出带"仅作参考，不得编造未在 profile 中出现的用户事实"（与 M9.5 同模式）<br>• **隐私边界前置**：user_id=0（匿名）短路写在所有 5 个写函数顶部（不是顶层 if 判断）<br>• **prompt 硬上限 200 字**：与 context_block 同设计；防 profile 注入后 LLM 推理成本失控<br>• **autouse fixture 不需要**：service 函数幂等（每次 get_or_create 返新对象）；不需 fixture 隔离单例 |
+| **关闭缺口** | • **§9.5 安全可观测**（架构验收维度）从 🟡 部分升级中：profile 给"用户级分析"留基础设施<br>• **新增能力层**（不在原 G 缺口表）：跨 session 记忆能力 |
+| **验证** | • 全量 pytest **270/270 PASS**（243 baseline + 27 profile_service）<br>• `ENABLE_USER_PROFILE=False` 灰度基线：现有测试零修改通过（profile_block 始终空串，context_block 行为不变）<br>• dev DB 需手工跑 `02_user_profiles.sql`（deploy init 仅 fresh DB 触发）；生产部署后自动建表 |
+| **下一步可选** | • profile 自动摘要脚本（LLM 抽每 24h 1 次）<br>• 用户自助隐私删除 UI（profile_service.clear() 已就位）<br>• admin 后台画像查看（聚合 + 单用户）<br>• 租户级画像（Sprint 6 多租户 MVP 后扩） |
+
+---
+
 ## 4. 优先级与时间投入
 
 ### 4.1 阶段划分（与 §2 严重度对齐）
