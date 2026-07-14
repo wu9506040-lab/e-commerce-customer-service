@@ -227,6 +227,8 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 | **阶段 2**：guard 业务规则 YAML 化 | `5132176 feat(services): Sprint 4 阶段 2 - guard 业务规则 YAML 化` | ✅ 完成 | G8（guard 阈值） |
 | **阶段 3**：refund 业务规则 YAML 化（3 文件共享 1 YAML） | `70e5a3e feat(services): Sprint 4 阶段 3 - refund 业务规则 YAML 化`<br>`efa729b test(services): test_guard_config 加 autouse fixture 隔离 config_loader 单例` | ✅ 完成 | G8（refund 阈值） |
 | **阶段 4**：intent 业务规则 YAML 化（81 pattern + 2 实体正则） | `1338a09 feat(services): Sprint 4 阶段 4 - intent 业务规则 YAML 化` | ✅ 完成 | G8（intent） |
+| **阶段 5**：query_rewriter 业务规则 YAML 化 + Prompt 抽取 | `Sprint 4 阶段 5` | ✅ 完成 | G8（query_rewriter） + §9.6 Prompt 独立（1/3） |
+| **收尾**：删 2 legacy 薄壳 + Provider docstring 修正 | `Sprint 4 收尾` | ✅ 完成 | G8 闭合 + Provider 边界清晰化 |
 
 **S4 关闭缺口累计**：G8 = 4/5 YAML（guard / refund / intent / config_loader 架子；query_rewriter 待后续）
 
@@ -242,7 +244,14 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 - `prompt_assembler._ORDER_NO_RE` 双源保留，本阶段不合并（YAGNI + 跨模块）
 - pytest 全量 212/212 PASS，GitHub Actions CI run #9 success
 
-**下一阶段进入条件**：用户决定是否启动 Phase 4（query_rewriter.py 业务能力增强，含其 YAML 化）或其他
+**S4 阶段 5 + 收尾 关键发现（沉淀到 learning_log §30）**：
+- **Provider vs legacy 决策**：qwen.py / embedding.py 按用户"保留 Provider 内部实现"决策不删除，docstring 改为"Provider 内部 DashScope 客户端"（业务模块禁止直接 import）
+- **删 2 薄壳**：`services/rerank.py`（12 行 wrapper）+ `services/synthesizer.py`（65 行 re-export）；grep 验证 0 引用 → 安全删除
+- **测试 mock 路径修正**：policy_service 切 Provider 后，测试 mock 须用 `get_embedding_provider` / `get_rerank_provider` 而非旧 `embed_text` / `rerank` 函数；3 测试报错 → 修正后 224/224 PASS
+- **跨脚本迁移**：`scripts/eval_hitk.py` / `scripts/gen_eval_set.py` 一并切到 Provider（彻底清退含 scripts，按用户决策）
+- **pytest 全量 224/224 PASS**，全量验证齐
+
+**下一阶段进入条件**：Sprint 4 已闭环；下一阶段决策权交回用户（待 P2 backlog 或 Phase 4 query_rewriter 业务能力增强）
 
 ---
 

@@ -21,7 +21,8 @@ QwenRerankProvider — LLM-based Cross-Encoder Rerank 实现
 CLAUDE.md §6 边界：service 层只做业务编排（调 core/qwen.py + clients/qdrant.py），
 不直接调 embedding / 不直接调 HTTP API。
 
-注：本模块从 `app/services/rerank.py` 迁入（Sprint 1 Provider 抽象）。业务逻辑完全保留。
+注：本模块的 Prompt / 解析 / batch 截断逻辑由自身实现（不再委托给任何外部模块）。
+历史：`app/services/rerank.py` 薄壳已在 Sprint 4 收尾时删除，业务逻辑完全保留于此。
 """
 import asyncio
 import json

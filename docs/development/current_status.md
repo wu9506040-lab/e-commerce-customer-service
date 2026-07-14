@@ -197,14 +197,25 @@ services.prompt_loader  services.config_loader  core.providers.llm
 | prompt_assembler.py | 276 | < 250 | +26 | S4 拆 `_build_context_block`（53 行独立） |
 | chat/ 文件数 | 6 | ≤ 4 | +2 | 行数 vs 文件数取舍选了行数让步 |
 
-### 4.4 删除计划（S4 末）
-- `core/qwen.py` / `core/embedding.py` / `services/rerank.py`（Sprint 1 遗留薄壳）
-- `app/services/synthesizer.py`（Sprint 3 薄壳 · 兜住历史 import 路径）
-- 删除前置 grep 验证：
-  ```bash
-  grep -rn "from app.core.qwen\|from app.core.embedding" backend/app/services/  # 应 0 命中
-  grep -rn "from app.services.synthesizer\|from app.services.rerank" backend/  # 应只剩 synthesizer.py 自身
-  ```
+### 4.4 删除计划（S4 末 — 2026-07-14 实际完成情况）
+
+| 文件 | 原计划 | 实际 | 原因 |
+|------|--------|------|------|
+| `core/qwen.py` | 删除 | **保留** | 用户决策：3 Provider 内部委托，少改便宜；docstring 改为"Provider 内部 DashScope 客户端" |
+| `core/embedding.py` | 删除 | **保留** | 同上 |
+| `services/rerank.py` | 删除 | ✅ **已删** | 全仓 0 引用 → 12 行薄壳纯浪费 |
+| `services/synthesizer.py` | 删除 | ✅ **已删** | 全仓 0 引用 → 65 行 re-export 兜无意义 |
+
+**S4 收尾 grep 终验**：
+```bash
+grep -rn "from app.services.synthesizer\|from app.services.rerank" backend/  # ✅ 0 命中
+grep -rn "from app.core.qwen\|from app.core.embedding" backend/app/services/  # ✅ 0 命中（业务层只走 Provider）
+```
+
+**S4 收尾后状态**：
+- 业务模块 100% 走 Provider 抽象（policy_service / chat.* / scripts）
+- 跨脚本（gen_eval_set / eval_hitk）也走 Provider（彻底清退含 scripts）
+- pytest 全量 224/224 PASS
 
 ### 4.5 架构验收结论（2026-07-13 Sprint 4 阶段 3 后更新）
 
