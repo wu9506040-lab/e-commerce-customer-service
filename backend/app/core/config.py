@@ -125,6 +125,12 @@ class Settings(BaseSettings):
     # profile_block 注入 prompt 的硬上限（防 prompt 膨胀；与 prompt_assembler MAX_PROFILE_PROMPT_LEN 对齐）
     USER_PROFILE_PROMPT_MAX_LEN: int = 200
 
+    # ---- Sprint 5: Prompt 版本管理（manifest 模式）----
+    # 启用后 prompt_loader 支持 load(name, version=...) 多版本接口
+    # 关闭则所有调用走 manifest 的 default_version（行为与旧版完全一致）
+    # 默认 false（灰度用），迁移完成后再开 true
+    ENABLE_PROMPT_VERSIONING: bool = False
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩

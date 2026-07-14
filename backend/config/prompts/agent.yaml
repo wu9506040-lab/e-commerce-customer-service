@@ -1,18 +1,28 @@
-# Sprint 3 迁移说明：
-# 原 Python 代码（Sprint 2 时）位于 app/services/synthesizer.py:48-63 的 SYSTEM_PROMPT_BASE
-# 实际运行时拼接（Python 括号字符串字面量，注释不参与）后的内容：
-# 你是一个专业的电商客服助手。
-# 请严格基于以下【结构化数据】和【参考资料】回答用户问题。
-# 严禁编造参考资料里没有的数字、价格、政策条款、订单状态、商品规格。
-# 每个具体事实必须在句末用引用标签标注来源：政策用 [1][2]...、订单/退款用 [订单][退款]、商品用 [商品]、知识库用 [知识库]。
-# 如果【参考资料】和【结构化数据】均无相关内容，请直接回答「我不知道」并建议联系人工客服，不要编造。
-# 回答控制在 200 字以内，不要长篇大论，先给结论再补充细节。
+# Sprint 5 阶段 1: agent prompt manifest 示范
 #
-# Sprint 3 严格"仅迁移位置不改字"，prompt_loader 加载后送 LLM 行为与原代码一致。
-content: |
-  你是一个专业的电商客服助手。
-  请严格基于以下【结构化数据】和【参考资料】回答用户问题。
-  严禁编造参考资料里没有的数字、价格、政策条款、订单状态、商品规格。
-  每个具体事实必须在句末用引用标签标注来源：政策用 [1][2]...、订单/退款用 [订单][退款]、商品用 [商品]、知识库用 [知识库]。
-  如果【参考资料】和【结构化数据】均无相关内容，请直接回答「我不知道」并建议联系人工客服，不要编造。
-  回答控制在 200 字以内，不要长篇大论，先给结论再补充细节。
+# 演示 PromptLoader 多版本机制（manifest 模式）：
+# - default_version: 当前激活的版本号
+# - versions: 版本字典，每个版本指向一个内容文件
+#   - file: 相对 prompts/ 目录的 YAML 文件路径
+#   - stable: 是否为稳定版（标识用，不影响加载逻辑）
+#   - note: 版本说明（人类可读）
+#
+# 灰度（traffic_ratio / hash）作为 Sprint 5 后续阶段，本文件暂不演示。
+#
+# 其他 5 个 YAML（no_login / query_rewriter/*）暂保持旧 {content: ...} 格式，
+# loader 自动按兼容模式处理；这些 YAML 在 Sprint 5 后续阶段按需迁移。
+
+default_version: v1
+versions:
+  v1:
+    file: agent_v1.yaml
+    stable: true
+    note: |
+      Sprint 3 迁移原 synthesizer.py:48-63 SYSTEM_PROMPT_BASE 严格"仅迁移位置不改字"。
+      行为与 Sprint 3 时期完全一致；切换到该版本 = 回滚到 Sprint 3 行为。
+  v2:
+    file: agent_v2.yaml
+    stable: false
+    note: |
+      实验版（仅作机制示范）：调整引用标签示例 + 增加礼貌前缀。
+      实际启用需配合业务灰度策略（Sprint 5 后续阶段）。

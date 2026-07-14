@@ -24,10 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 # 系统 Prompt：Sprint 2 抽到 config/prompts/agent.yaml，Sprint 3 完全删除常量
+# Sprint 5：agent.yaml 转 manifest 模式，version=None 走 default_version（与旧版行为一致）
 SYSTEM_PROMPT_BASE = get_prompt_loader().load("agent")
 
 
 # 未登录 + 需要 user 上下文的意图
+# 仍为旧 YAML（兼容模式自动当 v1 处理）
 NO_LOGIN_PROMPT = get_prompt_loader().load("no_login")
 
 

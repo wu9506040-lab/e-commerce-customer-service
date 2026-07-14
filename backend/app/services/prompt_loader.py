@@ -48,6 +48,16 @@ class PromptFormatError(PromptError):
         self.reason = reason
 
 
+class PromptVersionError(PromptError):
+    """prompt 版本不存在 / 不兼容（Sprint 5 manifest 模式）。"""
+
+    def __init__(self, name: str, version: Optional[str], reason: str) -> None:
+        super().__init__(f"prompt 版本错误 [{name}, version={version}]: {reason}")
+        self.name = name
+        self.version = version
+        self.reason = reason
+
+
 # =============================================================
 # Protocol（CLAUDE.md §9.3.3 — 业务模块靠此抽象，不直接 new）
 # =============================================================
@@ -60,14 +70,21 @@ class PromptLoader(Protocol):
 
     业务模块通过 `get_prompt_loader()` 获取实例。
     当前唯一实现：`YAMLPromptLoader`（基于 YAML 文件 + mtime 缓存）。
+
+    Sprint 5：扩展 `load(name, version=None)` 支持多版本 manifest。
+    兼容模式：YAML 不含 `versions` 字段 → 自动当单版本 v1 处理。
     """
 
-    def load(self, name: str) -> str:
+    def load(self, name: str, version: Optional[str] = None) -> str:
         """按 name 加载 prompt 文本。
 
         Args:
             name: 形如 ``"intent"`` 或 ``"guard/chitchat"``，**不含扩展名**、**不含路径前缀**。
                 仅允许：小写字母、数字、下划线、单层 ``/`` 分隔。
+            version: 版本号（manifest 模式生效），如 ``"v1"`` / ``"v2"``。
+                - ``None``（默认）= 走 manifest.default_version
+                - 兼容模式（YAML 无 versions 字段）= 强制 ``"v1"``，其他值抛错
+                - manifest 模式但 version 不存在 = 抛 PromptVersionError
 
         Returns:
             prompt 原文（已 strip）。
@@ -76,6 +93,7 @@ class PromptLoader(Protocol):
             PromptNameError: name 不合法（路径越权或非法字符）。
             PromptNotFoundError: 文件不存在。
             PromptFormatError: YAML 解析失败 / content 字段缺失或为空。
+            PromptVersionError: 指定 version 不存在 / 兼容模式指定非 v1。
         """
         ...
 
@@ -91,10 +109,109 @@ class YAMLPromptLoader:
 
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir.resolve()
-        self._cache: Dict[str, Tuple[float, str]] = {}
+        # Sprint 5：缓存 key 从 name 升级到 (name, version)；兼容模式 version="v1"
+        self._cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
         self._lock = threading.Lock()
 
-    def load(self, name: str) -> str:
+    # =============================================================
+    # Sprint 5：manifest 模式辅助方法
+    # =============================================================
+    @staticmethod
+    def _is_manifest(data: object) -> bool:
+        """判定 YAML 顶层是否为 manifest 格式（含 versions 字段）。"""
+        return isinstance(data, dict) and "versions" in data
+
+    @staticmethod
+    def _resolve_version(manifest: dict, version: Optional[str]) -> str:
+        """从 manifest 解析要加载的 version。
+
+        规则：
+        - version=None → 用 default_version
+        - version 非 None → 直接用（调用方已确认）
+        - version 不在 versions 字典中 → 抛 PromptVersionError
+
+        Raises:
+            PromptVersionError: default_version 缺失 / version 不存在
+        """
+        if version is not None:
+            if version not in manifest["versions"]:
+                available = ", ".join(sorted(manifest["versions"].keys()))
+                raise PromptVersionError(
+                    "<manifest>", version,
+                    f"version 不存在，可用: {available}",
+                )
+            return version
+
+        default = manifest.get("default_version")
+        if not default:
+            raise PromptVersionError(
+                "<manifest>", None,
+                "manifest 缺 default_version 字段",
+            )
+        if default not in manifest["versions"]:
+            available = ", ".join(sorted(manifest["versions"].keys()))
+            raise PromptVersionError(
+                "<manifest>", default,
+                f"default_version={default!r} 不在 versions 字典中，可用: {available}",
+            )
+        return default
+
+    def _load_version_file_with_mtime(self, name: str, version: str, file_rel: str) -> Tuple[str, float]:
+        """读 manifest 指定 version 的内容文件 + 返回文件 mtime（供 cache key 用）。
+
+        Args:
+            name: manifest 名称（用于报错）
+            version: 版本号
+            file_rel: 相对 base_dir 的 YAML 文件路径（如 ``agent_v1.yaml``）
+
+        Returns:
+            (prompt 文本已 strip, 文件 mtime)
+
+        Raises:
+            PromptNameError: file_rel 路径越权
+            PromptNotFoundError: 内容文件不存在
+            PromptFormatError: 内容文件格式错误
+        """
+        # file_rel 必须不含 ..，且 resolve 后必须在 base_dir 内
+        if ".." in file_rel.split("/") or ".." in file_rel.split("\\"):
+            raise PromptNameError(f"manifest version file 越权: {file_rel!r}")
+        full_path = (self._base_dir / file_rel).resolve()
+        base_str = str(self._base_dir)
+        full_str = str(full_path)
+        if not (full_str == base_str or full_str.startswith(base_str + "\\") or
+                full_str.startswith(base_str + "/")):
+            raise PromptNameError(f"manifest version file 越权: {file_rel!r}")
+
+        if not full_path.exists():
+            raise PromptNotFoundError(
+                f"prompt version 内容文件不存在 [{name}, version={version}]: {file_rel}"
+            )
+
+        file_mtime = full_path.stat().st_mtime
+
+        try:
+            data = yaml.safe_load(full_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as e:
+            raise PromptFormatError(
+                f"{name}/{version}", f"YAML 解析失败: {e}"
+            ) from e
+
+        if isinstance(data, dict):
+            content = data.get("content", "")
+        else:
+            content = data if isinstance(data, str) else ""
+
+        if not isinstance(content, str) or not content.strip():
+            raise PromptFormatError(
+                f"{name}/{version}", "content 字段缺失或为空"
+            )
+
+        return content.strip(), file_mtime
+
+    # =============================================================
+    # 主入口
+    # =============================================================
+    def load(self, name: str, version: Optional[str] = None) -> str:
         # 1. name 校验（白名单正则）
         if not isinstance(name, str) or not _NAME_PATTERN.match(name):
             raise PromptNameError(f"非法 prompt name: {name!r}")
@@ -115,9 +232,12 @@ class YAMLPromptLoader:
             raise PromptNotFoundError(f"prompt 不存在: {name}")
 
         # 4. mtime 缓存：未命中或 mtime 变化 → 重读
+        #    Sprint 5：缓存 key 是 (name, version)，version 默认 "v1"（兼容模式）
+        cache_version = version if version is not None else "__compat__"
+        cache_key = (name, cache_version)
         mtime = full_path.stat().st_mtime
         with self._lock:
-            cached = self._cache.get(name)
+            cached = self._cache.get(cache_key)
             if cached is not None and cached[0] == mtime:
                 return cached[1]
 
@@ -126,16 +246,46 @@ class YAMLPromptLoader:
             except yaml.YAMLError as e:
                 raise PromptFormatError(name, f"YAML 解析失败: {e}") from e
 
-            if isinstance(data, dict):
-                content = data.get("content", "")
+            # Sprint 5：manifest 模式 vs 兼容模式分流
+            if self._is_manifest(data):
+                manifest = data
+                actual_version = self._resolve_version(manifest, version)
+                ver_info = manifest["versions"][actual_version]
+
+                # 1) 内联 content（manifest 里直接写）
+                inline_content = ver_info.get("content")
+                if isinstance(inline_content, str) and inline_content.strip():
+                    content = inline_content.strip()
+                else:
+                    # 2) 引用外部 file
+                    file_rel = ver_info.get("file")
+                    if not file_rel or not isinstance(file_rel, str):
+                        raise PromptFormatError(
+                            f"{name}/{actual_version}",
+                            "version 缺 file 或 content 字段",
+                        )
+                    content, version_file_mtime = self._load_version_file_with_mtime(
+                        name, actual_version, file_rel
+                    )
+                    # 内容文件被改 → manifest mtime 不变也会触发重读
+                    mtime = max(mtime, version_file_mtime)
             else:
-                content = data if isinstance(data, str) else ""
+                # 兼容模式：YAML 无 versions 字段 → 当单版本 v1
+                if version is not None and version != "v1":
+                    raise PromptVersionError(
+                        name, version,
+                        "YAML 不含 versions 字段（兼容模式仅支持 v1）",
+                    )
+                if isinstance(data, dict):
+                    content = data.get("content", "")
+                else:
+                    content = data if isinstance(data, str) else ""
 
-            if not isinstance(content, str) or not content.strip():
-                raise PromptFormatError(name, "content 字段缺失或为空")
+                if not isinstance(content, str) or not content.strip():
+                    raise PromptFormatError(name, "content 字段缺失或为空")
+                content = content.strip()
 
-            content = content.strip()
-            self._cache[name] = (mtime, content)
+            self._cache[cache_key] = (mtime, content)
             return content
 
 
