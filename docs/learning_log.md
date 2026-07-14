@@ -3403,3 +3403,179 @@ MAX_REWRITE_EXTRA = _RULES["MAX_REWRITE_EXTRA"]  # 50
 - **彻底清退要含 scripts**：CLAUDE.md §7 分层里 `scripts/` 不在分层图里，但它会绕过 Provider 直接调旧函数；Sprint 收尾必须 `scripts/` 一起切，否则下次重启就是定时炸弹
 - **§3.3 YAGNI vs 持有成本的真实权衡**：删 12 行薄壳 + 65 行 re-export 是单方向受益（少维护、grep 0 命中）的，不删的 2 个 Provider 内部客户端是要权衡「重写 Provider 引入 regression 风险」的 — 用户协作风格刚好契合：先列出方案差异，再选保守方向
 
+---
+
+## 31. Phase 4 A4 — query_rewriter 多路改写 + policy 多路 RRF 融合（2026-07-14）
+
+### What
+在 Sprint 4（业务规则 YAML 化 + Prompt 抽取）闭环基础上，给 `query_rewriter.py` 加 **Multi-Query 业务能力增强**：
+1. 新增 `rewrite_query_multi(query, history, n)`：从 1 路改写升级为 N 路改写（默认 N=3），沿用 L0/L1/L2 防浪费链路 + 多路降级兜底
+2. 新增 `PolicyService.search_multi_policy(queries, top_k)`：多路 query → 每路独立 RAG → RRF（Reciprocal Rank Fusion）融合 → top_k
+3. `chat/orchestrator.py` 调度：`ENABLE_MULTI_QUERY` 灰度开关 + `search_queries is None` 走单路（mock 兼容保留）
+4. `scripts/eval_hitk.py` 加 `--multi-query` 评估开关，hit@K 报告可量化 Multi-Query 提升
+5. 新增 2 Prompt YAML（`multi_system` + `multi_user_template`），与 query_rewriter.yaml 同目录管理
+6. 配套 18 用例（`test_query_rewriter_multi.py` 12 + `test_policy_service_multi.py` 6）+ 1 YAML 配置用例 + eval_hitk 接入
+
+### Why
+CLAUDE.md §9.4.2 业务规则 + §9.6 Prompt 已配置化完毕；query_rewriter 服务已具备 LLM 调用 + JSON 解析 + 多路兜底基础设施，**业务能力纵深**成为下一价值点。
+- **单路改写盲点**：含指代词的 query 即使改写成功，召回仍然受限于 1 路 embedding；同义改写（如"它能退吗" → ["退货流程", "如何申请退款", "退货运费险"]）能扩召回覆盖
+- **多路 RRF 融合成熟**：Cormack 2009 RRF（k=60）已在 `app.services.rrf` 落地，BM25 + dense 双向融合已用；扩展到 N 路 query 等价复用
+- **灰度开关**：Sprint 4 阶段 5 已落地配置化，加 1 行 `ENABLE_MULTI_QUERY: bool = False` 即获得零侵入灰度能力
+- **CLAUDE.md §3.3 YAGNI**：只做 Multi-Query，**不**做 HyDE / 同义词 / 改写模型微调（这些是 V3+ 业务能力纵深）
+
+### Tech Stack
+- `app.services.query_rewriter`（已有）— 加 `rewrite_query_multi` 函数 + `MULTI_SYSTEM_PROMPT_TEMPLATE` / `MULTI_USER_TEMPLATE` 常量（启动期 prompt_loader 加载）
+- `app.services.policy_service`（已有）— 加 `search_multi_policy` 静态方法（本地 import rrf_fuse 防循环）
+- `app.services.chat.orchestrator`（已有）— `run_stream` 加 `search_queries` 中间变量，按 intent 分派时透传
+- `config/prompts/query_rewriter/{multi_system, multi_user_template}.yaml`（新增）
+- `config/business_rules/query_rewriter.yaml`（已有 · 追加 3 字段：ENABLE_MULTI_QUERY / MULTI_QUERY_COUNT / MULTI_QUERY_TRIGGER）
+- `core/config.py`（已有 · 追加 3 个 Pydantic settings）
+- `services/metrics.py`（已有 · 加 `inc_rewrite_multi(reason)` 计数器 + snapshot 暴露 `rewrite_multi_block`）
+- `tests/test_query_rewriter_multi.py`（新增 · 12 用例）
+- `tests/test_policy_service_multi.py`（新增 · 6 用例）
+- `scripts/eval_hitk.py`（已有 · 加 `--multi-query` flag）
+
+### Flow
+
+#### 改写侧：rewrite_query_multi 防浪费链路
+```
+query + history
+   │
+   ├─ L0: 无指代词? ── 是 ──> ([query], was_rewritten=False)    # 0 LLM token
+   │
+   ├─ L1: 无 history? ── 是 ──> ([query], was_rewritten=False)  # 0 LLM token
+   │
+   └─ L2: LLM call
+         │
+         ├─ JSON parse fail ──> ([query], was_rewritten=False, reason=parse_fail)
+         │
+         ├─ 有效变体 < 2 ──> ([query], was_rewritten=False, reason=too_few_variants)
+         │
+         ├─ 变体超过 MAX_RATIO*orig + MAX_EXTRA ──> drop（不计入）
+         │
+         ├─ 变体 == 原 query ──> exclude（防伪变体）
+         │
+         ├─ 变体重复 ──> dedup
+         │
+         └─ 有效变体 ≥ 2 < N ──> pad with orig to N → ([v1, v2, orig], was_rewritten=True)
+```
+
+#### 检索侧：search_multi_policy 多路 RRF
+```
+queries = [q1, q2, q3]
+   │
+   ├─ queries 为空? ── 是 ──> []   # 短路
+   │
+   ├─ queries 长度 = 1? ── 是 ──> [PolicyService.search_policy(q1, top_k)]  # 短路
+   │
+   └─ 多路：每路 search_policy
+         │
+         ├─ 单路异常? ── 是 ──> skip 该路，continue
+         │
+         ├─ 全路失败? ── 是 ──> []
+         │
+         └─ rrf_fuse(per_query_hits, k=60) → top_k
+               │
+               └─ RRF 异常? ──> 降级到首路前 top_k
+```
+
+#### orchestrator 集成
+```python
+# orchestrator.run_stream
+rewritten_query, was_rewritten = rewrite_query(query, history)         # M12：单路改写
+query = rewritten_query
+
+# Phase 4 A4：Multi-Query（仅 policy/product 有效；ENABLE_MULTI_QUERY 默认 false）
+search_queries = None
+if settings.ENABLE_MULTI_QUERY:
+    multi_queries, _ = rewrite_query_multi(query, history)
+    if multi_queries and len(multi_queries) > 1:
+        search_queries = multi_queries
+
+# 分派：search_queries is None → 单路（mock 兼容）；非 None → 多路
+if intent == "product_query":
+    yield from Synthesizer._handle_product(..., search_queries=search_queries)
+elif intent == "policy_query":
+    yield from Synthesizer._handle_policy(..., search_queries=search_queries)
+```
+
+```python
+# _handle_product / _handle_policy 内部
+if search_queries:
+    kb_docs = PolicyService.search_multi_policy(search_queries, top_k=3)
+else:
+    kb_docs = PolicyService.search_policy(query, top_k=3)  # mock 兼容
+```
+
+### Problem → Fix
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| pytest 报 `test_anti_hallucination` 失败（PolicyService mock 路径没命中） | orchestrator 无条件调 `search_multi_policy` 绕过了测试 patch 的 `search_policy` | orchestrator 改为 `if search_queries` 条件调度：`search_queries is None` 走单路 `search_policy`（mock 兼容）；非 None 走多路（生产路径） |
+| pytest 新文件 `ValueError: JWT_SECRET must be set` | env vars 写在 `if __name__ == "__main__":` 块底，pytest 不走 `__main__` | 移到模块顶部 `os.environ.setdefault(...)`（与 Sprint 4 阶段 5 测试同模式） |
+| RRF mock patch 路径错（`patch("app.services.policy_service.rrf_fuse")` no-op） | `rrf_fuse` 是本地 import `from app.services.rrf import rrf_fuse` | mock 用模块实际名字空间 `patch("app.services.rrf.rrf_fuse")` |
+| Multi-Query 误扩到 order/refund 路径 | orchestrator 无差别分派可能影响 order/refund 业务 | 只在 `product_query` / `policy_query` 透传 `search_queries`；order/refund 不变（YAGNI + 业务无 RAG 召回需求） |
+| 变体 == 原 query 干扰 RRF | LLM 可能回退到原 query（保守改写） | 在 dedup 前 `if v == orig: continue` 排除；有效变体不足时再 pad |
+| 变体过长被 LLM 注入噪音 | LLM 可能返"详细退货指南（含完整退款流程 + 时效 + 注意事项）"远超 query 长度 | 长度上限 `len(orig) * MAX_REWRITE_RATIO + MAX_REWRITE_EXTRA`（= 4*3+50=62），超长 drop |
+| 反幻觉：LLM 改写编造订单号 | 多路改写可能扩散 LLM 幻觉到多路召回 | system prompt 加"不要编造订单号 / SKU / 数字"硬约束（与 query_rewriter 单路 prompt 同策略） |
+
+### 验证
+- pytest 全量 **243/243 PASS**（224 baseline + 12 query_rewriter_multi + 6 policy_service_multi + 1 YAML 配置测试）
+- 新增 2 Prompt YAML 通过 `prompt_loader.load("query_rewriter/multi_system")` / `multi_user_template` 验证（启动期 fail-fast）
+- `ENABLE_MULTI_QUERY=False` 灰度基线：单路路径行为与 Sprint 4 闭环完全一致（grep 0 业务路径变化）
+- eval_hitk.py `--multi-query` 接入完成，待真实流量验证 hit@K 提升幅度
+- CI 状态：GitHub Actions 等待 commit 2 push 后 run
+
+### Architecture Role
+属于 `services/` 层的**业务能力纵深**模块，定位为 Sprint 4 配置化之上的"能力层"：
+- **上游**：Sprint 4 已落地 config_loader + prompt_loader（基础）+ query_rewriter.yaml（业务规则）
+- **下游**：`policy_service.search_multi_policy` 是 `policy_service.search_policy` 的**多路超集**；orchestrator 调度逻辑不变（仅多 1 个 search_queries 中间变量）
+- **依赖方向**：`query_rewriter` → `prompt_loader` / `config_loader` / `llm_provider`（单向）；`policy_service.search_multi_policy` → `policy_service.search_policy` + `rrf`（单向复用）
+- **CLAUDE.md §9.1 三大铁律**：
+  - Interface First：rewrite_query_multi 走 `LLMProvider` 抽象（不在 query_rewriter 内 import qwen.py）；search_multi_policy 走 `EmbeddingProvider` + `RerankProvider`
+  - Module Isolation：query_rewriter 不感知 policy_service；policy_service 不感知 orchestrator；orchestrator 是唯一串联点
+  - Dependency Inversion：业务模块不直接 `from app.services.policy_service import search_multi_policy`（除 orchestrator），均通过 `PolicyService.search_multi_policy(...)` 静态调用
+
+### 配套测试（18 用例）
+
+**`tests/test_query_rewriter_multi.py`（12）**
+- L0 短路：无指代词 → `([query], was_rewritten=False)`，不调 LLM（mock.assert_not_called）
+- L1 短路：无 history → 同上
+- L2 成功：LLM 返 3 条 JSON → `[v1, v2, v3]` + `was_rewritten=True`
+- LLM message 格式：`multi_system` + `multi_user_template` 模板拼接正确，含 `{n}` 占位
+- parse_fail：LLM 返非 JSON → `([query], was_rewritten=False)`
+- too_few_variants：LLM 仅返 1 条 → 降级
+- llm_error：LLM 异常 → 降级
+- 长度超限过滤：变体超过 `orig*MAX_REWRITE_RATIO + MAX_EXTRA` → drop
+- 去重 + 填充：重复变体 dedup；不足 N 条用 orig 填充
+- == orig 排除：变体 == query → 不计入
+- YAML 字段加载：`ENABLE_MULTI_QUERY` / `MULTI_QUERY_COUNT` / `MULTI_QUERY_TRIGGER`
+- 多 Prompt 加载：`MULTI_SYSTEM_PROMPT_TEMPLATE` / `MULTI_USER_TEMPLATE` 是 str 且含 `{n}` / `{history}` / `{query}` 占位
+
+**`tests/test_policy_service_multi.py`（6）**
+- 空 queries：返 `[]`
+- 单 queries：短路返 `search_policy` 结果（不调 RRF）
+- 多 queries 正常：3 路 RAG + RRF 融合，输出含 `rrf_score` 字段
+- 单路异常：仅该路降级，其他路继续
+- RRF 异常：降级到首路前 top_k
+- schema 一致：与 `search_policy` 字段对齐（text/source/score/rerank_score/rrf_score）
+
+### 阶段进度
+- **Phase 4 A4 ✅ 完成**：1 feature commit（`333e01b`）+ 1 test+docs+eval commit（待 push）
+- **§9.4.2 业务规则配置化**：5/5 服务（guard / refund / intent / query_rewriter / config_loader）
+- **§9.6 Prompt 独立管理**：7/7 YAML（refund / guard_chitchat / orchestrator / agent / no_login / intent / query_rewriter + 新增 2 multi_*）
+
+### 已知限制
+- `ENABLE_MULTI_QUERY=False` 默认关闭，需手动 Pydantic settings 打开才能灰度验证（无运行时开关）
+- 多路 query 实际响应延迟 ≈ 单路 × N（同步串行）；N=3 时 p50 翻 3 倍，需配合 SSE 流式增量返回优化（V3+）
+- 多路融合仅走 RRF，未做加权（无业务层对不同 query 变体的可信度打分）
+- Rerank 在多路融合**前**调用（每路独立 rerank），未在融合**后**统一 rerank；理论上前者更稳定（候选级精度高），后者更聚合（全局重排），当前选前者（工程复杂度低）
+- HyDE / 同义词扩展未做（CLAUDE.md §3.3 YAGNI）
+- 变体数 N 写死 3（YAML 可调但未跑过 N=4 / N=5 的 eval 对比）
+
+### 反思（教训沉淀）
+- **「多路 vs 单路」的接口兼容模式**：orchestrator 不能无条件切到新接口，否则会绕过测试 mock；`search_queries is None` 单路 + 非 None 多路 这种"中间变量"模式让 mock 测试零修改兼容，是与 Sprint 3 `_handle_product` / `_handle_policy` 内部重构同款的「灰度切换」范式
+- **防浪费链路 L0/L1/L2 的可复用性**：query_rewriter 单路已落地 L0（无指代词）+ L1（无 history）+ L2（LLM call），多路直接复用同一套判定 + 加一段 LLM 输出校验（JSON / dedup / length / pad），证明防浪费设计在能力扩展时不会变成阻力
+- **本地 import 防循环依赖**：`search_multi_policy` 用 `from app.services.rrf import rrf_fuse`（函数内 import）而非模块顶部 import，避免 `policy_service ↔ rrf` 隐式循环（虽然在当前依赖图里也合法）
+- **eval_hitk 接入是验证标准**：`--multi-query` flag 让 hit@K 报告可量化 Multi-Query 提升幅度，避免「能力上线了但效果未验证」的常见 Sprint 烂尾；同模式可以套到未来 HyDE / 同义词扩展
+
