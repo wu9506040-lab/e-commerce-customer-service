@@ -52,7 +52,8 @@ except ImportError:
 
 from qdrant_client import QdrantClient  # noqa: E402
 from app.core.config import settings  # noqa: E402
-from app.core.qwen import chat  # noqa: E402
+# Sprint 4 收尾：core/qwen.py 改为 Provider 抽象入口
+from app.core.providers.llm import get_llm_provider  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -136,7 +137,7 @@ def generate_queries_for_doc(doc: Dict[str, Any]) -> List[str]:
 
     for attempt in range(2):
         try:
-            result = chat(messages, temperature=0.8, max_tokens=500)
+            result = get_llm_provider().chat(messages, temperature=0.8, max_tokens=500)
             reply = result["reply"].strip()
 
             # 尝试解析：先去掉可能的 markdown 包裹

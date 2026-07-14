@@ -106,8 +106,9 @@ class PolicyService:
             # P1-检索 A：rerank 精排
             if settings.USE_RERANK and len(hits) > top_k:
                 try:
-                    from app.services.rerank import rerank
-                    hits = rerank(query, hits, top_n=top_k)
+                    # Sprint 4 收尾：services/rerank.py 已删，改为 Provider 抽象入口
+                    from app.core.providers.rerank import get_rerank_provider
+                    hits = get_rerank_provider().rerank(query, hits, top_n=top_k)
                     logger.info(
                         f"policy rerank: candidates={len(hits)}/{coarse_top_k} "
                         f"→ fine={len(hits)}"

@@ -50,7 +50,8 @@ except ImportError:
     pass
 
 from app.core.config import settings  # noqa: E402
-from app.core.embedding import embed_text  # noqa: E402
+# Sprint 4 收尾：core/embedding.py 改为 Provider 抽象入口
+from app.core.providers.embedding import get_embedding_provider  # noqa: E402
 from app.clients.qdrant import search as qdrant_search  # noqa: E402
 
 logging.basicConfig(
@@ -110,7 +111,7 @@ def evaluate_single(item: Dict[str, str], use_rerank: bool = False, use_bm25: bo
     relevant_id = item["relevant_doc_id"]
 
     t0 = time.perf_counter()
-    query_vector = embed_text(query)
+    query_vector = get_embedding_provider().embed_text(query)
 
     # 候选路选择
     if use_bm25:
@@ -132,8 +133,9 @@ def evaluate_single(item: Dict[str, str], use_rerank: bool = False, use_bm25: bo
 
     if use_rerank:
         # 两阶段：top-RERANK_K 候选 → LLM rerank → top-TOP_K_MAX
-        from app.services.rerank import rerank
-        results = rerank(query, candidates, top_n=TOP_K_MAX)
+        # Sprint 4 收尾：services/rerank.py 已删，改为 Provider 抽象入口
+        from app.core.providers.rerank import get_rerank_provider
+        results = get_rerank_provider().rerank(query, candidates, top_n=TOP_K_MAX)
     else:
         results = candidates[:TOP_K_MAX]
 
