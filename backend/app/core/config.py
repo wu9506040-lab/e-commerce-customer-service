@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     # 触发条件（MVP: coref_only；扩展: any / never）
     MULTI_QUERY_TRIGGER: str = "coref_only"
 
+    # ---- P2 长程记忆：跨 session 用户画像 ----
+    # 启用后 orchestrator 每轮加载 user_profiles，注入到 LLM prompt 的 context_block 之后
+    # 默认 false（灰度用），未启用时所有 profile_service 调用短路返空
+    ENABLE_USER_PROFILE: bool = False
+    # profile_block 注入 prompt 的硬上限（防 prompt 膨胀；与 prompt_assembler MAX_PROFILE_PROMPT_LEN 对齐）
+    USER_PROFILE_PROMPT_MAX_LEN: int = 200
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩

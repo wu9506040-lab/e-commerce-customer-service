@@ -35,6 +35,9 @@ from app.services.query_rewriter import rewrite_query_multi  # Phase 4 A4：Mult
 from app.services.session_service import ANONYMOUS_USER_ID
 from app.tools.product_tool import ProductTool
 
+# P2 长程记忆：用户画像注入（默认 ENABLE_USER_PROFILE=False 灰度）
+from app.services import profile_service
+
 from app.services.chat import prompt_assembler, stream_dispatcher
 from app.services.chat.refund_handler import handle_refund_v2, handle_refund_v3
 
@@ -98,11 +101,32 @@ class Synthesizer:
                 )
 
         # M9.5：预加载 context（商品/订单详情），后续注入 LLM prompt
-        context_block = prompt_assembler._build_context_block(sku, order_no, user_id)
+        # P2 长程记忆：扩 profile_block（来自 profile_service.to_prompt_block）
+        #   灰度开关：settings.ENABLE_USER_PROFILE=False → profile_block 始终空串（短路）
+        #   匿名用户（user_id=ANONYMOUS_USER_ID）→ 不维护 profile
+        profile_block = ""
+        if settings.ENABLE_USER_PROFILE and user_id and user_id != ANONYMOUS_USER_ID:
+            try:
+                profile = profile_service.get_or_create(user_id)
+                profile_block = profile_service.to_prompt_block(
+                    profile, max_len=settings.USER_PROFILE_PROMPT_MAX_LEN
+                )
+            except Exception as e:
+                # best-effort：profile 加载失败不阻塞主流程
+                logger.warning(
+                    f"profile 加载失败（放行）: user_id={user_id}, {e}",
+                    extra={"intent": "profile_error"},
+                )
+                profile_block = ""
+
+        context_block = prompt_assembler._build_context_block(
+            sku, order_no, user_id, profile_block=profile_block
+        )
         if context_block:
             logger.info(
                 f"synth.context: sku={sku} order_no={order_no} "
-                f"context_len={len(context_block)} user_id={user_id}",
+                f"context_len={len(context_block)} profile_len={len(profile_block)} "
+                f"user_id={user_id}",
                 extra={"intent": "context"},
             )
 
