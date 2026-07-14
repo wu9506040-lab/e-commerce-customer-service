@@ -23,18 +23,28 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from app.core.providers.llm import get_llm_provider
+from app.services.config_loader import get_config_loader  # Sprint 4 阶段 5
 from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
+
+# =============================================================
+# 业务规则（启动期加载一次，来自 config/business_rules/query_rewriter.yaml）
+# 改阈值/规则 → 改 YAML → 重启服务（roadmap §3.5 不参与热更新）
+# 单一真相源：query_rewriter.py 是唯一消费者
+# 注：REWRITE_SYSTEM_PROMPT / REWRITE_USER_TEMPLATE 在 commit 2 抽到 config/prompts/query_rewriter.yaml
+# =============================================================
+_RULES = get_config_loader().load("query_rewriter")
+
 # L0：指代词清单（覆盖电商场景常见代词）
 # 来源：电商客服多轮对话高频观察 + 中文指代词表精简
+# YAML 里 list[str] → re.escape + "|" 拼接 + re.compile（防代词含正则特殊字符时漏匹配）
 COREFERENCE_PATTERNS = re.compile(
-    r"它|他们|这个|那个|这些|那些|刚才|之前|上面|下面|"
-    r"那款|这款|这种|那种|前一个|后一个|前者|后者|这里|那里"
+    "|".join(re.escape(p) for p in _RULES["COREFERENCE_PATTERNS"])
 )
 
-# LLM 改写 prompt（精简版，控制 token）
+# LLM 改写 prompt（精简版，控制 token；commit 2 抽到 config/prompts/）
 REWRITE_SYSTEM_PROMPT = (
     "你是电商客服 query 改写员。"
     "任务：把用户问题里的指代词补全为具体实体（商品名/SKU/订单号/颜色等）。"
@@ -51,13 +61,13 @@ REWRITE_USER_TEMPLATE = (
     "改写后："
 )
 
-# 截短 history：避免 prompt 过长（只取最近 4 条）
-MAX_HISTORY_TURNS = 4
+# 截短 history：避免 prompt 过长（只取最近 MAX_HISTORY_TURNS 条）
+MAX_HISTORY_TURNS = _RULES["MAX_HISTORY_TURNS"]
 # history 单条最长字符数
-MAX_HISTORY_MSG_LEN = 100
-# 改写结果长度上限：原 query * 3 + 50（防 LLM 输出失控）
-MAX_REWRITE_RATIO = 3
-MAX_REWRITE_EXTRA = 50
+MAX_HISTORY_MSG_LEN = _RULES["MAX_HISTORY_MSG_LEN"]
+# 改写结果长度上限：原 query * MAX_REWRITE_RATIO + MAX_REWRITE_EXTRA（防 LLM 输出失控）
+MAX_REWRITE_RATIO = _RULES["MAX_REWRITE_RATIO"]
+MAX_REWRITE_EXTRA = _RULES["MAX_REWRITE_EXTRA"]
 
 
 def _has_coreference(query: str) -> bool:
