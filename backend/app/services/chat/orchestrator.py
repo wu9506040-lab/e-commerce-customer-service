@@ -31,6 +31,7 @@ from app.services.order_service import OrderService
 from app.services.policy_service import PolicyService
 from app.services.rag.pipeline import run_stream as v12_rag_run_stream
 from app.services.query_rewriter import rewrite_query  # M12：指代补全
+from app.services.query_rewriter import rewrite_query_multi  # Phase 4 A4：Multi-Query 多路改写
 from app.services.session_service import ANONYMOUS_USER_ID
 from app.tools.product_tool import ProductTool
 
@@ -82,6 +83,20 @@ class Synthesizer:
             )
             query = rewritten_query
 
+        # Phase 4 A4：Multi-Query 多路改写（仅 policy/product 有效；ENABLE_MULTI_QUERY 默认 false）
+        # 触发条件由 query_rewriter.MULTI_QUERY_TRIGGER 管控（默认 coref_only）
+        # 失败 / 无历史 / LLM 异常 → rewrite_query_multi 降级返 [query] → 等价单路
+        search_queries: Optional[list[str]] = None
+        if settings.ENABLE_MULTI_QUERY:
+            multi_queries, _ = rewrite_query_multi(query, history)
+            if multi_queries and len(multi_queries) > 1:
+                search_queries = multi_queries
+                logger.info(
+                    f"synth.multi_query: n={len(multi_queries)} "
+                    f"first='{multi_queries[0][:40]}...' user_id={user_id}",
+                    extra={"intent": "multi_query"},
+                )
+
         # M9.5：预加载 context（商品/订单详情），后续注入 LLM prompt
         context_block = prompt_assembler._build_context_block(sku, order_no, user_id)
         if context_block:
@@ -121,11 +136,11 @@ class Synthesizer:
                 return
             elif intent == "product_query":
                 metrics.inc_chat(intent, v3_engine="-")  # M8
-                yield from Synthesizer._handle_product(query, intent_result, history, sku=sku, context_block=context_block)
+                yield from Synthesizer._handle_product(query, intent_result, history, sku=sku, context_block=context_block, search_queries=search_queries)
                 return
             else:  # policy_query
                 metrics.inc_chat(intent, v3_engine="-")  # M8
-                yield from Synthesizer._handle_policy(query, intent_result, history, context_block=context_block)
+                yield from Synthesizer._handle_policy(query, intent_result, history, context_block=context_block, search_queries=search_queries)
                 return
         except Exception as e:
             # 任何分派路径异常 → fallback 到 V1.2 统一 RAG
@@ -284,8 +299,12 @@ class Synthesizer:
         query: str, intent_result: dict, history: Optional[list[dict]],
         sku: Optional[str] = None,
         context_block: str = "",
+        search_queries: Optional[list[str]] = None,
     ) -> Generator[Tuple[str, Any], None, None]:
-        """product_query：调 ProductTool + 补 policy"""
+        """product_query：调 ProductTool + 补 policy
+
+        Phase 4 A4：search_queries 不为空时走 PolicyService.search_multi_policy 多路 RRF
+        """
         entities = intent_result["entities"]
         # M9.5：优先用 context 传来的 sku（用户从商品详情跳转）
         effective_sku = sku or entities.get("sku")
@@ -323,7 +342,11 @@ class Synthesizer:
             product_block = "\n".join(lines)
 
         # 2. KB RAG 补 specs（M5 修复 #22 #25：续航/配置 在 KB 不在 MySQL）
-        kb_docs = PolicyService.search_policy(query, top_k=3)
+        # Phase 4 A4：search_queries 不为空时走多路 RRF；空时走单路（保留旧 mock 兼容）
+        if search_queries:
+            kb_docs = PolicyService.search_multi_policy(search_queries, top_k=3)
+        else:
+            kb_docs = PolicyService.search_policy(query, top_k=3)
         kb_block = prompt_assembler._format_policy_docs(kb_docs)
         if kb_block:
             if product_block and "[商品] 未在数据库中找到" not in product_block:
@@ -366,9 +389,16 @@ class Synthesizer:
     def _handle_policy(
         query: str, intent_result: dict, history: Optional[list[dict]],
         context_block: str = "",
+        search_queries: Optional[list[str]] = None,
     ) -> Generator[Tuple[str, Any], None, None]:
-        """policy_query：纯 PolicyService RAG（最接近 V1.2 行为）"""
-        policy_docs = PolicyService.search_policy(query, top_k=5)
+        """policy_query：纯 PolicyService RAG（最接近 V1.2 行为）
+
+        Phase 4 A4：search_queries 不为空时走多路 RRF；空时单路（保留旧 mock 兼容）
+        """
+        if search_queries:
+            policy_docs = PolicyService.search_multi_policy(search_queries, top_k=5)
+        else:
+            policy_docs = PolicyService.search_policy(query, top_k=5)
         policy_block = prompt_assembler._format_policy_docs(policy_docs)
 
         # P0-H：暴露政策命中到 meta

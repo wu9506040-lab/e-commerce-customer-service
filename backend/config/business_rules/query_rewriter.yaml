@@ -42,3 +42,11 @@ MAX_HISTORY_MSG_LEN: 100
 # 改写结果 ≤ 原 query * MAX_REWRITE_RATIO + MAX_REWRITE_EXTRA
 MAX_REWRITE_RATIO: 3
 MAX_REWRITE_EXTRA: 50
+
+# === Phase 4 A4: Multi-Query 配置 ===
+# 总开关（默认 false，灰度用；运行时通过 settings.ENABLE_MULTI_QUERY 覆盖）
+ENABLE_MULTI_QUERY: false
+# 变体数量上限（N ≤ 3 控成本；LLM 一次返回 n+1 条，padding 用原 query 填充）
+MULTI_QUERY_COUNT: 3
+# 触发条件：coref_only（仅含指代词才走 Multi-Query；other 变体留待后续 Sprint）
+MULTI_QUERY_TRIGGER: "coref_only"

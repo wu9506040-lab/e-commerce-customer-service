@@ -109,6 +109,15 @@ class Settings(BaseSettings):
     # RRF k 常数（Cormack 2009 论文推荐 60）
     RRF_K: int = 60
 
+    # ---- Phase 4 A4: Multi-Query 检索增强 ----
+    # 启用后 query_rewriter 输出 N 路变体 → policy_service RRF 融合检索
+    # 默认 false（灰度用），改 settings 不需改代码
+    ENABLE_MULTI_QUERY: bool = False
+    # 变体数量上限（N ≤ 3 控 Qdrant 调用次数 ×N 的成本）
+    MULTI_QUERY_COUNT: int = 3
+    # 触发条件（MVP: coref_only；扩展: any / never）
+    MULTI_QUERY_TRIGGER: str = "coref_only"
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩
