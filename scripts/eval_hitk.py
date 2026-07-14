@@ -88,7 +88,12 @@ def load_eval_set(path: Path) -> List[Dict[str, str]]:
 # =============================================================
 # 2. 单条评估
 # =============================================================
-def evaluate_single(item: Dict[str, str], use_rerank: bool = False, use_bm25: bool = False) -> Dict[str, Any]:
+def evaluate_single(
+    item: Dict[str, str],
+    use_rerank: bool = False,
+    use_bm25: bool = False,
+    use_multi_query: bool = False,
+) -> Dict[str, Any]:
     """
     对单条 query 做 embedding + Qdrant top-K 检索，记录结果
 
@@ -96,6 +101,7 @@ def evaluate_single(item: Dict[str, str], use_rerank: bool = False, use_bm25: bo
         item: 评估集单项
         use_rerank: 是否启用 LLM cross-encoder rerank
         use_bm25: 是否启用 BM25 稀疏召回 + RRF 融合
+        use_multi_query: 是否启用 Phase 4 A4 Multi-Query（query_rewriter + policy 多路）
 
     Returns:
         {
@@ -111,33 +117,43 @@ def evaluate_single(item: Dict[str, str], use_rerank: bool = False, use_bm25: bo
     relevant_id = item["relevant_doc_id"]
 
     t0 = time.perf_counter()
-    query_vector = get_embedding_provider().embed_text(query)
 
-    # 候选路选择
-    if use_bm25:
-        # 三种模式：hybrid 仅 BM25+RRF / hybrid_rerank 加 rerank / baseline rerank
-        candidates = qdrant_search(query_vector, top_k=RERANK_K)
+    # Phase 4 A4：Multi-Query 路径（生成 N 路 query → 多路 RAG → RRF 融合）
+    if use_multi_query:
         try:
-            from app.services.bm25_index import bm25_search
-            from app.services.rrf import rrf_fuse
-            bm25_hits = bm25_search(query, top_k=RERANK_K)
-            if bm25_hits:
-                fused = rrf_fuse([candidates, bm25_hits], k=60)
-                candidates = fused[:RERANK_K]
-            else:
-                logger.debug(f"BM25 空结果，仅用 dense candidates: query={query!r}")
+            from app.services.query_rewriter import rewrite_query_multi
+            from app.services.policy_service import PolicyService
+            queries, was_rewritten = rewrite_query_multi(query, n=3)
+            results = PolicyService.search_multi_policy(queries, top_k=TOP_K_MAX)
         except Exception as e:
-            logger.warning(f"BM25 检索失败，降级到纯 dense: {e}")
-    else:
-        candidates = qdrant_search(query_vector, top_k=RERANK_K)
+            logger.warning(f"multi_query 检索失败，降级到 hybrid: {e}")
+            use_multi_query = False  # 降级到 hybrid 路径
 
-    if use_rerank:
-        # 两阶段：top-RERANK_K 候选 → LLM rerank → top-TOP_K_MAX
-        # Sprint 4 收尾：services/rerank.py 已删，改为 Provider 抽象入口
-        from app.core.providers.rerank import get_rerank_provider
-        results = get_rerank_provider().rerank(query, candidates, top_n=TOP_K_MAX)
-    else:
-        results = candidates[:TOP_K_MAX]
+    if not use_multi_query:
+        query_vector = get_embedding_provider().embed_text(query)
+
+        # 候选路选择
+        if use_bm25:
+            candidates = qdrant_search(query_vector, top_k=RERANK_K)
+            try:
+                from app.services.bm25_index import bm25_search
+                from app.services.rrf import rrf_fuse
+                bm25_hits = bm25_search(query, top_k=RERANK_K)
+                if bm25_hits:
+                    fused = rrf_fuse([candidates, bm25_hits], k=60)
+                    candidates = fused[:RERANK_K]
+                else:
+                    logger.debug(f"BM25 空结果，仅用 dense candidates: query={query!r}")
+            except Exception as e:
+                logger.warning(f"BM25 检索失败，降级到纯 dense: {e}")
+        else:
+            candidates = qdrant_search(query_vector, top_k=RERANK_K)
+
+        if use_rerank:
+            from app.core.providers.rerank import get_rerank_provider
+            results = get_rerank_provider().rerank(query, candidates, top_n=TOP_K_MAX)
+        else:
+            results = candidates[:TOP_K_MAX]
 
     latency_ms = (time.perf_counter() - t0) * 1000
 
@@ -254,9 +270,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="详细结果输出")
     parser.add_argument("--rerank", action="store_true", help="启用 LLM cross-encoder rerank（top-20→rerank→top-10）")
     parser.add_argument("--bm25", action="store_true", help="启用 BM25 稀疏召回 + RRF 融合（与 --rerank 可叠加）")
+    parser.add_argument("--multi-query", action="store_true", help="启用 Phase 4 A4 Multi-Query（query_rewriter 输出 N 路 + policy 多路 RRF 融合）")
     args = parser.parse_args()
 
-    if args.bm25 and args.rerank:
+    if args.multi_query:
+        mode = "multi_query"
+    elif args.bm25 and args.rerank:
         mode = "hybrid_rerank"
     elif args.bm25:
         mode = "hybrid"
@@ -272,7 +291,7 @@ def main() -> int:
     results: List[Dict[str, Any]] = []
     for i, item in enumerate(eval_set, 1):
         try:
-            r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25)
+            r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25, use_multi_query=args.multi_query)
             results.append(r)
         except Exception as e:
             logger.error(f"[{i}/{len(eval_set)}] query='{item['query']}' 评估失败: {e}")

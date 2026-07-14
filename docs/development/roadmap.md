@@ -283,6 +283,27 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 
 ---
 
+### 3.8 Phase 4 — query_rewriter 业务能力增强（脱离 Sprint 路线 · 单点纵深）
+
+> **状态**：✅ A4 完成（2026-07-14，1 feature + 1 test+docs+eval commit）
+> **ADR**：未独立创建（按 §5.2 跨模块四要素口头审批；与 Sprint 4 阶段 5 同结构）
+> **学习日志**：`docs/learning_log.md §31`
+> **当前位置**：Sprint 1-4 闭环后单点能力纵深；不属于 Roadmap V2 的 6 个 Sprint，列为 Phase 4 业务能力层
+
+| 项     | 内容                                                                                                                                                                                                                                                                                                                                                                                |
+|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **目标** | 在 Sprint 4 业务规则配置化基础上，给 `query_rewriter.py` 加 Multi-Query 业务能力：单路改写 → N 路改写 → 多路 RAG → RRF 融合。零侵入灰度（`ENABLE_MULTI_QUERY` 默认 false）。                                                                                                                                                                                                                                                |
+| **范围（实绩 A4）** | • `query_rewriter.rewrite_query_multi(query, history, n)` 沿用 L0/L1/L2 防浪费链路<br>• `PolicyService.search_multi_policy(queries, top_k)` 多路 RAG + RRF 融合（本地 import rrf_fuse 防循环）<br>• `chat/orchestrator.run_stream` 加 `search_queries` 中间变量，灰度开关 `settings.ENABLE_MULTI_QUERY`<br>• `config/prompts/query_rewriter/{multi_system, multi_user_template}.yaml`（新增 2 Prompt）<br>• `config/business_rules/query_rewriter.yaml` 追加 3 字段<br>• `scripts/eval_hitk.py` 加 `--multi-query` flag<br>• 18 测试（12 query_rewriter_multi + 6 policy_service_multi）+ 1 YAML 配置测试 |
+| **不范围（A4）** | • **不做 HyDE**（YAGNI；Multi-Query 已覆盖"同义改写扩展召回"）<br>• **不做同义词扩展**（同上）<br>• **不做改写模型微调**（依赖 LLM 通用能力足够）<br>• **不改 orchestrator 调度逻辑**（仅新增 1 个中间变量，灰度开关走 settings）<br>• **不动 order_query / refund_query**（无 RAG 召回需求） |
+| **新建** | `backend/config/prompts/query_rewriter/multi_system.yaml`<br>`backend/config/prompts/query_rewriter/multi_user_template.yaml`<br>`backend/tests/test_query_rewriter_multi.py`（12 用例）<br>`backend/tests/test_policy_service_multi.py`（6 用例） |
+| **修改** | `backend/app/services/query_rewriter.py`（+150 行 · `rewrite_query_multi` 函数 + 2 Prompt 常量）<br>`backend/app/services/policy_service.py`（+30 行 · `search_multi_policy` 静态方法）<br>`backend/app/services/chat/orchestrator.py`（+15 行 · `search_queries` 中间变量 + 透传）<br>`backend/app/core/config.py`（+3 行 · `ENABLE_MULTI_QUERY` / `MULTI_QUERY_COUNT` / `MULTI_QUERY_TRIGGER`）<br>`backend/config/business_rules/query_rewriter.yaml`（+3 行）<br>`backend/app/services/metrics.py`（+15 行 · `inc_rewrite_multi(reason)` 计数器）<br>`scripts/eval_hitk.py`（+30 行 · `--multi-query` flag）<br>`backend/tests/test_query_rewriter_config.py`（+9 行 · `test_multi_query_constants_loaded`） |
+| **关键设计决策** | • **灰度开关默认 false**：`ENABLE_MULTI_QUERY=False` 保证全量 243 测试零侵入，业务行为与 Sprint 4 闭环完全一致<br>• **mock 兼容保留**：orchestrator 用 `search_queries is None → 单路 / 非 None → 多路` 条件调度；现有 `test_anti_hallucination` 等测试 mock `PolicyService.search_policy` 不受影响<br>• **防浪费 L0/L1/L2 链路复用**：多路改写与单路共用同一套短路判定（无指代词/无 history）+ JSON 解析 + 长度/dedup 校验<br>• **本地 import rrf_fuse**：`policy_service.search_multi_policy` 函数内 `from app.services.rrf import rrf_fuse`，避免模块顶部循环依赖 |
+| **关闭缺口** | • **新增能力层（不在原 G 缺口表）**：业务能力纵深，对应 query_rewriter.py 业务能力提升<br>• §9.6 Prompt 7/7 YAML（refund / guard_chitchat / orchestrator / agent / no_login / intent / query_rewriter + 新增 2 multi_*） |
+| **验证** | • 全量 pytest **243/243 PASS**（224 baseline + 12 query_rewriter_multi + 6 policy_service_multi + 1 YAML 配置测试）<br>• `ENABLE_MULTI_QUERY=False` 灰度基线：单路路径行为不变（grep 0 业务路径变化）<br>• eval_hitk.py `--multi-query` 接入完成，待真实流量验证 hit@K 提升幅度 |
+| **下一步可选** | • A5：Multi-Query 串行 → 并行（`asyncio.gather` + SSE 增量返回）<br>• A6：RRF 加权（按业务可信度给不同 query 变体打分）<br>• A7：HyDE（生成假设性答案作 embedding query）<br>• A8：Rerank 时机前移 → 融合后统一 rerank（全局重排） |
+
+---
+
 ## 4. 优先级与时间投入
 
 ### 4.1 阶段划分（与 §2 严重度对齐）

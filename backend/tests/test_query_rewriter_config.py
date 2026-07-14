@@ -139,6 +139,18 @@ class TestQueryRewriterPublicAPI:
         assert isinstance(query_rewriter.MAX_REWRITE_RATIO, int)
         assert isinstance(query_rewriter.MAX_REWRITE_EXTRA, int)
 
+    def test_multi_query_constants_loaded(self):
+        """Phase 4 A4: 3 个 Multi-Query 配置常量加载（YAML 默认值）。"""
+        from app.services import query_rewriter
+
+        # 启期加载一次；类型 + 默认值校验
+        assert isinstance(query_rewriter.ENABLE_MULTI_QUERY, bool)
+        assert query_rewriter.ENABLE_MULTI_QUERY is False  # YAML 默认 false（灰度）
+        assert isinstance(query_rewriter.MULTI_QUERY_COUNT, int)
+        assert query_rewriter.MULTI_QUERY_COUNT == 3
+        assert isinstance(query_rewriter.MULTI_QUERY_TRIGGER, str)
+        assert query_rewriter.MULTI_QUERY_TRIGGER == "coref_only"
+
     def test_coreference_patterns_is_compiled(self):
         """COREFERENCE_PATTERNS 是预编译 re.Pattern（启动期一次编译）。"""
         import re as _re

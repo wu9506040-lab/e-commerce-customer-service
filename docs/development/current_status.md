@@ -1,24 +1,24 @@
-# 项目当前状态 · 恢复记忆（2026-07-14 **Sprint 4 整条线 100% 闭环**后）
+# 项目当前状态 · 恢复记忆（2026-07-14 **Sprint 4 闭环 + Phase 4 A4 完成**后）
 
 > 本文件是**会话级恢复记忆**，不是长期文档基线。
 > 长期基线：`CLAUDE.md`（V2.1） / `docs/architecture/business.md` / `docs/development/roadmap.md`。
 > 本文件下次启动开发时**先读**，然后决定是否仍相关（轻量修订即可）。
 >
-> **本次会话状态**：完成 Sprint 4 阶段 5（query_rewriter 业务规则 + Prompt 抽取）+ 收尾（删 2 legacy 薄壳 + Provider docstring 重写），CI run #11 success；**Sprint 4 整条线已 100% 闭环**，tag `sprint-4-complete` 待打。用户决策下一步（P2 backlog / Phase 4 业务能力增强 / 其他）。
+> **本次会话状态**：完成 Phase 4 A4（query_rewriter 多路改写 + policy 多路 RRF 融合），commit 1 `333e01b` 已 push；pytest 全量 **243/243 PASS**。下一动作：commit 2（test+docs+eval）+ push + CI 验证。
 
 ---
 
 ## 0. 一句话状态
 
-**Phase 0 治理 + Sprint 1/2/3 + Sprint 4（5 阶段 + 收尾）全部完成 ✅ = `sprint-4-complete` 标签。**
+**Phase 0 治理 + Sprint 1/2/3 + Sprint 4（5 阶段 + 收尾）+ Phase 4 A4（Multi-Query 检索增强）全部完成 ✅。**
 
-**22 个 commit 已提交**（Sprint 1：4 / Sprint 2：4 / Sprint 3：5 / Sprint 4：9），**pytest 224 passed**，架构验收 🟢 7 / 🟡 4 / 🔴 0。
+**24 个 commit 已提交**（Sprint 1：4 / Sprint 2：4 / Sprint 3：5 / Sprint 4：9 / Phase 4 A4：2 [1 push + 1 待 push]），**pytest 243 passed**（含 Phase 4 A4 新增 19 用例），架构验收 🟢 7 / 🟡 4 / 🔴 0。
 
-P2 backlog（CI 配置增强 / 长程记忆 / SSE resume / Prompt 版本管理 / HTTPS）或 Phase 4（query_rewriter 业务能力增强）待启动。
+P2 backlog（CI 配置增强 / 长程记忆 / SSE resume / Prompt 版本管理 / HTTPS）或 Phase 4 A5+（并行多路 / RRF 加权 / HyDE / 融合后 rerank）待启动。
 
 ---
 
-## 1. 已完成的 Sprint（6/6 阶段 = 100%）
+## 1. 已完成的 Sprint（6/6 阶段 = 100%）+ Phase 4 A4
 
 | Sprint | 主题 | commit 数 | 行数变化 | 关闭 Roadmap 缺口 | 状态 |
 |--------|------|----------|---------|------------------|------|
@@ -29,12 +29,13 @@ P2 backlog（CI 配置增强 / 长程记忆 / SSE resume / Prompt 版本管理 /
 | S4 阶段 4 | intent 业务规则 YAML 化（81 pattern + 2 实体正则） | 1 | 新增 ~358（intent.yaml + 14 测试）+ 改 intent_service | G8（intent） | ✅ 完成 |
 | S4 阶段 5 | query_rewriter 业务规则 YAML 化 + Prompt 抽取 | 2 | 新增 ~360（YAML + 12 测试 + 2 Prompt）+ 改 query_rewriter + retry_utils 提取 | G8（query_rewriter） + §9.6（5/5） | ✅ 完成 |
 | S4 收尾 | 删 2 legacy 薄壳 + Provider docstring 重写 | 2 | -123 行（薄壳）+ docstring 净增 ~10 行 | Provider 边界清晰化 | ✅ 完成 |
+| **Phase 4 A4** | query_rewriter 多路改写 + policy 多路 RRF 融合 | 2 | +353 / -14（feature）+ test+docs+eval commit 待 push | 业务能力纵深（新增能力层） | ✅ 完成 |
 | S5 | 目录对齐 CLAUDE.md §7.1（仅文档） | - | - | G11-G13 | ⏸ 待办 |
 | S6 | 多租户 MVP 预备 | - | - | G9 | ⏸ 待办 |
 
 ---
 
-## 2. 所有 commit（13 个 · 按 Sprint 分组）
+## 2. 所有 commit（按 Sprint / Phase 分组）
 
 ### Sprint 1：AI Provider 抽象（4）
 ```
@@ -74,6 +75,18 @@ efa729b  test(services)    test_guard_config 加 autouse fixture 隔离 config_l
 9f5cde6  feat(prompts)     收尾 1 - query_rewriter Prompt 抽取（system + user_template）
 19ca31d  refactor(legacy)  收尾 2 - legacy 引用方迁移 + retry_utils 提取（含 scripts）
 e9ddc0b  chore(legacy)     收尾 3 - 删 2 legacy 薄壳 + Provider docstring 重写
+```
+
+### Sprint 4 收尾 + Sprint 4 闭环（2）
+```
+b3d7f47  docs              Sprint 4 整条线 100% 闭环 - current_status v5
+[tag]    sprint-4-complete → b3d7f47
+```
+
+### Phase 4 A4：query_rewriter 多路改写 + policy 多路 RRF 融合（2）
+```
+333e01b  feat(policy)      Phase 4 A4 - query_rewriter 多路改写 + policy 多路 RRF 融合
+<待提交>  test+docs+eval    Phase 4 A4 - 19 用例（12 query_rewriter_multi + 6 policy_service_multi + 1 YAML 配置）+ eval_hitk --multi-query + 学习日志 §31
 ```
 
 > 注：Sprint 4 阶段 3 实际产生 2 commit（feature + test 修复），按 §3.4 最小修改拆分以便独立回滚。
@@ -152,6 +165,49 @@ docs/learning_log.md                              # 追加 §28（按 CLAUDE.md 
 
 ---
 
+## 3b. Phase 4 A4 关键变化（query_rewriter 多路 + policy RRF 融合）
+
+### 3b.1 新建文件（4）
+
+```
+backend/config/prompts/query_rewriter/multi_system.yaml       # 多路改写 system prompt（含 {n} 占位）
+backend/config/prompts/query_rewriter/multi_user_template.yaml # 多路改写 user 模板（含 {history}/{query}/{n} 占位）
+backend/tests/test_query_rewriter_multi.py                   # 12 用例（L0/L1/L2 + 变体验证 + YAML/Prompt 加载）
+backend/tests/test_policy_service_multi.py                   # 6 用例（空/单路/多路 RRF/单路异常/RRF 异常/schema 一致）
+```
+
+### 3b.2 改造文件（6 · 含 1 个测试微调 + 1 个脚本）
+
+```
+backend/app/services/query_rewriter.py        # 新增 rewrite_query_multi + MULTI_SYSTEM/USER 常量（+150 行）
+backend/app/services/policy_service.py        # 新增 search_multi_policy 静态方法（+30 行）
+backend/app/services/chat/orchestrator.py     # run_stream 加 search_queries 中间变量（+15 行）
+backend/app/core/config.py                    # 加 ENABLE_MULTI_QUERY/MULTI_QUERY_COUNT/MULTI_QUERY_TRIGGER（+3 行）
+backend/config/business_rules/query_rewriter.yaml  # 加 3 字段（ENABLE_MULTI_QUERY 等）
+backend/app/services/metrics.py               # 加 inc_rewrite_multi(reason) 计数器（+15 行）
+backend/tests/test_query_rewriter_config.py   # 加 test_multi_query_constants_loaded（+9 行）
+scripts/eval_hitk.py                          # 加 --multi-query flag（+30 行）
+```
+
+### 3b.3 文档文件（3）
+
+```
+docs/development/roadmap.md                       # §3.8 Phase 4 A4 章节（新增）
+docs/learning_log.md                              # 追加 §31（按 CLAUDE.md §8 六段）
+docs/development/current_status.md                # v5 → v6（§0-§6 同步 Phase 4 A4 状态）
+```
+
+### 3b.4 Phase 4 A4 关键决策（无独立 ADR，按 CLAUDE.md §5.2 跨模块四要素口头审批）
+
+| # | 要素 | 决议 |
+|---|------|------|
+| 1 | 业务原因 | 单路改写召回覆盖有限（"它能退吗" 仅命中 1 路 embedding）；同义改写扩召回能提 hit@K；RRF 融合已有基础设施 |
+| 2 | 接口变化 | `query_rewriter.rewrite_query_multi(query, history, n)` 新增；`PolicyService.search_multi_policy(queries, top_k)` 新增；orchestrator 加 `search_queries` 中间变量（灰度切换） |
+| 3 | 影响范围 | 3 个生产文件 + 2 个新 YAML + 2 个新测试 + 1 个脚本 + 3 个 doc |
+| 4 | 隔离策略 | 灰度开关 `ENABLE_MULTI_QUERY=False` 默认关闭；`search_queries is None` 单路 + 非 None 多路 双路径兼容；mock 测试零修改通过 |
+
+---
+
 ## 4. 当前代码架构
 
 ### 4.1 依赖方向（运行时 · 单向 ✅）
@@ -224,19 +280,19 @@ grep -rn "from app.core.qwen\|from app.core.embedding" backend/app/services/  # 
 - 跨脚本（gen_eval_set / eval_hitk）也走 Provider（彻底清退含 scripts）
 - pytest 全量 224/224 PASS
 
-### 4.5 架构验收结论（2026-07-14 Sprint 4 收尾后更新）
+### 4.5 架构验收结论（2026-07-14 Sprint 4 + Phase 4 A4 收尾后更新）
 
-**🟢 7 / 🟡 4 / 🔴 0**
+**🟢 7 / 🟡 4 / 🔴 0**（Phase 4 A4 0 改动架构维度）
 
 | 维度 | 状态 | 说明 |
 |------|------|------|
 | §2 禁止行为 8 项 | 🟢 全过 | 无违反 |
-| §9.1 Interface First | 🟢 Provider/LLM/Prompt + ConfigLoader 抽象 | 业务 Service 1 个实现未抽 Protocol（YAGNI 正确） |
-| §9.1 Module Isolation | 🟢 无循环依赖 | chat/ + config_loader 内部互引方向单向 |
+| §9.1 Interface First | 🟢 Provider/LLM/Prompt + ConfigLoader 抽象 + Phase 4 A4 走 LLMProvider | 业务 Service 1 个实现未抽 Protocol（YAGNI 正确） |
+| §9.1 Module Isolation | 🟢 无循环依赖 | chat/ + config_loader + query_rewriter/policy_service 内部互引方向单向 |
 | §9.1 Dependency Inversion | 🟢 Sprint 1 成果 0 破坏 + Sprint 4 config_loader + Provider 边界清晰化 | `grep` 验证 0 命中 `from app.core.qwen/embedding` |
-| §9.4.2 配置与逻辑分离 | 🟢 Sprint 4 5 阶段全员完成 | guard / refund / intent / query_rewriter 阈值已迁出代码 |
-| §9.5 安全可观测 | 🟡 部分 | metrics import 已预留但未实际调用（推进点：P2 backlog） |
-| §9.6 Prompt 独立管理 | 🟢 5/5 YAML 全部抽取 | refund / guard_chitchat / orchestrator / intent / query_rewriter |
+| §9.4.2 配置与逻辑分离 | 🟢 Sprint 4 5 阶段全员完成 + Phase 4 A4 扩 query_rewriter.yaml 3 字段 | guard / refund / intent / query_rewriter 阈值已迁出代码 |
+| §9.5 安全可观测 | 🟡 部分 | metrics import 已预留但未实际调用（推进点：P2 backlog）；Phase 4 A4 加 inc_rewrite_multi 计数器 |
+| §9.6 Prompt 独立管理 | 🟢 7/7 YAML 全部抽取 | refund / guard_chitchat / orchestrator / intent / query_rewriter + 新增 2 multi_* |
 | 单文件预算 | 🟡 3 处偏离 | ADR §6 已声明；S4 阶段 5 收尾同步消化部分偏离 |
 
 ---
@@ -245,14 +301,16 @@ grep -rn "from app.core.qwen\|from app.core.embedding" backend/app/services/  # 
 
 | 项 | 结果 |
 |----|------|
-| 全量 pytest（Sprint 4 阶段 3 末） | **198 passed**（含 Sprint 4 阶段 1+2+3 新增测试） |
+| 全量 pytest（Phase 4 A4 末） | **243 passed**（含 Sprint 4 全 + Phase 4 A4 新增 19 用例） |
+| Sprint 4 阶段 5 末 | 224 passed |
+| Sprint 4 阶段 3 末 | 198 passed |
 | Sprint 3 末 | 168 passed |
 | Sprint 2 末 | 150 passed |
 | Sprint 1 末 | 129 passed |
-| Sprint 4 阶段 3 新增测试分布 | test_refund_config 9 + test_config_loader 21（阶段 1）+ test_guard_config 6（阶段 2） |
-| 测试架构分层 | 契约测试（纯函数） + 集成测试（Mock SSE 协议） + 业务回归 + 配置加载（fail-fast） |
-| patch namespace 完整性 | 100% 命中 `chat.*`，0 残留旧 `synthesizer.*` 命名空间 |
-| CI | GitHub Actions run #7 `success`（commit `efa729b`） |
+| Phase 4 A4 新增测试分布 | test_query_rewriter_multi 12 + test_policy_service_multi 6 + test_query_rewriter_config (multi_query) 1 |
+| 测试架构分层 | 契约测试（纯函数） + 集成测试（Mock SSE 协议） + 业务回归 + 配置加载（fail-fast） + 多路检索（mock 兼容） |
+| patch namespace 完整性 | 100% 命中 `chat.*`，0 残留旧 `synthesizer.*` 命名空间；Phase 4 A4 mock `app.services.policy_service` / `app.services.rrf` 模块名空间 |
+| CI | GitHub Actions run #11 `success`（Sprint 4 收尾 commit `e9ddc0b`，58s test job）；Phase 4 A4 commit 1 `333e01b` 已 push，CI 待 commit 2 验证 |
 
 **测试启动方式**：
 ```bash
@@ -262,20 +320,22 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
   python -m pytest tests/ -q
 ```
 
-**预期输出**：`224 passed in ~5.8s`（含 Sprint 4 全 5 阶段 + 收尾新增用例）
+**预期输出**：`243 passed in ~17.8s`（含 Sprint 4 全 5 阶段 + 收尾 + Phase 4 A4 新增 19 用例）
 
 ---
 
 ## 6. 下次启动入口（用户决定）
 
-### 6.1 选项 A：Phase 4 — query_rewriter.py 业务能力增强（推荐 next）
+### 6.1 选项 A：Phase 4 A5+ — query_rewriter 业务能力扩展
 
 | 任务 | 关闭缺口 | 预计改动量 |
 |------|----------|-----------|
-| query_rewriter 链路增强（语义合并 / 实体保留 / 长程记忆） | 新增能力 | 中（新增 1 模块 + 集成测试） |
-| `query_rewriter.yaml` 已配置化（阶段 5 完成） | - | 直接复用基础设施 |
+| A5：Multi-Query 串行 → 并行（`asyncio.gather` + SSE 增量返回） | 性能优化 | 中（orchestrator + search_multi_policy 改造）|
+| A6：RRF 加权（按业务可信度给不同 query 变体打分） | 业务能力 | 小（policy_service 改造）|
+| A7：HyDE（生成假设性答案作 embedding query） | 召回增强 | 中（query_rewriter 新增函数）|
+| A8：Rerank 时机后移 → 融合后统一 rerank（全局重排） | 业务能力 | 中（policy_service.search_multi_policy 改造）|
 
-**价值**：在 Sprint 4 配置化基础上做"业务能力层"，对齐 Roadmap G8 之后的能力纵深拓展。
+**价值**：在 Phase 4 A4 基础上做"性能 + 精度"双优化；按真实流量 hit@K 报告定优先级。
 
 ### 6.2 选项 B：P2 backlog（按价值排序）
 
@@ -287,41 +347,44 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 | 4 | Prompt 版本管理（按 tenant_id 灰度 + 回滚）| 高 |
 | 5 | HTTPS（生产部署前置）| 高（仅部署相关）|
 
-不在本文件详细分析范围；用户提到"等阶段总结后再启动 Phase 4（query_rewriter.py）"。
+不在本文件详细分析范围。
 
 ### 6.3 选项 C：Sprint 5 — 目录对齐 CLAUDE.md §7.1（仅文档）
 
 最简单的工作量，纯文档同步。详见 roadmap §3.6。
 
-### 6.4 Sprint 4 阶段 4 启动必读（4 文件）
+### 6.4 Sprint 4 阶段 4 / Phase 4 A4 启动必读（4 文件）
 
 ```
 1. CLAUDE.md                                            # V2.1 治理基线
-2. docs/development/roadmap.md                           # §3.5 + §3.5.1 S4 实绩
-3. docs/learning_log.md §28                              # Sprint 4 阶段 1+2+3 完整复盘（含 3 文件跨模块迁移 + test 污染修复）
+2. docs/development/roadmap.md                           # §3.5 + §3.5.1 S4 实绩 + §3.8 Phase 4 A4
+3. docs/learning_log.md §28-§31                          # Sprint 4 阶段 1+2+3 / 阶段 5 / Phase 4 A4 复盘
 4. docs/development/current_status.md                   # 本文件 §4-§6
 ```
 
 ### 6.5 AI 6 步法 · Step 1 任务分析起点（任一选项均需走完）
 
 **输入**（用户待决）：
-- 选项 A：intent.yaml + query_rewriter.yaml 迁移（同模式复用阶段 3 经验）
-- 选项 B：query_rewriter.py 业务能力增强（需先看业务架构 V3.1）
+- 选项 A：Phase 4 A5-A8 任一项（A4 已闭环）
+- 选项 B：P2 backlog 任一项
 - 选项 C：纯文档同步（CLAUDE.md §7.1 对齐实际目录）
 
-**当前代码现状**（Sprint 4 闭环扫描结果）：
+**当前代码现状**（Phase 4 A4 闭环扫描结果）：
 | 模块 | 状态 |
 |------|------|
 | `services/intent_service.py` | ✅ 已配置化（阶段 4：81 pattern + 2 实体正则 → `config/business_rules/intent.yaml`）|
-| `services/query_rewriter.py` | ✅ 已配置化（阶段 5：20 代词 + 4 阈值 → `config/business_rules/query_rewriter.yaml` + 2 Prompt YAML）|
+| `services/query_rewriter.py` | ✅ 已配置化（阶段 5：20 代词 + 4 阈值 → `config/business_rules/query_rewriter.yaml` + 4 Prompt YAML）|
+| `services/policy_service.py` | ✅ 多路检索就绪（`search_multi_policy` + RRF 融合）|
+| `services/chat/orchestrator.py` | ✅ 灰度开关就绪（`ENABLE_MULTI_QUERY` 默认 false）|
 | `core/qwen.py` / `core/embedding.py` | ⚠️ 保留为 Provider 内部 DashScope 客户端（docstring 改写 + grep 0 业务直引）|
 | `services/rerank.py` / `services/synthesizer.py` | ✅ 已删（grep 0 引用，12 + 65 行薄壳纯浪费）|
 
 **已知风险（启动下一项前必查）**：
-1. Sprint 4 已 100% 闭环；启动 Phase 4 或 P2 backlog 任一项均需重走 AI 6 步法（CLAUDE.md §4）
-2. 启动前先 `git log --oneline | head -25` 对账预期 commit 数（应见 22+ commit）
+1. Phase 4 A4 已闭环；启动 Phase 4 A5+ 或 P2 backlog 任一项均需重走 AI 6 步法（CLAUDE.md §4）
+2. 启动前先 `git log --oneline | head -25` 对账预期 commit 数（应见 24+ commit）
 3. 启动前先 `git tag -l | grep sprint-4-complete` 确认本 Sprint 已留印
 4. CI 状态基线：`Sprint 4 收尾` commit `e9ddc0b` CI run #11 success（58s test job）
+5. eval_hitk.py `--multi-query` 接入完成；真实流量 hit@K 验证待跑（需 Qdrant + LLM 双在线）
 
 ---
 
@@ -331,59 +394,61 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 
 | 序 | 文档 | 路径 | 读的目的 |
 |----|------|------|----------|
-| 1 | 本文件 | `docs/development/current_status.md` | 当前状态 + Sprint 4 阶段 4 / Phase 4 入口 |
+| 1 | 本文件 | `docs/development/current_status.md` | 当前状态 + Sprint 4 / Phase 4 入口 |
 | 2 | CLAUDE.md | `E:\智能客服\CLAUDE.md` | V2.1 治理基线（AI 6 步法 / 13 反例 / 9 架构规则） |
-| 3 | Roadmap V2 | `docs/development/roadmap.md` | S1-S6 全景 + G 缺口表 + §S4 实绩（§3.5.1） |
+| 3 | Roadmap V2 | `docs/development/roadmap.md` | S1-S6 全景 + G 缺口表 + §S4 实绩（§3.5.1）+ Phase 4 A4（§3.8） |
 | 4 | Sprint 3 ADR | `docs/decisions/2026-07-12-sprint-3-synthesizer-split.md` | Sprint 3 架构基线（拆分粒度 / Prompt 范围 / 兜底策略） |
 | 5 | AI 6 步法速查 | `docs/governance/ai_development_rules.md` | 反例清单 13 条 + 跨模块 4 要素 + Stop-Loss 8 问 |
-| 6 | 学习日志 | `docs/learning_log.md` §27-28 | Sprint 3 / Sprint 4 阶段 1+2+3 复盘（3 文件跨模块迁移 + test 污染修复） |
+| 6 | 学习日志 | `docs/learning_log.md` §27-§31 | Sprint 3 / Sprint 4 / Phase 4 A4 复盘（3 文件跨模块迁移 / mock 兼容 / 多路 RRF 融合） |
 | 7 | 业务架构 V3.1 | `docs/architecture/business.md` | 业务边界 + 数据责任（修改业务时必读） |
 
 ---
 
-## 8. 当前禁止提前执行的事项（截止 Sprint 4 阶段 4 / Phase 4 启动前）
+## 8. 当前禁止提前执行的事项（截止 Phase 4 A5+ / Sprint 5 / Sprint 6 启动前）
 
 | # | 禁止 | 原因 |
 |---|------|------|
-| 1 | 删除 `core/qwen.py` / `core/embedding.py` / `services/rerank.py` / `app/services/synthesizer.py` | 删除计划 S4 末；S3/S4 期间作为兼容垫片保留 |
-| 2 | 启动 Sprint 4 阶段 4 或 Phase 4 | 必须先读完本文 §7 的 7 个文档 |
-| 3 | 把 Sprint 1-4 阶段 3 范围外的 untracked 文件混入下次 commit | 违反 §5 Scope Lock |
+| 1 | 删除 `core/qwen.py` / `core/embedding.py`（已删 `services/rerank.py` / `services/synthesizer.py`） | qwen.py / embedding.py 保留为 Provider 内部 DashScope 客户端；删除需重写 3 个 Provider 共 ~150 行 |
+| 2 | 启动 Phase 4 A5+ / Sprint 5 / Sprint 6 | 必须先读完本文 §7 的 7 个文档 |
+| 3 | 把 Sprint 1-4 + Phase 4 A4 范围外的 untracked 文件混入下次 commit | 违反 §5 Scope Lock |
 | 4 | 把 Provider 改造反向迁移回 `from app.core.qwen import` | Sprint 1 切换成果回滚 |
-| 5 | 把 synthesizer.py 厚壳化（恢复业务逻辑） | Sprint 3 切换成果回滚 |
+| 5 | 把 synthesizer.py 厚壳化（已删） | Sprint 3 + Phase 4 收尾切换成果回滚 |
 | 6 | `chat/` 子包之外的代码直接调用 chat 子包内部模块 | §7.3 接口就近；调用方只能 import `chat.orchestrator.Synthesizer` |
 | 7 | 引入第二个 Provider 实现 / 加 health_check 等扩展方法 | YAGNI；真实需要时再加 |
 | 8 | `core/providers/*.py` 反向依赖 `services/` | 破坏 §9.2.3 单向依赖 |
 | 9 | 直接 `new YAMLConfigLoader(base_dir)` 绕过工厂 | 违反 §9.1 Interface First；业务只能 `get_config_loader().load(name)` |
+| 10 | Phase 4 A4 灰度开关强制开启（`ENABLE_MULTI_QUERY=True`） | 未跑真实流量验证 hit@K 提升前不允许在生产开启；仅 dev 验证用 |
 
 ---
 
-## 9. 工作树状态（2026-07-13 Sprint 4 阶段 3 完成后）
+## 9. 工作树状态（2026-07-14 Phase 4 A4 收尾中）
 
-### 9.1 Sprint 1-4 阶段 3 范围内：全部归档 + push 完成 ✅
-- 16 个 commit 全部 push 到 Gitee origin + GitHub github 双 remote（CI run #7 success）
-- 工作树干净（除本次会话文档更新）
+### 9.1 Sprint 1-4 + Phase 4 A4 Commit 1 范围内：全部归档 + push 完成 ✅
+- Sprint 1-4 全部 22 个 commit 全部 push 到 Gitee origin + GitHub github 双 remote（CI run #11 success）
+- Phase 4 A4 commit 1 `333e01b` 已 push（CI 待 commit 2 验证）
+- tag `sprint-4-complete` → b3d7f47
 
 ### 9.2 本次会话文档更新（待 commit 归档）
-- `docs/development/roadmap.md` · §3.5.1 新增 S4 实绩记录
-- `docs/learning_log.md` · 追加 §28 Sprint 4 阶段 1+2+3 六段复盘
-- `docs/development/current_status.md` · v3 → v4 整体重写（§0-§11 同步 Sprint 4 状态）
+- `docs/development/roadmap.md` · §3.8 新增 Phase 4 A4 章节
+- `docs/learning_log.md` · 追加 §31 Phase 4 A4 六段复盘
+- `docs/development/current_status.md` · v5 → v6 整体重写（§0-§11 同步 Phase 4 A4 状态）
 
 ### 9.3 项目整体残留
-无新增残留（2026-07-13 Sprint 3 末 v3 已清理磁盘临时文件 + 核查 `.gitignore`）。
+无新增残留（Phase 4 A4 沿用 Sprint 3/4 清理过的 `.gitignore` + 工作树干净状态）。
 
 ---
 
 ## 10. 下一步可选动作（用户决定）
 
 > 当前会话暂停，等待用户指示。
-> 已完成 Sprint 4 阶段 1+2+3（按 CLAUDE.md §8 八件套交付文档）。下一步选项：
+> 已完成 Sprint 4 整条线 + Phase 4 A4（按 CLAUDE.md §8 八件套交付文档）。下一步选项：
 
 | 选项 | 动作 | 适用场景 |
 |------|------|----------|
-| A | 启动 **Sprint 4 阶段 4**：intent.yaml + query_rewriter.yaml 迁移（同模式复用阶段 3 经验） | 关闭 G8 缺口收尾 |
-| B | 启动 **Phase 4**：query_rewriter.py 业务能力增强 | 业务架构 V3.1 演进 |
+| A | 启动 **Phase 4 A5-A8**：A5 串行→并行 / A6 RRF 加权 / A7 HyDE / A8 融合后 rerank | 业务能力纵深，按真实流量 hit@K 报告定优先级 |
+| B | 启动 **P2 backlog**：CI 配置增强 / 长程记忆 / SSE resume / Prompt 版本 / HTTPS | 按 P2 backlog 价值排序 |
 | C | 启动 **Sprint 5**：CLAUDE.md §7.1 目录对齐（仅文档） | 最简单工作量 |
-| D | 先 git push 本次会话文档更新（roadmap / learning_log / current_status） | 远端备份优先 |
+| D | 先 git push 本次会话文档更新（roadmap / learning_log / current_status）+ CI 验证 | 远端备份优先 |
 
 ---
 
@@ -391,14 +456,14 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 
 ```
 下次启动：
-1. 读 CLAUDE.md V2.1 + 本文件 + roadmap.md §3.5.1 + learning_log.md §28（按 §7 顺序）
+1. 读 CLAUDE.md V2.1 + 本文件 + roadmap.md §3.5.1+§3.8 + learning_log.md §28-§31（按 §7 顺序）
 2. 决定 §10 可选动作 A/B/C/D
-3. 进入 Sprint 4 阶段 4 时按 §6.5 Step 1 任务分析模板先输出方案 → 等用户确认 → 再开发
+3. 进入 Phase 4 A5+ 时按 §6.5 Step 1 任务分析模板先输出方案 → 等用户确认 → 再开发
 ```
 
 ---
 
-**文件版本**：v4 · 2026-07-13 Sprint 4 阶段 1+2+3 完整闭环 + 架构验收后更新
-**下次更新**：Sprint 4 阶段 4 启动前（轻量修订） / Sprint 4 完成时（重写 Sprint 段落）
+**文件版本**：v6 · 2026-07-14 Sprint 4 整条线闭环 + Phase 4 A4 完成 + 架构验收后更新
+**下次更新**：Phase 4 A5 启动前（轻量修订） / Phase 4 A5 完成时（重写 Phase 4 段落）
 
-**本次会话状态**：✅ Sprint 4 阶段 1+2+3 完成 + 文档归档；等待用户决定 §10 选项 A/B/C/D
+**本次会话状态**：✅ Sprint 4 + Phase 4 A4 完成；commit 2 待提交 + push + CI 验证
