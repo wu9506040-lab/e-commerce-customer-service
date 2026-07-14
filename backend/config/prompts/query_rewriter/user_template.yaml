@@ -1,0 +1,15 @@
+# Sprint 4 收尾 · query_rewriter User Template
+# 加载入口：app.services.prompt_loader.get_prompt_loader().load("query_rewriter/user_template")
+# 启动期 mtime 缓存加载；改完下次 load 自动生效（prompt_loader 热更新）
+#
+# 用途：query_rewriter.rewrite_query 调 LLM 时的 user prompt 模板，
+#       含 {history} {query} 两个 .format() 占位符（运行时注入）。
+#
+# Sprint 4 严格"仅迁移位置不改字"（从 query_rewriter.py 原 REWRITE_USER_TEMPLATE）。
+content: |
+  对话历史：
+  {history}
+
+  当前问题：{query}
+
+  改写后：
