@@ -323,6 +323,27 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 | **验证** | • 全量 pytest **270/270 PASS**（243 baseline + 27 profile_service）<br>• `ENABLE_USER_PROFILE=False` 灰度基线：现有测试零修改通过（profile_block 始终空串，context_block 行为不变）<br>• dev DB 需手工跑 `02_user_profiles.sql`（deploy init 仅 fresh DB 触发）；生产部署后自动建表 |
 | **下一步可选** | • profile 自动摘要脚本（LLM 抽每 24h 1 次）<br>• 用户自助隐私删除 UI（profile_service.clear() 已就位）<br>• admin 后台画像查看（聚合 + 单用户）<br>• 租户级画像（Sprint 6 多租户 MVP 后扩） |
 
+### 3.10 Sprint 5 阶段 1 — Prompt 版本管理（manifest 模式 + 兼容模式）（P2 backlog 第 3 项 · 基础机制）
+
+> **状态**：✅ 完成（2026-07-14，1 feat + 1 test+docs commit）
+> **ADR**：未独立创建（单模块改动 + 用户确认 MVP 边界）
+> **学习日志**：`docs/learning_log.md §33`
+> **MVP 边界（用户拍板）**：保留 version 机制 / 暂缓 rollout 灰度 / 暂缓 6 YAML 全量迁移 / 灰度作为后续阶段
+
+| 项     | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+|--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **目标** | 在 Sprint 2 prompt_loader 基础上加**多版本管理**：manifest 模式（`default_version` + `versions` 字典）+ 兼容模式（旧 YAML 自动当 v1）+ 总开关（`ENABLE_PROMPT_VERSIONING` 默认 false）。灰度（traffic_ratio / hash）作为 Sprint 5 后续阶段。                                                                                                                                                                                                                                                                                            |
+| **范围（实绩）** | • `YAMLPromptLoader.load(name, version=None)` 接口扩展（向后兼容，现有调用方零修改）<br>• Manifest 模式：`default_version` + `versions` 字典（每个 version 引用外部 `file` 或内联 `content`）<br>• 兼容模式：旧 YAML（无 `versions` 字段）自动当 v1，显式指定 v2 抛 `PromptVersionError`<br>• 缓存升级：key 从 `name` 改为 `(name, version)` tuple；mtime 取 `max(manifest, 内容文件)`<br>• `PromptVersionError` 异常类（带 name / version / reason + 可用版本列表）<br>• `agent.yaml` 改造为 manifest 示范（v1 + v2 两版本）<br>• 16 测试（5 类） |
+| **不范围（YAGNI §3.3）** | • **不做 traffic_ratio 灰度**（用户拍板后续阶段）<br>• **不做 hash_key 分配**（同上）<br>• **不做其他 5 个 YAML 全量迁移**（no_login / query_rewriter/*）→ 保持旧 YAML 走兼容模式<br>• **不做多租户 prompt 覆盖**（Sprint 6 同步）<br>• **不做 DB 存储**（V3+ 评估）<br>• **不做 Prompt Editor UI**（V3+ 评估）<br>• **不做嵌套 include**（manifest 只支持 1 层 file 引用）<br>• **不做"列出所有可用 version"API**（load 时通过 PromptVersionError 间接知道有哪些） |
+| **新建** | `backend/config/prompts/agent_v1.yaml`（v1 内容，从原 agent.yaml 拆出）<br>`backend/config/prompts/agent_v2.yaml`（v2 实验版，作为机制示范）<br>`backend/tests/test_prompt_loader_version.py`（16 用例：manifest 5 + content 3 + 兼容 3 + 缓存 2 + 异常 2 + mtime 1） |
+| **修改** | `backend/app/services/prompt_loader.py`（+85 行 · load 扩 version 参数 + manifest 解析 + 兼容模式 + 缓存升级）<br>`backend/app/core/config.py`（+5 行 · `ENABLE_PROMPT_VERSIONING` 总开关）<br>`backend/app/services/chat/prompt_assembler.py`（+2 行注释 · 现有调用零行为变化）<br>`backend/config/prompts/agent.yaml`（manifest 模式重写）<br>`backend/config/prompts/README.md`（manifest 模式 + 多版本管理章节） |
+| **关键设计决策** | • **MVP 边界用户拍板**：原方案 4 能力（manifest / 灰度 / 全量迁移 / Settings）→ 调整为只做基础机制 + 1 个示范；避免过度设计<br>• **向后兼容**：version=None 默认参数；现有 6 处调用全部不传 = 行为零变化<br>• **mtime max 合并**：缓存 mtime 取 `max(manifest_mtime, version_file_mtime)`，任意文件改动触发重读<br>• **缓存 key 升 tuple**：`Dict[Tuple[str, str], ...]`，兼容模式用 `"__compat__"` 占位<br>• **兼容模式显式 v2 抛错**：避免"我以为我用 v2 实际是 v1"的静默回退坑<br>• **总开关默认 false**：`ENABLE_PROMPT_VERSIONING=False` 保证迁移期现有测试零侵入 |
+| **关闭缺口** | • **§9.6 Prompt 工程独立管理**（架构验收维度）：版本 + 回滚 + 多版本可管理 → 升级为完整满足<br>• **新增能力层**（不在原 G 缺口表）：A/B 实验 / Prompt 调优回滚 / 紧急下架 |
+| **验证** | • 全量 pytest **286/286 PASS**（270 baseline + 16 prompt_loader_version）<br>• 兼容模式：`no_login.yaml` 等 5 个旧 YAML 不修改即可继续走旧路径<br>• Manifest 模式：`agent.yaml` v1/v2 加载 + mtime 热更新验证通过 |
+| **Sprint 5 后续阶段** | • 阶段 2：`traffic_ratio` 灰度 + `hash_key` 分配（按需启动）<br>• 阶段 3：按需迁移剩余 5 个 YAML（no_login / query_rewriter/*）<br>• 阶段 4：多租户 prompt 覆盖（Sprint 6 同步）<br>• 阶段 5：DB 存储 + Prompt Editor UI（V3+ 评估） |
+
+---
+
 ---
 
 ## 4. 优先级与时间投入

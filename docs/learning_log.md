@@ -3718,3 +3718,114 @@ block = to_prompt_block(profile)
 - **隐私边界前置**：user_id=0（匿名）短路写在所有 5 个写函数里（不是顶层 if 判断），确保未来加新写函数时也能强制约束
 - **YAGNI 决策表的实际收益**：当想"加画像聚类 / 事件流"时，§3.3 决策表 + 强制写进 commit message 是有用的刹车（commit 1 已注明"YAGNI 边界：1 张表 + 1 个 service；不做事件流 / 派生画像 / 租户级"）
 
+---
+
+## 33. Sprint 5 阶段 1 — Prompt 版本管理（manifest 模式 + 兼容模式）（2026-07-14）
+
+### What（做了什么）
+
+Sprint 5 第一阶段：在 `prompt_loader` 上加多版本支持，建立"manifest + 兼容"双模式机制。
+
+- `YAMLPromptLoader.load(name, version=None)` 接口扩展
+- 解析 manifest 模式：`default_version` + `versions` 字典（每个 version 引用外部 file 或内联 content）
+- 兼容模式：旧 YAML（无 `versions` 字段）自动当单版本 `v1` 处理（不改一个字）
+- 缓存升级：key 从 `name` 改为 `(name, version)` tuple；mtime 取 `max(manifest, 内容文件)`
+- `PromptVersionError` 异常类（带 name / version / reason 属性 + 可用版本列表）
+- `ENABLE_PROMPT_VERSIONING` 总开关（默认 false，迁移期关闭 manifest 模式）
+- `agent.yaml` 改造为 manifest 示范（v1 + v2 两版本）
+- 16 个单测覆盖（5 类）
+
+### Why（为什么）
+
+Sprint 2 建的 prompt_loader 只支持单 YAML 单版本，业务想要做 A/B 实验 / Prompt 调优回滚 / 紧急下架某个 prompt 版本时完全没办法。本次先把"版本机制"立起来，灰度（traffic_ratio / hash）作为后续阶段按需迭代。
+
+YAGNI 决策（用户确认后采纳）：暂缓 rollout 灰度、暂缓 6 个 YAML 全量迁移、先做基础 version 能力 + 1 个 manifest 示范（agent）。这样 MVP 范围最小但能力闭环。
+
+### Tech（技术栈）
+
+| 项 | 值 |
+|----|----|
+| 加载器 | `YAMLPromptLoader`（基于 YAML + mtime 缓存） |
+| 新接口 | `load(name, version=None)` |
+| Manifest 字段 | `default_version` / `versions[].file` / `versions[].content` / `versions[].stable` / `versions[].note` |
+| 缓存 key | `(name, version)` tuple（兼容模式 `version="__compat__"`） |
+| 异常体系 | `PromptVersionError → PromptError` |
+| 总开关 | `settings.ENABLE_PROMPT_VERSIONING: bool = False` |
+| 测试 | 16 用例（manifest 5 + content 3 + 兼容 3 + 缓存 2 + 异常 2 + mtime 1） |
+| 改动范围 | prompt_loader.py（增 ~80 行）+ config.py（+3 行）+ agent.yaml 3 个文件 + 测试 16 用例 + README |
+
+### Flow（输入 → 输出）
+
+```python
+# 1. 兼容模式（旧 YAML：no_login.yaml）
+loader.load("no_login")
+# → 读 no_login.yaml → 无 versions 字段 → 当 v1 处理 → 返 content
+
+# 2. Manifest 模式（agent.yaml）
+loader.load("agent")
+# → 读 agent.yaml → 含 versions → 取 default_version=v1
+# → 读 agent_v1.yaml → 返 content
+
+loader.load("agent", version="v2")
+# → 读 agent.yaml → 含 versions → 取指定 v2
+# → 读 agent_v2.yaml → 返 content
+
+# 3. 不存在的 version
+loader.load("agent", version="v99")
+# → 抛 PromptVersionError("agent", "v99", "可用: v1, v2")
+```
+
+### Problem & Fix（问题 → 解决）
+
+| 问题 | 解决 |
+|------|------|
+| mtime 缓存用 manifest 文件 mtime，但只改内容文件时不刷新 | 缓存 mtime 取 `max(manifest_mtime, version_file_mtime)`，任意文件改动都触发重读 |
+| 缓存 key 是 `name`，manifest 模式下不同 version 冲突 | 升级为 `(name, version)` tuple；兼容模式用特殊值 `"__compat__"` |
+| 兼容模式（无 versions 字段）显式指定 `version="v2"` 时行为模糊 | 显式抛 `PromptVersionError("兼容模式仅支持 v1")`，避免静默回退到默认 |
+| 调用方全部要改签名才能支持 version？ | `version=None` 默认参数；现有 6 处调用全部不传 = 行为零变化（向后兼容） |
+| 6 个 YAML 全量迁移风险大 | 只迁移 1 个（agent.yaml），其余走兼容模式兜底；后续阶段按业务需要逐个迁移 |
+
+### Architecture Role（在系统中的位置）
+
+- **位置**：`app/services/prompt_loader.py`（业务依赖此抽象，不耦合实现）
+- **上游调用**：`prompt_assembler`（SYSTEM_PROMPT_BASE / NO_LOGIN_PROMPT）+ `query_rewriter` 等 5 处
+- **下游依赖**：文件系统（YAML）+ `core/config.py`（settings 总开关）
+- **§9.6 落实**：Prompt 独立管理（不在业务代码中硬编码）+ 版本可回滚 + 多版本可管理
+- **§9.4.2 配置分离**：业务规则已分离到 `config/business_rules/`（Sprint 4），本次 prompt 进一步支持多版本管理
+
+### Tests（测试方案）
+
+| 类 | 用例 |
+|----|------|
+| `TestManifestLoad` (5) | 默认版本 / 显式版本 / v1 == default / 不存在 version 抛错 / 缺 default_version 抛错 |
+| `TestManifestContent` (3) | 外部 file 加载 / 内联 content 加载 / 内联优先于 file |
+| `TestCompatMode` (3) | 旧 YAML 当 v1 / 显式 v1 / 显式 v2 抛错 |
+| `TestVersionedCache` (2) | v1 v2 缓存独立 / 兼容模式用 `__compat__` 缓存键 |
+| `TestPromptVersionError` (2) | 继承 PromptError / 属性完整 |
+| `TestMtimeReloadWithVersions` (1) | 改 v2 内容 → 下次 load 拿到新值 |
+
+验证：286/286 PASS（含 16 新增 + 270 既有）
+
+### Stage Progress（Sprint 5 路线图）
+
+- ✅ 阶段 1：基础 version 机制 + manifest 兼容（当前）
+- ⏸ 阶段 2：traffic_ratio 灰度（按 hash_key 分配）
+- ⏸ 阶段 3：按需迁移剩余 5 个 YAML（no_login / query_rewriter/*）
+- ⏸ 阶段 4：多租户 prompt 覆盖（S6 同步）
+- ⏸ 阶段 5：DB 存储 + Prompt Editor UI（V3+ 评估）
+
+### 已知限制
+
+- 灰度（traffic_ratio / hash 分配）未实现，本次只做了 version 选择；MVP 后才能按比例分配
+- 内联 content 与 file 引用不能混用（file 被忽略，只取 inline）；明确语义但容易踩坑
+- YAML manifest 不支持嵌套 include；版本引用只能是相对 prompts/ 目录的 file 路径
+- 没有"列出所有可用 version"的 API（只能 load 时指定 version 触发 PromptVersionError 才能知道有哪些）；后续可加 `list_versions(name)`
+
+### 反思（教训沉淀）
+
+- **MVP 边界靠用户拍板**：原方案设计了 4 个核心能力（manifest / 灰度 / 全量迁移 / Settings），用户调整为只做基础机制 + 1 个示范。AI 容易"过度设计"，让用户确认范围是有效刹车
+- **mtime 缓存粒度要够细**：第一版用 manifest mtime，导致改内容文件不刷新——发现得早（test_v2_content_change_picks_up 验证）；以后改任何带外部引用的缓存逻辑都要想"取谁的 mtime"
+- **兼容模式的语义边界**：旧 YAML 显式指定 `version="v2"` 时是抛错还是静默回退？选抛错（更明确，避免"我以为我用 v2 实际是 v1"的坑），但要给清晰错误信息
+- **缓存 key 升 tuple 不是免费的**：现有 `_cache` 类型注解从 `Dict[str, ...]` 改成 `Dict[Tuple[str, str], ...]` —— 测试里直接访问 `loader._cache` 验证 key 形式的用例能立刻发现这种变化
+- **"机制跑通"和"生产可用"的差距**：本次只做到了 manifest 加载 + 缓存 + 兼容，生产可用还需要：reload prompt 不重启服务（已有 mtime）、多实例同步（v2 阶段）、监控哪个版本被加载（v2 阶段）
+
