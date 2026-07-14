@@ -87,6 +87,10 @@ def get_client() -> OpenAI:
 # =============================================================
 # 可重试错误分类（白名单 + 黑名单）
 # =============================================================
+# Sprint 4 收尾：retry 分类与退避计算迁到 core/retry_utils.py
+# 本文件保留向后兼容垫片（_is_retryable / _calc_backoff 仍可被旧代码 / 旧测试引用）
+from app.core.retry_utils import is_retryable as _is_retryable, calc_backoff as _calc_backoff
+
 # 不可重试（业务错，重试无意义）：400 / 401 / 403 / 404
 _NON_RETRYABLE_EXCEPTIONS = (
     BadRequestError,        # 400
@@ -94,42 +98,6 @@ _NON_RETRYABLE_EXCEPTIONS = (
     PermissionDeniedError,  # 403
     NotFoundError,          # 404
 )
-
-
-def _is_retryable(e: Exception) -> bool:
-    """判断异常是否应该触发 retry
-
-    策略：
-    - 业务错（400/401/403/404）→ 不重试，立即抛
-    - 限流/服务端/网络错 → 重试
-    - 未知异常 → 默认重试（保守策略，宁可多 retry 也不丢用户问题）
-    """
-    if isinstance(e, _NON_RETRYABLE_EXCEPTIONS):
-        return False
-    # openai SDK 的异常体系
-    if isinstance(e, (RateLimitError, InternalServerError, APIConnectionError, APITimeoutError)):
-        return True
-    # 兜底：字符串匹配（兼容老版本 SDK / 第三方包装）
-    msg = str(e).lower()
-    retryable_signals = ("429", "rate limit", "限流", "500", "502", "503", "504",
-                         "timeout", "timed out", "connection", "reset", "unreachable")
-    if any(s in msg for s in retryable_signals):
-        return True
-    # 未知异常默认重试（保守）
-    return True
-
-
-def _calc_backoff(attempt: int, base_delay: float) -> float:
-    """计算第 N 次重试的等待时间：base * 2^attempt + 0-50% 抖动
-
-    例：base=1.0
-        attempt=0 → 1.0s + 0~0.5s 抖动
-        attempt=1 → 2.0s + 0~1.0s 抖动
-        attempt=2 → 4.0s + 0~2.0s 抖动
-    """
-    delay = base_delay * (2 ** attempt)
-    jitter = random.uniform(0, delay * 0.5)
-    return delay + jitter
 
 
 # =============================================================

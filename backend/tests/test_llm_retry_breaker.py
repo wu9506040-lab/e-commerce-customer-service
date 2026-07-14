@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def test_is_retryable_business_errors_no_retry():
     """场景 1：业务错（400/401/403/404）→ 不重试"""
-    from app.core.qwen import _is_retryable
+    from app.core.retry_utils import is_retryable as _is_retryable  # Sprint 4 收尾：从 retry_utils 重导出
 
     # 新版 openai SDK 需要 response=httpx.Response，传 MagicMock 即可（运行时不会真调）
     fake_resp = MagicMock()
@@ -48,7 +48,7 @@ def test_is_retryable_business_errors_no_retry():
 
 def test_is_retryable_transient_errors_yes_retry():
     """场景 2：瞬时错（429/5xx/timeout/connection）→ 重试"""
-    from app.core.qwen import _is_retryable
+    from app.core.retry_utils import is_retryable as _is_retryable  # Sprint 4 收尾：从 retry_utils 重导出
 
     fake_resp = MagicMock()
     fake_req = MagicMock()
@@ -66,7 +66,7 @@ def test_is_retryable_transient_errors_yes_retry():
 
 def test_is_retryable_unknown_exception_default_retry():
     """场景 3：未知异常默认重试（保守策略）"""
-    from app.core.qwen import _is_retryable
+    from app.core.retry_utils import is_retryable as _is_retryable  # Sprint 4 收尾：从 retry_utils 重导出
 
     class WeirdError(Exception):
         pass
@@ -79,7 +79,7 @@ def test_is_retryable_unknown_exception_default_retry():
 
 def test_calc_backoff_exponential_with_jitter():
     """场景 4：指数退避 + 50% 抖动"""
-    from app.core.qwen import _calc_backoff
+    from app.core.retry_utils import calc_backoff as _calc_backoff  # Sprint 4 收尾：从 retry_utils 重导出
 
     base = 1.0
     # attempt=0 → 1.0 ~ 1.5

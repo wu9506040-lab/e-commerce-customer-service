@@ -198,7 +198,7 @@ def test_hybrid_enabled_uses_vector_and_bm25():
         ]
 
         with patch("app.services.policy_service.qdrant_search", return_value=vector_hits), \
-             patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+             patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
              patch("app.services.bm25_index.bm25_search", return_value=bm25_hits):
 
             from app.services.policy_service import PolicyService
@@ -233,7 +233,7 @@ def test_hybrid_disabled_skips_bm25():
         ]
 
         with patch("app.services.policy_service.qdrant_search", return_value=vector_hits), \
-             patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+             patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
              patch("app.services.bm25_index.bm25_search") as mock_bm25:
 
             from app.services.policy_service import PolicyService
@@ -264,7 +264,7 @@ def test_bm25_failure_falls_back_to_vector():
         ]
 
         with patch("app.services.policy_service.qdrant_search", return_value=vector_hits), \
-             patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+             patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
              patch("app.services.bm25_index.bm25_search", side_effect=RuntimeError("Qdrant down")):
 
             from app.services.policy_service import PolicyService
@@ -316,9 +316,9 @@ def test_hybrid_then_rerank_chain():
             return sorted_cands[:top_n] if top_n else sorted_cands
 
         with patch("app.services.policy_service.qdrant_search", return_value=vector_hits), \
-             patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+             patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
              patch("app.services.bm25_index.bm25_search", return_value=bm25_hits), \
-             patch("app.services.rerank.rerank", side_effect=fake_rerank):
+             patch("app.core.providers.rerank.get_rerank_provider", return_value=MagicMock(rerank=MagicMock(side_effect=fake_rerank))):
 
             from app.services.policy_service import PolicyService
             results = PolicyService.search_policy("混合检索测试", top_k=3)

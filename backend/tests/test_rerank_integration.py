@@ -56,8 +56,8 @@ def test_rerank_enabled_uses_coarse_then_fine():
             return sorted_cands[:top_n] if top_n else sorted_cands
 
         with patch("app.services.policy_service.qdrant_search", return_value=fake_hits), \
-             patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
-             patch("app.services.rerank.rerank", side_effect=fake_rerank), \
+             patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
+             patch("app.core.providers.rerank.get_rerank_provider", return_value=MagicMock(rerank=MagicMock(side_effect=fake_rerank))), \
              patch("app.services.bm25_index.bm25_search", return_value=[]):  # 隔离 hybrid 路径
 
             from app.services.policy_service import PolicyService
@@ -96,15 +96,15 @@ def test_rerank_disabled_keeps_legacy_behavior():
 
         # 关键：rerank 不应被调用
         with patch("app.services.policy_service.qdrant_search", side_effect=fake_qdrant), \
-             patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+             patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
              patch("app.services.bm25_index.bm25_search", return_value=[]), \
-             patch("app.services.rerank.rerank") as mock_rerank:
+             patch("app.core.providers.rerank.get_rerank_provider") as mock_rerank_provider:
 
             from app.services.policy_service import PolicyService
             results = PolicyService.search_policy("运费险", top_k=3)
 
         # rerank 不能被调用
-        assert not mock_rerank.called, "USE_RERANK=false 时不应调 rerank"
+        assert not mock_rerank_provider.return_value.rerank.called, "USE_RERANK=false 时不应调 rerank"
         # 直接返回前 3 条（按 Qdrant 原始 cosine 排序）
         assert len(results) == 3
         assert [r["source"] for r in results] == ["policy_mock_0", "policy_mock_1", "policy_mock_2"]
@@ -132,8 +132,8 @@ def test_rerank_failure_falls_back_to_coarse():
             raise RuntimeError("Qwen API timeout")
 
         with patch("app.services.policy_service.qdrant_search", return_value=fake_hits), \
-             patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
-             patch("app.services.rerank.rerank", side_effect=fake_rerank_fail), \
+             patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
+             patch("app.core.providers.rerank.get_rerank_provider", return_value=MagicMock(rerank=MagicMock(side_effect=fake_rerank_fail))), \
              patch("app.services.bm25_index.bm25_search", return_value=[]):
 
             from app.services.policy_service import PolicyService
@@ -165,15 +165,15 @@ def test_small_corpus_skips_rerank():
         fake_hits = _make_qdrant_hits(2)
 
         with patch("app.services.policy_service.qdrant_search", return_value=fake_hits), \
-             patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+             patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
              patch("app.services.bm25_index.bm25_search", return_value=[]), \
-             patch("app.services.rerank.rerank") as mock_rerank:
+             patch("app.core.providers.rerank.get_rerank_provider") as mock_rerank_provider:
 
             from app.services.policy_service import PolicyService
             results = PolicyService.search_policy("运费险", top_k=5)
 
         # rerank 不应被调用（粗排不足 top_k 时跳过）
-        assert not mock_rerank.called, f"粗排 {len(fake_hits)} < top_k={5} 时不应 rerank"
+        assert not mock_rerank_provider.return_value.rerank.called, f"粗排 {len(fake_hits)} < top_k={5} 时不应 rerank"
         assert len(results) == 2
         print(f"PASS: 粗排 2 条 < top_k=5 → 不调 rerank（省 token）")
     finally:
@@ -186,14 +186,14 @@ def test_qdrant_returns_empty():
     from app.services.policy_service import PolicyService
 
     with patch("app.services.policy_service.qdrant_search", return_value=[]), \
-         patch("app.core.embedding.embed_text", return_value=[0.0] * 1024), \
+         patch("app.core.providers.embedding.get_embedding_provider", return_value=MagicMock(embed_text=MagicMock(return_value=[0.0] * 1024))), \
          patch("app.services.bm25_index.bm25_search", return_value=[]), \
-         patch("app.services.rerank.rerank") as mock_rerank:
+         patch("app.core.providers.rerank.get_rerank_provider") as mock_rerank_provider:
 
         results = PolicyService.search_policy("运费险", top_k=3)
 
     assert results == []
-    assert not mock_rerank.called
+    assert not mock_rerank_provider.return_value.rerank.called
     print(f"PASS: Qdrant 返空 → []，不调 rerank")
 
 
@@ -201,15 +201,15 @@ def test_embedding_failure_returns_empty():
     """场景 6：embed 失败 → 返空，不调 Qdrant 不调 rerank"""
     from app.services.policy_service import PolicyService
 
-    with patch("app.core.embedding.embed_text", side_effect=Exception("embedding API down")), \
+    with patch("app.core.providers.embedding.get_embedding_provider", side_effect=Exception("embedding API down")), \
          patch("app.services.policy_service.qdrant_search") as mock_qdrant, \
-         patch("app.services.rerank.rerank") as mock_rerank:
+         patch("app.core.providers.rerank.get_rerank_provider") as mock_rerank_provider:
 
         results = PolicyService.search_policy("运费险", top_k=3)
 
     assert results == []
     assert not mock_qdrant.called
-    assert not mock_rerank.called
+    assert not mock_rerank_provider.return_value.rerank.called
     print(f"PASS: embed 失败 → []，Qdrant/rerank 都不调")
 
 
