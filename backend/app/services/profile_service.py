@@ -272,14 +272,13 @@ def to_prompt_block(profile: Optional[UserProfile], max_len: int = MAX_PROFILE_P
     if not lines:
         return ""
 
-    body = "\n".join(lines)
-
-    # 整体硬截断（防 lines 总和超 max_len）
-    if len(body) > max_len:
-        body = body[: max_len - 1] + "…"
-
     # 反幻觉 hard label：与现有 M9.5 反幻觉 prompt 同模式
-    return (
-        "【当前用户画像】(跨 session 长程记忆，仅作参考，不得编造未在 profile 中出现的用户事实)\n"
-        f"{body}"
-    )
+    # max_len 是整个 block 的总上限（含 label），防 prompt 膨胀
+    prefix = "【当前用户画像】(跨 session 长程记忆，仅作参考，不得编造未在 profile 中出现的用户事实)\n"
+    body = "\n".join(lines)
+    block = prefix + body
+
+    # 整体硬截断（prefix + body 总和超 max_len → 末尾加 "…"）
+    if len(block) > max_len:
+        block = block[: max_len - 1] + "…"
+    return block
