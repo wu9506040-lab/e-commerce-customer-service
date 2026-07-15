@@ -46,7 +46,10 @@ async function loadConversations() {
     const data = await listConversations();
     conversations.value = data.conversations;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载会话失败';
+    // 后台刷会话列表失败不应弹错（用户视角：SSE Resume 后短暂离线导致的
+    // "Failed to fetch" 不应该把"消息未送达"或全局 error banner 给用户看）。
+    // 静默吞掉，下次 done 后或下次 user 操作自然重试。
+    console.warn('loadConversations 失败（静默）:', e);
   } finally {
     conversationsLoading.value = false;
   }
@@ -174,6 +177,26 @@ async function setAutoTitle(sessionId: string, firstUserText: string) {
 //   - 自动 resume 最多 1 次（同 stream_id；后端限 2 次，留 1 次给手动重试）
 //   - 失败 fallback：仅显示"消息未送达"，不暴露 AI 痕迹
 const MAX_AUTO_RESUME = 1;
+const RESUME_ONLINE_TIMEOUT_MS = 5000;
+
+/**
+ * 等待浏览器恢复联网（最多 5s）。
+ * 防止 offline→catch→立即 resume→又撞 offline 的死循环。
+ * 用户视角：网络抖动的常见模式（数百 ms 断网）静默恢复；超过 5s 真的没网才放弃。
+ */
+function waitForOnline(maxMs: number = RESUME_ONLINE_TIMEOUT_MS): Promise<boolean> {
+  if (typeof navigator === 'undefined' || navigator.onLine) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(navigator.onLine), maxMs);
+    const handler = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    window.addEventListener('online', handler, { once: true });
+  });
+}
 
 async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string }) {
   if (streaming.value) return;
@@ -195,8 +218,11 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
   streamingMeta.value = null;
   let fullAnswer = '';
   let capturedMeta: StreamEvent | null = null;
-  const startSessionId = currentSessionId.value;
-  const isFirstUserMessage = !startSessionId; // 新会话（无 sid）才设标题
+  // 新会话预生成 UUID：让后端复用作 session_id，
+  // 保证流中途断开时 resumeChat 能拿到 sid（不再受限于 done 事件）
+  const startSessionId =
+    currentSessionId.value ?? crypto.randomUUID().replace(/-/g, '');
+  const isFirstUserMessage = !currentSessionId.value; // 新会话才设标题
 
   // Sprint P2 / SSE Resume：本回合 stream_id + 最后 seq（catch 时用于续传）
   let streamId: string | undefined;
@@ -208,8 +234,9 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
     while (true) {
       let iter: AsyncGenerator<StreamEvent, void, void>;
       if (resumeAttempt === 0) {
-        iter = streamChat(text, startSessionId ?? undefined, ctx);
-      } else if (streamId && startSessionId && lastEventId !== undefined) {
+        iter = streamChat(text, startSessionId, ctx);
+      } else if (streamId && lastEventId !== undefined) {
+        // startSessionId 现在总是有效（新会话已预生成 UUID）
         iter = resumeChat(
           startSessionId,
           streamId,
@@ -281,17 +308,19 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
         return;
       } catch (streamErr) {
         // 流中断（reader 抛错 / 网络断开）
+        // 等网络恢复后再 resume（避免 offline → 立即 resume → 又撞 offline）
+        const backOnline = await waitForOnline();
         if (
+          backOnline &&
           resumeAttempt < MAX_AUTO_RESUME &&
           streamId &&
-          startSessionId &&
           lastEventId !== undefined
         ) {
           // 静默 resume：不显示任何提示，用户视角无感
           resumeAttempt++;
           continue;
         }
-        // 超限或无法 resume → 抛出给外层 catch
+        // 超限或无法 resume / 仍未恢复 → 抛出给外层 catch
         throw streamErr;
       }
     }

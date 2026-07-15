@@ -133,6 +133,7 @@ chat_response.json
 # 测试 payload（手工调试产物，仅根目录限定，不进项目）
 # =============================================================
 /cookies.txt
+/tests/manual/screenshots/
 /chat_unauth.json
 /chat_v3_test.json
 /chat_v3_path1.json

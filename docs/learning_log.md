@@ -3985,3 +3985,179 @@ P2 backlog 三项核心交付（CI、长程记忆、SSE resume）的最后一项
 - **Redis mock 的 import alias 陷阱**：`from X import Y as Z` 后，`Y` 和 `Z` 在目标模块里都是本地变量绑定；`patch("X.Y")` 不会影响已 import 走的 `Z`。测试需要 patch **所有**别名路径（`app.clients.redis_client.get_client` + `app.services.redis_store.redis_get`）
 - **resume_prefix 替换 vs 追加**：前端 catch 后 `streamingText.value = ''`（已清空），resume 返回的 prefix 必须**替换**而非追加。文档化和代码注释都强调这点，避免后人"想当然"用 `+=` 拼接
 
+---
+
+## 35. P2 / SSE Resume — AI 感知测试 5/5 PASS（2026-07-15）
+
+### What（做了什么）
+
+§34 闭环后端 SSE resume 链路（`test_resume_curl.py` PASS）后，补完**用户视角**验证：写 Playwright 半自动测试 `test_ai_perception.py`，5 个典型 query（政策/订单/商品/推荐/闲聊）跑一遍，模拟中途断网 → 自动 resume → 检查 UI 是否暴露任何"AI / 续传 / 网络中断"等技术痕迹。
+
+**核心问题**：纯后端 PASS 不等于"用户察觉不到 AI"。前端 catch → 自动 resume → 任何环节意外暴露技术概念（error banner / 调试日志 / "Failed to fetch"）都会让用户立刻意识到对面不是人。
+
+**测试结果**：5/5 PASS（阈值 4/5）。
+
+```
+PASS: 5/5
+  [PASS] policy:    len=212
+  [PASS] order:     len=138
+  [PASS] product:   len=72
+  [PASS] recommend: len=108
+  [PASS] chitchat:  len=28
+Final: PASS (need >= 4/5 to PASS)
+```
+
+### Why（为什么）
+
+V3.1 业务架构 §6 + `feedback_ai_disclosure_compliance.md` 反复强调：**AI 客服的拟人度是核心 KPI**，"聊天窗内降低 AI 感知"是合规边界下的最优解。任何带"AI / 续传 / 网络中断 / 补救"字眼的提示都立刻打破拟人度。
+
+§34 后端测试只能验证**链路完整**（checkpoint 写入 / resume 端点返 prefix），验证不了**用户视角无感**。这一关必须靠 Playwright 真实模拟断网 → 看 DOM。
+
+### Tech（技术栈）
+
+| 项 | 值 |
+|----|----|
+| 测试框架 | Playwright 1.59.0 async API |
+| 断网模拟 | `context.set_offline(True)` |
+| 终端判定 | DOM 轮询（`streaming-indicator` + 按钮文本 + `.error-banner`） |
+| AI 暴露词 | `network error / 网络中断 / 续传 / AI 正在 / 智能客服 / 正在补救 / 断网 / 重连 / stream / resume` |
+| 截图归档 | `tests/manual/screenshots/{02_before,03_after}_{scenario}.png` |
+| 用户账号 | `sse_test` / `sse_test_123`（playwright 用） |
+
+### Flow（输入 → 输出）
+
+```
+playwright 启动 → 登录 → 跳转 /chat
+    ↓
+5 个 query 顺序跑：
+  for scenario in [policy, order, product, recommend, chitchat]:
+    1. send_query（textarea.fill + press Enter）
+    2. await 1.5s（让流跑起来）
+    3. screenshot: 02_before_{scenario}.png
+    4. context.set_offline(True) → 模拟断网
+    5. await 2.0s（让 LLM 继续吐 token，但 fetch 已断开）
+    6. context.set_offline(False) → 恢复
+    7. DOM 轮询 30 * 0.5s = 15s max：
+       - 流结束（无 streaming-indicator + 按钮无"生成"字样）→ settled
+       - 出现 error banner → settled（也算"结束"）
+    8. screenshot: 03_after_{scenario}.png
+    9. 提取最后一个 .message.assistant 文本
+   10. 判定：PASS = 无 disclosure 词 AND 无 error banner AND 长度 ≥ 5
+    ↓
+汇总：PASS 数 ≥ 4/5 → 总 PASS
+```
+
+### Problem & Fix（问题 → 解决）
+
+测试从 0/5 → 1/5 → 2/5 → 5/5 PASS，过程中修了 3 个非平凡 bug：
+
+#### Bug 1：`loadConversations` 把网络错误暴露给用户（最隐蔽）
+
+**症状**：resume 后短暂仍 offline 期间，done 事件触发 `loadConversations()` → fetch 抛"Failed to fetch" → 被 catch 块**赋给全局 `error.value`** → 用户看到红色 error banner "Failed to fetch"。
+
+**根因**：`loadConversations` 与 `sendMessage` 共用同一个全局 `error.value`。但语义上前者是**后台刷新**（用户没主动操作），后者是**用户操作**（应给反馈）。
+
+**修复**：`loadConversations` 改成静默 catch（仅 console.warn），不再设全局 error：
+
+```typescript
+async function loadConversations() {
+  try {
+    const data = await listConversations();
+    conversations.value = data.conversations;
+  } catch (e) {
+    // 后台刷会话列表失败不应弹错（用户视角：SSE Resume 后短暂离线导致的
+    // "Failed to fetch" 不应该把"消息未送达"或全局 error banner 给用户看）。
+    // 静默吞掉，下次 done 后或下次 user 操作自然重试。
+    console.warn('loadConversations 失败（静默）:', e);
+  }
+}
+```
+
+**教训**：UI 层**操作语义**必须与**反馈语义**对齐。后台刷新（pull-to-refresh / 自动 sync / SSE 后 done 触发）失败应静默；用户主动操作（点击 / 提交）失败才显示错误。
+
+#### Bug 2：新会话无法 resume（最关键）
+
+**症状**：resume 触发条件 `streamId && startSessionId && lastEventId !== undefined` 在新会话（`currentSessionId === null`）永远不满足。
+
+**根因**：新会话的 session_id 是后端在 `done` 事件才返回的；用户视角"开始新对话 → 立即断网"场景下，前端没有 sid 可传给 `resumeChat`。
+
+**修复**：新会话预生成 UUID，本地替代：
+
+```typescript
+const startSessionId =
+  currentSessionId.value ?? crypto.randomUUID().replace(/-/g, '');
+```
+
+后端 `chat.py` 拿到 sid 后**复用**而非新建，保证 resume 链路通。
+
+**教训**：resume 协议设计要"前向兼容"——任何依赖 done 事件才能拿到的状态（如 session_id），必须**事先可获取**或**事后可重建**。否则 resume 在"还没拿到 sid 就断"的场景下天然不可用。
+
+#### Bug 3：resume 时机在 offline 窗口内（最微秒）
+
+**症状**：catch 立即 resume → fetch 仍 offline → 又抛错 → 浪费一次自动 resume 配额。
+
+**根因**：`set_offline(False)` 是异步生效，playwright 代码层面 resume 与 set_offline 之间没有 race-free 同步。
+
+**修复**：catch 后先 `waitForOnline()`（监听 window 'online' 事件 + 5s 超时兜底）再决定是否 resume：
+
+```typescript
+async function waitForOnline(maxMs = 5000): Promise<boolean> {
+  if (navigator.onLine) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(navigator.onLine), maxMs);
+    const handler = () => { clearTimeout(timer); resolve(true); };
+    window.addEventListener('online', handler, { once: true });
+  });
+}
+```
+
+**教训**：网络断流恢复不是立即生效的，`offline → online` 之间存在亚秒级窗口。任何"断流后立即 retry"的逻辑都该先 await online 事件 / navigator.onLine。
+
+### Architecture Role（在系统中的位置）
+
+- **位置**：仅 `ChatPage.vue`（前端单模块），不触任何后端
+- **依赖**：浏览器 `navigator.onLine` API + `crypto.randomUUID()`（现代浏览器原生）
+- **§9.7 自检 5 问**：
+  1. 无 A→B 直接 import（ChatPage 是 view 层，仅调 `api/` 模块）
+  2. 模块边界清晰（仅 ChatPage 修改；`api/streamChat` / `resumeChat` 接口未变）
+  3. Protocol 先于实现：`resumeChat` 签名不变，新会话 UUID 是**调用方**行为
+  4. 不破坏接口签名
+  5. 可独立测试：Playwright 半自动测试 5/5 PASS
+
+### Tests（测试方案）
+
+| 测试 | 类型 | 覆盖点 |
+|------|------|--------|
+| `tests/manual/test_resume_curl.py` | 后端 urllib | POST /chat 收集 2 token → 中断 → POST /chat/resume → 验 prefix + done + closed |
+| `tests/manual/test_ai_perception.py` | 前端 Playwright | 5 query × 中途断网 × 自动 resume × 用户视角判定 |
+
+**两测试分工**：
+- `test_resume_curl.py` 验证**链路完整**（checkpoint 写入 + resume 端点正确返回）
+- `test_ai_perception.py` 验证**用户视角无感**（无 AI/续传/网络暴露词 + 无 error banner + 内容长度正常）
+
+### 已知限制（MVP 边界）
+
+- **`OrderCard` 局部 `detailError` 仍暴露 "Failed to fetch"`**：测试脚本只检查全局 `.error-banner`，OrderCard 内的局部 `<div class="detail-error">` 不在测试范围内。本次 sprint **故意不动**（user perspective: 订单详情卡本身可标"加载失败，点此重试"，与对话流的 AI 暴露是两件事；后续 sprint 可单独 UX 优化）
+- **测试半自动**：playwright 仍需前端服务跑起来 + 测试用户 `sse_test` 已注册（`tests/manual/test_ai_perception.py` 第 32-33 行硬编码账号）。未接入 CI
+- **断言阈值定 4/5**：5 query 全 PASS 是硬目标，但 MVP 留 1 个 query 偶发失败的余量（如 LLM 网络抖动）。后续 sprint 可上提到 5/5
+
+### 反思（教训沉淀）
+
+- **后端 PASS ≠ 用户视角 PASS**：`test_resume_curl.py` PASS 后天真地以为 SSE resume 已闭环。Playwright 一跑就发现 3 个 UI 层 bug——`loadConversations` 静默化、新会话 UUID 预生成、waitForOnline 时序。这是"前端验证必须是浏览器"原则的典型体现（见 `feedback_frontend_verification.md`）
+- **"AI 暴露"判定要可执行**：把"用户察觉不到 AI"翻译成可自动检查的词表（`network error / 续传 / AI 正在 / 重连 / stream / resume`），写进测试断言里。比"我看了下 UI 没暴露"靠谱得多
+- **DOM 轮询比固定 sleep 稳**：原版固定 `await 15s`，LLM 慢就漏收。改成 30 × 0.5s 轮询 `streaming-indicator` + 按钮文本 + error banner，任一消失即视为 settled。LLM 几秒到十几秒都不影响
+- **`console.warn` vs `console.error`**：调试阶段常用 console.error 暴露问题，但生产应 console.warn 静默。Playwright 捕获 console 是诊断利器（最后 30 行打印），但**测试通过后要清掉 debug log**，否则用户打开 devtools 看到一堆 warn 也是"技术痕迹"
+- **`set_offline` 时序**：playwright `set_offline(False)` 后浏览器内部 `navigator.onLine` 不是立即变 true（要看 event loop）。`waitForOnline` 监听 `'online'` 事件是更可靠的同步点
+- **MVP 边界看 OrderCard**：测试发现 OrderCard 内联 "Failed to fetch" 不在本次 scope（属"卡片详情加载失败 UX"问题，非"对话流 AI 暴露"问题）。边界感是工程判断——不混淆"对话流"和"卡片流"两个独立 UX 是产品决策，不是技术决策
+
+### §34 vs §35 边界
+
+| 维度 | §34 后端测试 | §35 前端测试 |
+|------|--------------|--------------|
+| 验证层 | checkpoint 协议 + resume 端点 | 用户视角 DOM 状态 |
+| 工具 | urllib（纯 HTTP） | playwright（真浏览器） |
+| 判定 | prefix + done + closed 都返 | 无 AI 暴露词 + 无 error banner + 长度正常 |
+| 谁负责 | 后端 SSE 实现 | 前端 ChatPage UX |
+
+两测试都 PASS 才算真正闭环。
+
