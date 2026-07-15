@@ -30,10 +30,23 @@ Phase 4 A5: Multi-Query 并行检索（性能优化）
 - ThreadPoolExecutor per-request（with 块，离开自动 shutdown）
 - N 路并行 ≈ 1 路耗时（加速比 ~2.9x @ 3 路）
 - 关掉并行：MULTI_QUERY_PARALLEL=False 走原串行（debug 用）
+
+Phase 4 A8: 融合后 rerank（LLM 成本优化）
+- 默认 MULTI_QUERY_FUSE_FIRST_RERANK=True
+- 路径变化：N×(coarse→rerank) → N×coarse → RRF → 1×rerank
+- 收益：3×rerank LLM 调用 → 1×，token -66% / 延迟 -66% / rerank 视角更全局
+- 关闭回退：A8 flag=False → 走 A5 per-query rerank 路径
+
+Phase 4 A8 实现要点：
+- 抽取 _coarse_retrieval 公共方法（search_policy / search_policy_coarse 共用，零漂移）
+- 新增 search_policy_coarse（粗排不带 rerank，给 fuse-first 模式用）
+- 运行指标日志：[multi_query_metrics] mode= queries= rerank_calls= latency_ms=
+  便于 grep 对比 A5 vs A8 真实效果（成本 / 延迟 / 召回质量）
 """
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional
+from typing import List
 
 from app.clients.qdrant import QDRANT_COLLECTION, search as qdrant_search
 from app.core.config import settings
@@ -48,107 +61,167 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = QDRANT_COLLECTION
 
 
+def _format_hits(hits: list[dict]) -> list[dict]:
+    """统一格式化输出 schema（search_policy / search_policy_coarse 共用）
+
+    字段：text / source / score / rerank_score / rrf_score
+    - rerank_score: None 表示未走 rerank
+    - rrf_score: 仅混合检索时存在
+    """
+    return [
+        {
+            "text": h.get("payload", {}).get("text", "") or h.get("text", ""),
+            "source": h.get("payload", {}).get("source", "") or h.get("source", ""),
+            "score": h.get("score", 0.0),
+            "rerank_score": h.get("rerank_score"),  # rerank 才有；降级时 None
+            "rrf_score": h.get("rrf_score"),  # 混合检索才有
+        }
+        for h in hits
+    ]
+
+
 class PolicyService:
     """政策 RAG 服务"""
 
+    # =============================================================
+    # Phase 4 A8 抽取：粗排公共方法（search_policy / search_policy_coarse 共用）
+    # =============================================================
     @staticmethod
-    def search_policy(query: str, top_k: int = 3) -> list[dict]:
-        """
-        检索政策 KB（退货/保修/物流/促销等）
+    def _coarse_retrieval(query: str, coarse_top_k: int) -> list[dict]:
+        """粗排公共逻辑（embed → qdrant → hybrid → truncate）。
+
+        search_policy 和 search_policy_coarse 都调本方法，确保两条路径
+        在粗排阶段的行为完全一致（避免后续逻辑漂移）。
 
         Args:
             query: 用户问题
-            top_k: 返回条数
+            coarse_top_k: 粗排候选数（默认 = RERANK_CANDIDATE_TOP_K = 15）
 
         Returns:
-            [{"text": str, "source": str, "score": float, "rerank_score": float|None}, ...]
-            - rerank_score: None 表示未走 rerank（USE_RERANK=false 或 rerank 降级）
-            - rrf_score: 仅混合检索时存在
+            粗排 hits（每条可能含 payload / rrf_score / score）
+            返回空 list 表示该 query 检索失败（embed / qdrant 异常）
         """
         from app.core.providers.embedding import get_embedding_provider
 
+        # 1. embedding
         try:
             query_vec = get_embedding_provider().embed_text(query)
         except Exception as e:
             logger.warning(f"PolicyService.embed_text 失败: {e}")
             return []
 
-        # 粗排 top-k：USE_RERANK 时取 RERANK_CANDIDATE_TOP_K（默认 15），
-        # 否则直接取最终 top_k（兼容旧行为）
-        coarse_top_k = (
-            settings.RERANK_CANDIDATE_TOP_K
-            if settings.USE_RERANK
-            else top_k
-        )
-
+        # 2. qdrant top-K 粗排
         try:
-            # V2.5: KB 全部是政策，直接 top_k 检索不做 doc_type 过滤
             hits = qdrant_search(
                 query_vector=query_vec,
                 top_k=coarse_top_k,
                 score_threshold=0.4,
                 collection_name=COLLECTION_NAME,
             )
-            # M8：埋点（粗排命中数，便于对比 rerank 前后）
             metrics.record_retrieve_hits(len(hits))
-
-            # P1-检索 B：混合检索（vector + BM25 + RRF）
-            if settings.USE_HYBRID_BM25:
-                try:
-                    from app.services.bm25_index import bm25_search
-                    from app.services.rrf import rrf_fuse
-
-                    bm25_hits = bm25_search(query, top_k=settings.BM25_TOP_K)
-                    if bm25_hits:
-                        # RRF 融合两路
-                        fused = rrf_fuse(
-                            [hits, bm25_hits],
-                            k=settings.RRF_K,
-                        )
-                        # 截断到 coarse_top_k（保留送 rerank 的候选数）
-                        hits = fused[:coarse_top_k]
-                        logger.info(
-                            f"hybrid search: vector={len(hits)}/{coarse_top_k} "
-                            f"bm25={len(bm25_hits)}/{settings.BM25_TOP_K} "
-                            f"→ fused={len(fused)} → top{coarse_top_k}"
-                        )
-                except Exception as e:
-                    # BM25 索引构建失败或 RRF 异常 → 降级到纯 vector
-                    logger.warning(f"hybrid 检索失败，降级到纯 vector: {e}")
-
-            # P1-检索 A：rerank 精排
-            if settings.USE_RERANK and len(hits) > top_k:
-                try:
-                    # Sprint 4 收尾：services/rerank.py 已删，改为 Provider 抽象入口
-                    from app.core.providers.rerank import get_rerank_provider
-                    hits = get_rerank_provider().rerank(query, hits, top_n=top_k)
-                    logger.info(
-                        f"policy rerank: candidates={len(hits)}/{coarse_top_k} "
-                        f"→ fine={len(hits)}"
-                    )
-                except Exception as e:
-                    # rerank 失败 → 降级到原始排序 + 截断 top_k（不影响业务）
-                    logger.warning(f"policy rerank 失败，降级到粗排: {e}")
-                    hits = hits[:top_k]
-
-            metrics.record_hit_at_k(1 if hits else 0)
-            return [
-                {
-                    "text": h.get("payload", {}).get("text", "") or h.get("text", ""),
-                    "source": h.get("payload", {}).get("source", "") or h.get("source", ""),
-                    "score": h.get("score", 0.0),
-                    "rerank_score": h.get("rerank_score"),  # rerank 才有；降级时 None
-                    "rrf_score": h.get("rrf_score"),  # 混合检索才有
-                }
-                for h in hits
-            ]
         except Exception as e:
-            logger.warning(f"PolicyService.search 失败: {e}")
-            metrics.record_hit_at_k(0)  # M8：检索失败算未命中
+            logger.warning(f"PolicyService qdrant 检索失败: {e}")
             return []
 
+        # 3. hybrid: vector + BM25 + RRF（可选）
+        if settings.USE_HYBRID_BM25:
+            try:
+                from app.services.bm25_index import bm25_search
+                from app.services.rrf import rrf_fuse
+
+                bm25_hits = bm25_search(query, top_k=settings.BM25_TOP_K)
+                if bm25_hits:
+                    fused = rrf_fuse(
+                        [hits, bm25_hits],
+                        k=settings.RRF_K,
+                    )
+                    hits = fused[:coarse_top_k]
+                    logger.debug(
+                        f"hybrid: vector={len(hits)}/{coarse_top_k} "
+                        f"bm25={len(bm25_hits)}/{settings.BM25_TOP_K} "
+                        f"→ fused={len(fused)} → top{coarse_top_k}"
+                    )
+            except Exception as e:
+                logger.warning(f"hybrid 检索失败，降级到纯 vector: {e}")
+
+        return hits
+
     # =============================================================
-    # Phase 4 A4 + A5: Multi-Query 多路检索（RRF 融合 + 并行）
+    # 单路检索（保持向后兼容，A4/A5/A8 全部基于它）
+    # =============================================================
+    @staticmethod
+    def search_policy(query: str, top_k: int = 3) -> list[dict]:
+        """
+        检索政策 KB（退货/保修/物流/促销等）
+
+        流程：_coarse_retrieval → 可选 rerank → top_k
+
+        Args:
+            query: 用户问题
+            top_k: 返回条数
+
+        Returns:
+            [{"text": str, "source": str, "score": float,
+              "rerank_score": float|None, "rrf_score": float|None}, ...]
+        """
+        coarse_top_k = (
+            settings.RERANK_CANDIDATE_TOP_K
+            if settings.USE_RERANK
+            else top_k
+        )
+
+        hits = PolicyService._coarse_retrieval(query, coarse_top_k)
+        if not hits:
+            metrics.record_hit_at_k(0)
+            return []
+
+        # 可选：rerank 精排
+        if settings.USE_RERANK and len(hits) > top_k:
+            try:
+                from app.core.providers.rerank import get_rerank_provider
+                hits = get_rerank_provider().rerank(query, hits, top_n=top_k)
+                logger.debug(
+                    f"policy rerank: candidates={len(hits)}/{coarse_top_k} → top{top_k}"
+                )
+            except Exception as e:
+                logger.warning(f"policy rerank 失败，降级到粗排: {e}")
+                hits = hits[:top_k]
+
+        metrics.record_hit_at_k(1 if hits else 0)
+        return _format_hits(hits)
+
+    # =============================================================
+    # Phase 4 A8：粗排（不带 rerank，给 fuse-first 模式用）
+    # =============================================================
+    @staticmethod
+    def search_policy_coarse(query: str, top_k: int | None = None) -> list[dict]:
+        """粗排（不带 rerank，给 Phase 4 A8 fuse-first 用）。
+
+        与 search_policy 的区别：
+        - search_policy = 粗排 + rerank（单路精排）
+        - search_policy_coarse = 仅粗排（多路融合后统一 rerank）
+
+        共用 _coarse_retrieval，零逻辑漂移。
+
+        Args:
+            query: 用户问题
+            top_k: 粗排候选数（默认 settings.RERANK_CANDIDATE_TOP_K = 15）
+
+        Returns:
+            schema 与 search_policy 一致；rerank_score=None（未走 rerank）
+        """
+        coarse_top_k = (
+            top_k if top_k is not None else settings.RERANK_CANDIDATE_TOP_K
+        )
+        hits = PolicyService._coarse_retrieval(query, coarse_top_k)
+        if not hits:
+            metrics.record_hit_at_k(0)
+            return []
+        metrics.record_hit_at_k(1 if hits else 0)
+        return _format_hits(hits)
+
+    # =============================================================
+    # Phase 4 A4 + A5 + A8: Multi-Query 多路检索
     # =============================================================
     @staticmethod
     def search_multi_policy(
@@ -156,11 +229,20 @@ class PolicyService:
         top_k: int = 3,
     ) -> List[dict]:
         """
-        多路检索（每路走 hybrid + rerank，最终 RRF 融合）
+        多路检索（fuse-first rerank / per-query rerank / 单路短路）
 
-        Phase 4 A5：默认走 ThreadPoolExecutor 并行（N 路检索 ~2.9x 加速）。
-        通过 settings.MULTI_QUERY_PARALLEL=False 可降级串行（debug 用）。
-        per-request executor（with 语句自动 shutdown，不做 module-level 单例）。
+        Phase 4 A5：默认并行（N 路 ~2.9x 加速）
+        Phase 4 A8：默认 fuse-first（3×rerank → 1×rerank，LLM token -66%）
+
+        路径决策（按优先级）：
+        1. 单路（len=1）：直接 search_policy，不做 RRF 融合
+        2. fuse-first（A8 flag=True + 多路）：
+             每路 search_policy_coarse → RRF → 截断 15 → 1×rerank → top-k
+        3. per-query rerank（A8 flag=False + 多路，A5 路径）：
+             每路 search_policy → RRF 融合
+
+        运行指标（每调用一行日志，便于 A5/A8 对比）：
+            [multi_query_metrics] mode= queries= rerank_calls= latency_ms= ...
 
         Args:
             queries: 多路改写后的查询列表（≥ 1）
@@ -168,22 +250,19 @@ class PolicyService:
 
         Returns:
             [{"text", "source", "score", "rerank_score", "rrf_score"}, ...]
-            与 search_policy 返回 schema 完全一致（业务侧零改动消费）
-            降级：queries 为空 / 全部检索失败 → 返空 list
-
-        实现细节：
-        - Phase 4 A5：MULTI_QUERY_PARALLEL=True 且 N>1 → ThreadPoolExecutor 并行
-        - 每路独立调用 search_policy → 拿到该路的 top-K（rerank 后的）
-        - N 路结果用 rrf_fuse 融合 → 截断 top_k
-        - 单路异常：仅该路降级，其他路继续
-        - 含 rerank_score / rrf_score 字段（与单路兼容）
+            与 search_policy schema 一致（业务侧零改动消费）
+            降级：queries 空 / 全部失败 → 返空 list
         """
         from app.services.rrf import rrf_fuse
+
+        # A8 运行指标：起点计时 + rerank 调用计数
+        start = time.perf_counter()
+        rerank_call_count = 0
+        mode = "unknown"
 
         if not queries:
             return []
 
-        # 过滤空 query（保留原 idx 用于日志）
         valid_queries: List[tuple] = [
             (idx, q) for idx, q in enumerate(queries) if q and q.strip()
         ]
@@ -191,34 +270,161 @@ class PolicyService:
             return []
 
         # =============================================================
-        # Phase 4 A5：决定走并行（默认）还是串行（debug 降级）
+        # 路径 1：单路短路（len=1）
         # =============================================================
-        use_parallel = settings.MULTI_QUERY_PARALLEL and len(valid_queries) > 1
+        if len(valid_queries) == 1:
+            mode = "single"
+            result = PolicyService.search_policy(valid_queries[0][1], top_k=top_k)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                f"[multi_query_metrics] mode={mode} queries=1 "
+                f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f}"
+            )
+            return result
+
+        # =============================================================
+        # 路径 2：Phase 4 A8 fuse-first rerank（默认）
+        # =============================================================
+        use_fuse_first = settings.MULTI_QUERY_FUSE_FIRST_RERANK and settings.USE_RERANK
+        use_parallel = settings.MULTI_QUERY_PARALLEL
+
+        if use_fuse_first:
+            mode = "fuse_first"
+            coarse_top_k = settings.RERANK_CANDIDATE_TOP_K
+            per_query_hits: List[List[dict]] = []
+
+            if use_parallel:
+                # 并行粗排（per-request executor，with 块结束自动 shutdown）
+                max_workers = max(
+                    1, min(settings.MULTI_QUERY_WORKERS, len(valid_queries))
+                )
+                with ThreadPoolExecutor(
+                    max_workers=max_workers,
+                    thread_name_prefix="multi-policy",
+                ) as ex:
+                    futures = {
+                        ex.submit(
+                            PolicyService.search_policy_coarse, q, top_k=coarse_top_k
+                        ): (idx, q)
+                        for idx, q in valid_queries
+                    }
+                    results_by_idx: dict = {}
+                    for future in as_completed(futures):
+                        idx, q = futures[future]
+                        try:
+                            hits = future.result()
+                            for h in hits:
+                                h.setdefault("id", h.get("source", ""))
+                            results_by_idx[idx] = hits
+                        except Exception as e:
+                            logger.warning(
+                                f"search_multi_policy[A8] 第 {idx} 路失败 "
+                                f"(q='{q[:30]}...'): {e}"
+                            )
+                            metrics.record_hit_at_k(0)
+                    per_query_hits = [
+                        results_by_idx[i] for i in sorted(results_by_idx.keys())
+                    ]
+            else:
+                # 串行 fuse-first（debug 用）
+                for idx, q in valid_queries:
+                    try:
+                        hits = PolicyService.search_policy_coarse(q, top_k=coarse_top_k)
+                        for h in hits:
+                            h.setdefault("id", h.get("source", ""))
+                        per_query_hits.append(hits)
+                    except Exception as e:
+                        logger.warning(
+                            f"search_multi_policy[A8 serial] 第 {idx} 路失败 "
+                            f"(q='{q[:30]}...'): {e}"
+                        )
+                        metrics.record_hit_at_k(0)
+
+            if not per_query_hits:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                logger.info(
+                    f"[multi_query_metrics] mode={mode} queries={len(valid_queries)} "
+                    f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f} "
+                    f"result=empty"
+                )
+                return []
+
+            # RRF 融合全局候选
+            try:
+                fused = rrf_fuse(per_query_hits, k=settings.RRF_K)
+            except Exception as e:
+                logger.warning(
+                    f"search_multi_policy[A8] RRF 失败，降级到首路前 {top_k}: {e}"
+                )
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                logger.info(
+                    f"[multi_query_metrics] mode={mode}_rrf_fail "
+                    f"queries={len(valid_queries)} "
+                    f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f} "
+                    f"fallback=first"
+                )
+                return per_query_hits[0][:top_k]
+
+            # 截断到 MAX_CANDIDATES_PER_CALL 后送 rerank（用 queries[0] 作评估 query）
+            rerank_input = fused[:coarse_top_k]
+            if len(rerank_input) > top_k:
+                try:
+                    from app.core.providers.rerank import get_rerank_provider
+                    rerank_call_count = 1  # A8 关键：1 次 rerank 调用
+                    reranked = get_rerank_provider().rerank(
+                        valid_queries[0][1],  # 原始 query（语义最准）
+                        rerank_input,
+                        top_n=top_k,
+                    )
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+                    logger.info(
+                        f"[multi_query_metrics] mode={mode} queries={len(valid_queries)} "
+                        f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f} "
+                        f"fused={len(fused)} rerank_in={len(rerank_input)} → top{top_k}"
+                    )
+                    return reranked
+                except Exception as e:
+                    logger.warning(
+                        f"search_multi_policy[A8] rerank 失败，降级到 RRF top-{top_k}: {e}"
+                    )
+                    elapsed_ms = (time.perf_counter() - start) * 1000
+                    logger.info(
+                        f"[multi_query_metrics] mode={mode}_rerank_fail "
+                        f"queries={len(valid_queries)} "
+                        f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f} "
+                        f"fused={len(fused)} fallback=rrf_topk"
+                    )
+                    return fused[:top_k]
+            else:
+                # 候选数 ≤ top_k，无需 rerank
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                logger.info(
+                    f"[multi_query_metrics] mode={mode}_no_rerank "
+                    f"queries={len(valid_queries)} "
+                    f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f} "
+                    f"fused={len(fused)} → top{top_k}"
+                )
+                return fused[:top_k]
+
+        # =============================================================
+        # 路径 3：A5 per-query rerank（fuse_first=False 时回退）
+        # =============================================================
+        mode = "per_query"
         per_query_hits: List[List[dict]] = []
         total_hits = 0
 
         if use_parallel:
-            # max_workers = min(配置上限, 实际查询数)；最少 1
             max_workers = max(
                 1, min(settings.MULTI_QUERY_WORKERS, len(valid_queries))
             )
-            logger.debug(
-                f"search_multi_policy parallel: workers={max_workers} "
-                f"queries={len(valid_queries)}"
-            )
-
-            # A5：per-request executor（with 块结束自动 shutdown(wait=True)）
-            # 不做 module-level 单例（避免跨请求共享 + 资源泄漏）
             with ThreadPoolExecutor(
                 max_workers=max_workers,
                 thread_name_prefix="multi-policy",
             ) as ex:
-                # 按 valid_queries 提交
                 futures = {
                     ex.submit(PolicyService.search_policy, q, top_k=top_k): (idx, q)
                     for idx, q in valid_queries
                 }
-                # 按 future 完成顺序收结果，按原 idx 整理保持顺序
                 results_by_idx: dict = {}
                 for future in as_completed(futures):
                     idx, q = futures[future]
@@ -228,18 +434,19 @@ class PolicyService:
                             h.setdefault("id", h.get("source", ""))
                         results_by_idx[idx] = hits
                         total_hits += len(hits)
+                        # 估算 rerank 调用次数（search_policy 内部可能调 rerank）
+                        if settings.USE_RERANK:
+                            rerank_call_count += 1
                     except Exception as e:
                         logger.warning(
-                            f"search_multi_policy 第 {idx} 路失败 "
+                            f"search_multi_policy[A5] 第 {idx} 路失败 "
                             f"(q='{q[:30]}...'): {e}"
                         )
                         metrics.record_hit_at_k(0)
-                # 按原始 idx 排序输出（RRF 不依赖顺序，但保序便于调试）
                 per_query_hits = [
                     results_by_idx[i] for i in sorted(results_by_idx.keys())
                 ]
         else:
-            # 串行路径（保留旧行为 + 降级场景）
             for idx, q in valid_queries:
                 try:
                     hits = PolicyService.search_policy(q, top_k=top_k)
@@ -247,29 +454,39 @@ class PolicyService:
                         h.setdefault("id", h.get("source", ""))
                     per_query_hits.append(hits)
                     total_hits += len(hits)
+                    if settings.USE_RERANK:
+                        rerank_call_count += 1
                 except Exception as e:
                     logger.warning(
-                        f"search_multi_policy 第 {idx} 路失败 "
+                        f"search_multi_policy[A5 serial] 第 {idx} 路失败 "
                         f"(q='{q[:30]}...'): {e}"
                     )
                     metrics.record_hit_at_k(0)
 
         if not per_query_hits:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                f"[multi_query_metrics] mode={mode} queries={len(valid_queries)} "
+                f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f} "
+                f"result=empty"
+            )
             return []
 
-        # 单路时短路（避免无意义 RRF 融合）
-        if len(per_query_hits) == 1:
-            return per_query_hits[0][:top_k]
-
-        # 多路 RRF 融合
         try:
             fused = rrf_fuse(per_query_hits, k=settings.RRF_K)
+            elapsed_ms = (time.perf_counter() - start) * 1000
             logger.info(
-                f"search_multi_policy: queries={len(queries)} "
-                f"parallel={use_parallel} hits_total={total_hits} "
-                f"fused={len(fused)} top_k={top_k}"
+                f"[multi_query_metrics] mode={mode} queries={len(valid_queries)} "
+                f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f} "
+                f"hits_total={total_hits} fused={len(fused)} → top{top_k}"
             )
             return fused[:top_k]
         except Exception as e:
-            logger.warning(f"search_multi_policy RRF 失败，降级到首路前 {top_k}: {e}")
+            logger.warning(f"search_multi_policy[A5] RRF 失败，降级到首路前 {top_k}: {e}")
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                f"[multi_query_metrics] mode={mode}_rrf_fail queries={len(valid_queries)} "
+                f"rerank_calls={rerank_call_count} latency_ms={elapsed_ms:.1f} "
+                f"fallback=first"
+            )
             return per_query_hits[0][:top_k]

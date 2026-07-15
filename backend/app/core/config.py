@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     # ThreadPoolExecutor max_workers（与 MULTI_QUERY_COUNT 默认对齐；per-request executor）
     MULTI_QUERY_WORKERS: int = 3
 
+    # ---- Phase 4 A8: 融合后 rerank ----
+    # True 时 search_multi_policy 走 N 路粗排 → RRF 融合 → 1×rerank → top-k
+    #   - LLM rerank 调用次数：N → 1（默认 3 → 1，省 ~66% token）
+    #   - rerank 视角：单路内部 → 全局融合候选（信息更全）
+    # False 时回退 A5 路径：每路各自 rerank → RRF 融合（debug / A/B 对比用）
+    MULTI_QUERY_FUSE_FIRST_RERANK: bool = True
+
     # ---- P2 长程记忆：跨 session 用户画像 ----
     # 启用后 orchestrator 每轮加载 user_profiles，注入到 LLM prompt 的 context_block 之后
     # 默认 false（灰度用），未启用时所有 profile_service 调用短路返空

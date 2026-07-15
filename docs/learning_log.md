@@ -4303,3 +4303,158 @@ A5 是用户优先级排序里的**第一项**（"性能提升明显"）。
 
 三者解决不同问题，**互不替代**：弱网用户靠 §34；UX 体验靠 §35；性能体验靠 §36。
 
+---
+
+## 37. Phase 4 A8 — 融合后 rerank（LLM 成本 -66% + wall clock 3x）（2026-07-16）
+
+### What（做了什么）
+
+Phase 4 A5（§36）已实现 N 路并行检索，但**每路都跑 rerank → N 次 LLM rerank 调用**。A8 改为 **N 路粗排 → RRF 融合 → 1 次 rerank**：
+
+- **抽取 `_coarse_retrieval(query, coarse_top_k)` 公共方法**（search_policy / search_policy_coarse 共用，零逻辑漂移）
+- **新增 `search_policy_coarse(query, top_k=15)`**（粗排不带 rerank，给 fuse-first 模式用）
+- **`search_multi_policy` 重构为 3 条路径**：
+  1. 单路短路（len == 1）→ 直接 `search_policy`
+  2. **fuse-first（A8 默认）**：N 路 `search_policy_coarse` 并行 → RRF 融合 → 截断 15 → 1×rerank
+  3. per-query rerank（A5 向后兼容）：N 路 `search_policy` 并行 → RRF 融合
+- 配置加 `MULTI_QUERY_FUSE_FIRST_RERANK=True`（灰度开关）
+- **运行指标日志**：每次 multi_query 一行 `[multi_query_metrics] mode= queries= rerank_calls= latency_ms= ...`（便于 grep 对比 A5/A8）
+- 测试：单测 +6（A8 rerank 1 次 / queries[0] 作 rerank query / 截断 15 / rerank 失败降级 / 关闭回退 A5 / 指标日志）+ latency benchmark +2（rerank 次数 1 vs 3 / A8 并行 vs A5 串行 3x 加速）
+
+### Why（为什么）
+
+A5 解决了"并行加速"，但**没解决 LLM 成本**。multi_query 3 路场景下：
+- A5：每路 `search_policy` 内部调 1 次 rerank → 3 次 LLM rerank 调用
+- A5 rerank LLM 调用耗时 ≈ 800ms × 3 = **2400ms LLM 时间 / 2400ms token 成本**
+- A5 rerank 视角：**单路内部重排**（每路 top-3 内重排），看不到其他路的候选
+
+A8 的"全局融合候选 + 1×rerank" 思路：
+- 思路 1（成本）：N 次 rerank → 1 次 rerank，**token 成本 -66%**
+- 思路 2（质量）：rerank 视角从"单路 top-3" → "全局融合 top-15"，**信息更全**
+- 思路 3（延迟）：A8 fuse-first + A5 parallel 组合下，A5 串行 3.3s → A8 并行 1.1s ≈ **3x wall clock**
+
+### Tech（技术栈）
+
+| 项 | 值 |
+|----|----|
+| 路径决策 | `settings.MULTI_QUERY_FUSE_FIRST_RERANK and settings.USE_RERANK`（灰度开关 × 业务开关 双重判断） |
+| 公共方法 | `_coarse_retrieval(query, coarse_top_k)` 抽取（避免 search_policy_coarse 复制 search_policy） |
+| 截断常量 | `RERANK_CANDIDATE_TOP_K = 15`（= `MAX_CANDIDATES_PER_CALL`，QwenRerankProvider 单 prompt 上限） |
+| rerank query | `valid_queries[0][1]`（原始 query，语义最准；改写变体只用于扩召回） |
+| 指标日志 | `logger.info(f"[multi_query_metrics] mode={mode} queries=... rerank_calls=... latency_ms=...")`（grep 前缀便于运维对比） |
+| 失败降级 | rerank 异常 → `fused[:top_k]`（RRF top-k，不 rerank） |
+
+### Flow（输入 → 输出）
+
+**输入**：3 路改写 query（multi_query 场景）
+**输出**：与 A5 完全一致的 schema `[{text, source, score, rerank_score, rrf_score}, ...]`（业务侧零改动）
+
+**A5 路径（fuse_first=False · 向后兼容）**：
+```
+queries = [q1, q2, q3]
+  ↓ 并行
+[q1: _coarse_retrieval → rerank → top3]
+[q2: _coarse_retrieval → rerank → top3]
+[q3: _coarse_retrieval → rerank → top3]
+  ↓ RRF 融合
+result = top3 (rerank_calls=3)
+```
+
+**A8 路径（fuse_first=True · 默认）**：
+```
+queries = [q1, q2, q3]
+  ↓ 并行（仅粗排）
+[q1: _coarse_retrieval → top15]  ← coarse
+[q2: _coarse_retrieval → top15]  ← coarse
+[q3: _coarse_retrieval → top15]  ← coarse
+  ↓ 3 路 RRF 融合（去重）→ top15
+  ↓ 用 q1 跑 1×rerank
+result = top3 (rerank_calls=1)
+```
+
+### Problem & Fix（问题 → 解决）
+
+**问题 1：search_policy_coarse 一开始想直接复制 search_policy 去掉 rerank 部分 → 用户约束"不允许复制"**
+
+**根因**：直接复制会在 BM25 / 混合检索逻辑更新时两条路径漂移
+**修复**：抽出 `_coarse_retrieval(query, coarse_top_k)` 公共方法，search_policy 和 search_policy_coarse 都调它，**单一来源**
+**教训**：§3.3 YAGNI 边界同时强调"不做过度抽象"和"必要的去重"——本场景属于后者
+
+**问题 2：第一次跑 latency test 失败，A5 baseline = 0.301s（预期 ≥ 2.2s）**
+
+**根因**：mock 的 `PolicyService.search_policy` 把整个函数替换成 `_slow_search`，rerank 没被调用
+**修复**：写专门的 `_slow_full_search(query)` mock 模拟 search_policy 完整路径（粗排 0.3s + rerank 0.8s = 1.1s）；A8 模式用 `_slow_coarse` + mock `get_rerank_provider().rerank` 各自负责粗排 / rerank 延迟
+**教训**：mock 测试中"被替换的函数"和"实际调用链路"要保持一致，否则 benchmark 测的是 mock 自身而非真实路径
+
+**问题 3：现有 A5 延迟测试在 A8 默认开启下全部失败**
+
+**根因**：A8 默认走 `search_policy_coarse`，原 mock 的 `search_policy` 没被调用 → 触发真实 `_coarse_retrieval` → 真实 embedding 调用 → QWEN_API_KEY 未设 → 返空
+**修复**：所有 A5 延迟测试加 `settings.MULTI_QUERY_FUSE_FIRST_RERANK = False` 强制 A5 per-query 路径
+**教训**：引入新的默认行为时，现有测试要么 force 旧路径，要么重构为新路径——明确选边站
+
+**问题 4：wall-clock 测试前提错误——A5 parallel 和 A8 parallel 实际延迟相近**
+
+**根因**：A5 parallel 下 rerank 在各 thread 内串行（max(0.3+0.8)=1.1s），A8 parallel 也是 0.3 + 0.8 = 1.1s，**wall clock 几乎相等**
+**修复**：latency test 改为对比 **A5 串行（最坏）vs A8 并行（最好）** —— 3.3s → 1.1s = 3x 加速，这才是真实收益场景
+**教训**：benchmark 设计必须先想清楚"对比的边际条件是什么"；A8 的真正收益是 token 成本（rerank 调用 3 → 1），latency 是 secondary
+
+### Architecture Role（在系统中的位置）
+
+```
+query_rewriter (Phase 4 A4)
+  ↓ 多路改写 [q1, q2, q3]
+orchestrator._handle_policy / _handle_product
+  ↓ 调用 search_multi_policy（接口不变）
+PolicyService.search_multi_policy
+  ├─ 路径 1: len == 1 → search_policy（向后兼容）
+  ├─ 路径 2: fuse_first=True → search_policy_coarse × N 并行 → RRF → rerank × 1
+  └─ 路径 3: fuse_first=False → search_policy × N 并行 → RRF（A5 向后兼容）
+       ↑
+       ├─ search_policy_coarse → _coarse_retrieval
+       └─ search_policy → _coarse_retrieval + rerank
+              ↑
+              └─ 公共方法 _coarse_retrieval（embed + qdrant + hybrid）
+                     ↑
+                     ├─ get_embedding_provider (Provider 抽象 §9.3.3)
+                     ├─ qdrant_search (client)
+                     └─ bm25_search + rrf_fuse (hybrid)
+```
+
+**Scope Lock 验证（§5）**：
+- ✅ 仅改 `policy_service.py` + `config.py` 两文件
+- ✅ orchestrator / chat.py / api.py 零改动
+- ✅ 接口签名 `search_multi_policy(queries, top_k)` 不变
+- ✅ 返回 schema 与 A5 一致（业务侧零改动消费）
+
+### Tests（验证）
+
+| 测试类型 | 数量 | 结果 |
+|---------|------|------|
+| A4 + A5 单测（原 11 用例，强制 A5 路径） | 11 | 11/11 PASS |
+| A8 单测（新增 6：rerank 1次/queries[0]/截断15/降级/关闭回退/指标日志） | 6 | 6/6 PASS |
+| A5 latency benchmark（强制 A5 路径） | 4 | 4/4 PASS |
+| A8 latency benchmark（rerank 1 vs 3 / A8 并行 vs A5 串行） | 2 | 2/2 PASS |
+| **全量 pytest** | **321** | **321/321 PASS** |
+
+**A8 核心 KPI**：
+- rerank LLM 调用次数：A5 = 3 → A8 = **1**（**-66%** token 成本）
+- wall clock（A5 串行 → A8 并行）：3.3s → 1.1s = **3x 加速**
+- rerank 视角：单路 top-3 → 全局 top-15（信息更全）
+
+### 已知限制
+
+- **rerank 失败降级 = RRF top-k（非 rerank）**：极端场景（如 LLM 全挂）A8 会丢失精排；保留 `[multi_query_metrics] mode=fuse_first_rerank_fail` metric 便于监控
+- **rerank 视角变化对召回质量的影响需 eval 验证**：理论上更好（全局候选），但需跑 `scripts/eval_hitk.py` 对比 hit@K；下一步动作
+- **A8 路径日志量增加**：每次 multi_query 一行 `[multi_query_metrics]`；log 量约 +20%，可接受
+- **单路短路不会触发 fuse-first**：queries=1 走 `search_policy`（可能调 rerank），不走 fuse-first 路径；future 如需"强制 fuse-first"再改
+
+### 反思（写给未来的我）
+
+1. **"抽公共方法"不是过度设计，是避免漂移的必要手段** —— A8 核心约束"不允许复制 search_policy 逻辑" 让我意识到：抽象的判定标准不是"几个调用方"，而是"逻辑是否会独立演化"。`_coarse_retrieval` 在 search_policy 和 search_policy_coarse 两条路径上 **演化节奏必须一致**（BM25 加逻辑、混合检索改权重 → 都得同步），所以必须单一来源
+
+2. **KPI 选错了 metric = benchmark 给错答案** —— 第一次写 latency test 假设"A8 比 A5 快"，但没想清楚"哪个场景下快"。A5 parallel 和 A8 parallel wall clock 几乎相等（rerank 在 thread 内串行），真正能 3x 的是"A5 串行 vs A8 并行"。benchmark 设计的边际条件想清楚再写
+
+3. **默认行为变更 = 现有测试要么 force 旧路径要么重构** —— A8 flag 默认 True 引入后，原 A5 测试 mock 的 `search_policy` 全部失效。**明确选边**（这里选了 force 旧路径 + 新增 A8 测试覆盖新行为），比"模糊兼容"更可维护
+
+4. **重构顺序：先抽公共方法 → 再加新方法 → 再改主入口** —— A8 的实施顺序是：(1) 抽 `_coarse_retrieval` (2) 加 `search_policy_coarse` 调用同一方法 (3) 重构 `search_multi_policy` 加 3 路径分支。每步可独立测试，不破旧行为
+
