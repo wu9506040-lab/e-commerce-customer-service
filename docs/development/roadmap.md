@@ -380,6 +380,24 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 | **验证** | • 单测：**11/11 PASS**（原 6 + 新 5）<br>• Latency benchmark：**4/4 PASS**，加速比实测 **5.3x**（1.58s → 0.30s）<br>• 全量 pytest：**312/313 PASS**（1 pre-existing flaky `test_prompt_loader_version.py::test_v2_content_change_picks_up` 与本次无关，已知 4 天以上）<br>• Module imports：`grep -r "search_multi_policy" backend/` 仅 policy_service.py 内 + 2 调用方（orchestrator._handle_policy + _handle_product）零改动 |
 | **已知限制** | • **CI 抖动风险**：并行测试容许范围宽（thread 启动 + GIL 调度）；如长期 flaky 可放宽到 [0.20, 0.8] 或加 `@pytest.mark.slow` 跳过<br>• **真实负载加速比 ≠ 测试加速比**：测试用 `time.sleep` 模拟 IO，真实场景含 Python 代码执行 + GIL 竞争，预计生产加速比 **2-3x**（3 路场景）<br>• **Provider 限流未适配**：默认 max_workers=3 匹配 `MULTI_QUERY_COUNT`；如未来 embedding / rerank LLM 加并发限流，需动态调整<br>• **per-request executor 开销**：每次 ~1ms 创建/释放；对比 800ms LLM 调用可忽略；如未来 QPS 极高（>100/s）再考虑 module-level 池 |
 
+### 3.13 Phase 4 A8 — 融合后 rerank（LLM 成本优化）
+
+> **状态**：✅ 完成（2026-07-16，单 commit）
+> **学习日志**：`docs/learning_log.md §37`
+> **优先级**：A5 完成后用户排序第 2（"AI 效果提升最大"）
+
+| 项 | 内容 |
+|----|------|
+| **目标** | A5 已实现 N 路并行检索，但每路都跑 rerank → N 次 LLM rerank 调用。A8 改为 **N 路粗排 → RRF 融合 → 1 次 rerank**，**token 成本 -66%**（3 → 1）+ **wall clock 3x**（A5 串行 3.3s → A8 并行 1.1s）+ rerank 视角更全局（融合候选而非单路内部）。仅改 `policy_service.py` + `config.py` 两文件，orchestrator / chat.py 零改动。 |
+| **范围（实绩）** | • 抽取 `_coarse_retrieval(query, coarse_top_k)` 公共方法（search_policy / search_policy_coarse 共用，**零逻辑漂移**）<br>• 新增 `search_policy_coarse(query, top_k=15)`（粗排不带 rerank，给 fuse-first 模式用）<br>• `search_multi_policy` 重构为 3 条路径：① 单路短路 ② fuse-first（A8 默认） ③ per-query rerank（A5 向后兼容）<br>• 配置加 `MULTI_QUERY_FUSE_FIRST_RERANK=True`（灰度开关）<br>• 运行指标日志：`[multi_query_metrics] mode= queries= rerank_calls= latency_ms= ...`（便于 A5/A8 grep 对比）<br>• 单路短路 + 单路异常隔离 + 灰度回退（A8 失败返 RRF top-k） |
+| **不范围（YAGNI §3.3 · MVP 边界）** | • **不复制 search_policy 逻辑**：抽 `_coarse_retrieval` 公共方法，避免 search_policy_coarse 与 search_policy 在粗排阶段漂移<br>• **不改 RerankProvider 接口**：仍走 `get_rerank_provider().rerank()` 入口（§9.3.3 不变）<br>• **不做 rerank 缓存**：每次 query 不同 → 缓存命中率低；rerank 输入已截断到 15，缓存收益有限<br>• **不做并行 rerank**：rerank LLM 本身有并发限流；单次 LLM batch 已覆盖所有候选<br>• **不引入 async rerank**：保持 search_multi_policy 同步签名，调用方零改动 |
+| **新建** | 无新增文件（追加到现有测试文件） |
+| **修改** | `backend/app/core/config.py`（+7 行 · `MULTI_QUERY_FUSE_FIRST_RERANK=True`）<br>`backend/app/services/policy_service.py`（+90/-30 行 · 抽 `_coarse_retrieval` + 新增 `search_policy_coarse` + 重构 `search_multi_policy` 3 路径 + 指标日志）<br>`backend/tests/test_policy_service_multi.py`（+6 用例 · A8 rerank 1次/queries[0]/截断15/降级/关闭回退/指标日志）<br>`backend/tests/test_multi_query_latency.py`（+2 用例 · rerank 次数 1 vs 3 / A8 并行 vs A5 串行 3x 加速） |
+| **关键设计决策** | • **抽 `_coarse_retrieval` 是首要约束**：用户原话"search_policy_coarse 不允许复制 search_policy 逻辑"，否则后续 BM25 / 混合检索逻辑一改，两条路径漂移<br>• **rerank 用 queries[0] 作评估 query**：原始 query 语义最准；改写变体只用于扩召回，不用于 rerank 评估（与 query_rewriter 设计哲学一致）<br>• **截断到 15 送 rerank（=MAX_CANDIDATES_PER_CALL）**：QwenRerankProvider 单 prompt 上限就是 15，超过会丢候选；fuse 完直接 truncate<br>• **rerank 失败降级到 RRF top-k**：与 search_policy 内部降级策略一致；A8 失败不会比 A5 更糟（仍比纯 RRF top-3 强）<br>• **指标日志用 grep 前缀 `[multi_query_metrics]`**：不动 metrics.py schema；运维 `grep multi_query_metrics` 就能看 mode / queries / rerank_calls / latency 分布，对比 A5 vs A8<br>• **单路短路放在最前**：单 query 走 fuse-first 没有意义（无 RRF 融合），直接 search_policy 调用节省 ThreadPoolExecutor 开销 |
+| **关闭缺口** | • **Phase 4 backlog 第 2 项**（用户排序）：从待启动 → 完成<br>• **LLM 成本 -66%**：每条 multi-query 检索节省 2 次 rerank LLM 调用（默认 N=3）<br>• **rerank 视角升级**：从"单路内部重排" → "全局融合候选重排"（信息更全）<br>• **保留 A5 fallback**：`MULTI_QUERY_FUSE_FIRST_RERANK=False` 走 A5 路径（debug / A/B 对比 / 故障期回滚） |
+| **验证** | • 单测：**17/17 PASS**（原 11 + A8 新 6：rerank 1次/queries[0]/截断15/降级/关闭回退/指标日志）<br>• Latency benchmark：**6/6 PASS**，rerank 调用次数 A5=3 vs A8=1（**-66%**），wall clock A8 并行 vs A5 串行 = **3x 加速**<br>• 全量 pytest：**321/321 PASS**（A8 新增 8 用例全绿，0 回归）<br>• Module imports：`grep -r "search_multi_policy" backend/` 仅 policy_service.py 内 + 2 调用方（orchestrator._handle_policy + _handle_product）零改动 |
+| **已知限制** | • **rerank 失败降级 = RRF top-k（非 rerank）**：极端场景（如 LLM 全挂）A8 会比 A5 少 2 次 rerank 但也丢失精排；保留 rerank_failure metric 便于发现<br>• **rerank 视角变化对召回质量的影响需 eval 验证**：理论上更好（全局候选），但需跑 `scripts/eval_hitk.py` 对比 hit@K<br>• **A8 路径 metric 日志量增加**：每次 multi_query 一行 `[multi_query_metrics]`；log 量约 +20%，与 token 节省相比可忽略<br>• **单路短路不会触发 fuse-first**：queries=1 走 search_policy（可能调 rerank），不走 fuse-first 路径；未来如需"强制 fuse-first"再改 |
+
 ---
 
 ## 4. 优先级与时间投入
