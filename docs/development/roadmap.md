@@ -344,6 +344,24 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 
 ---
 
+### 3.11 P2 SSE 流式中断续传 — checkpoint 重发 + 静默 resume（P2 backlog 第 3 项 · 收尾）
+
+> **状态**：✅ 完成（2026-07-15，单 commit）
+> **学习日志**：`docs/learning_log.md §34`
+> **MVP 边界（用户拍板 · 极重要）**：优先 checkpoint 恢复 / **不调 LLM 续写** / 用户侧完全无感 / 失败提示降级到"消息未送达"
+
+| 项 | 内容 |
+|----|------|
+| **目标** | AI 客服流式回复时网络断开/刷新页面，用户视角**完全无感**：自动续传已流内容（prefix 重发），不暴露任何"续传""AI 补救"等痕迹。AI 客服"拟人度"是核心 KPI（V3.1 §6）。 |
+| **范围（实绩）** | • 后端：每条 SSE event 加 `id: {seq}\n` 行（SSE 标准 Last-Event-ID 协议）<br>• 后端：每 token event 异步写 Redis checkpoint（`chat:stream:{sid}:{stream_id}`，HSET + TTL 600s）<br>• 后端：流式回合分配 `stream_id = uuid4().hex[:12]`（注入 meta 事件）<br>• 后端：`done` 清理 checkpoint；`CancelledError` 同步兜底写最终 checkpoint<br>• 后端：新增 `POST /api/chat/resume`（读 checkpoint → yield `resume_prefix` → done → closed）<br>• 后端：限流 `STREAM_MAX_RESUME_TIMES = 2`（同 `(session_id, stream_id)` 最多 2 次）<br>• 前端：`streamChat` 解析 `id:` 行挂 `event.id`；新增 `resumeChat()` 函数<br>• 前端：`ChatPage.vue` catch 静默 resume，最多自动 1 次；失败仅显示"消息未送达，请重试"<br>• 测试：18 单测（redis_store 6 + sse_format 3 + schema 3 + resume 端点 4 + 常量 2） |
+| **不范围（YAGNI §3.3 · MVP 边界）** | • **不调 LLM 续写**（用户拍板）：resume 只重发 prefix，done 即视为完成；LLM 续写作为未来增强<br>• **不显示任何续传提示**（用户拍板）：catch 块静默，不暴露"网络中断""续传中"等<br>• **不做跨设备续传**：stream 状态在内存，不存 sessionStorage<br>• **不做 EventSource**：继续用 fetch + ReadableStream（因 POST body 兼容）<br>• **不做 resume 进度条**：先做"是否成功"，不做"续了多少"<br>• **不做流速拟人化**（用户拍板移出 MVP）：token 延迟优化放后续体验期 |
+| **新建** | `backend/app/schemas/chat.py::ResumeRequest`（与 `ChatRequest` 字段高度重叠，独立 schema 便于版本演进）<br>`backend/tests/test_sse_resume.py`（18 用例）<br>前端 `frontend/src/api.ts::resumeChat()` 函数<br>前端 `frontend/src/types.ts::resume_prefix` 事件类型 |
+| **修改** | `backend/app/services/redis_store.py`（+80 行 · `set_stream_checkpoint` / `get_stream_checkpoint` / `del_stream_checkpoint` / `increment_resume_count` + 2 常量）<br>`backend/app/api/chat.py`（+120 行 · `_sse_format` 加 seq 参数 + `event_generator` 加 stream_id/seq/checkpoint + 新增 `/chat/resume` 端点）<br>`frontend/src/api.ts`（+90 行 · streamChat 解析 `id:` 行 + 新增 `resumeChat`）<br>`frontend/src/types.ts`（+15 行 · StreamEvent 加 `id?` / `stream_id?` / `resume_prefix` 事件类型）<br>`frontend/src/views/ChatPage.vue`（+50 行 · sendMessage 静默 resume 循环） |
+| **关键设计决策** | • **MVP 边界是产品决策**：原方案 3 策略（重发 / LLM 续写 / 拼接）→ 用户拍板"checkpoint 重发即可"。技术完备性会让"拟人度"更差<br>• **SSE `id:` 行是协议级 hook**：浏览器 EventSource 原生支持，但本项目用 fetch+ReadableStream（POST body），必须手动解析<br>• **异步 + CancelledError 兜底**：token event 用 `create_task` fire-and-forget；`CancelledError` 块必须**同步**再写一次（task 不保证完成）<br>• **resume_prefix 替换而非追加**：前端 catch 后 streamingText 已清空，resume 返回的 prefix 必须**替换**而非 `+=`（这是踩坑高发区）<br>• **限流分层**：后端硬限 2 次（GET-then-INCR 模式，race window < 1ms）+ 前端自动 1 次 + 手动 1 次<br>• **失败提示降级**："消息未送达，请重试"是普通网络失败提示，不暴露 AI / 流式 / 续传等技术概念<br>• **query 不匹配返 410**：防 query mismatch 注入（攻击者无法用 checkpoint 重放不同 query） |
+| **关闭缺口** | • **P2 backlog 第 3 项「流式中断续传」**：从待启动 → 完成<br>• **新增能力层**（不在原 G 缺口表）：SSE 标准 Last-Event-ID 协议合规 + 网络容错用户感知降级 |
+| **验证** | • 后端 pytest **321/322 PASS**（303 baseline + 18 sse_resume；1 pre-existing flaky `test_prompt_loader_version.py` 与本次无关）<br>• 前端 `npm run type-check` 0 错误<br>• 用户视角：断流后自动续传，无任何技术提示<br>• 后端路由：`/api/chat` + `/api/chat/resume` 双路由并联 |
+| **已知限制** | • 不调 LLM 续写 → 用户看到的就是 prefix（消息可能"短了一点"，但通常 prefix 已含核心信息）<br>• 升级路径：未来 `/chat/resume?continue=1` 可调 LLM "接着写..." 模式<br>• 跨设备不续传（前端 stream 状态在内存）<br>• 同 stream_id 限 2 次（用户第 3 次断流需手动重发） |
+
 ---
 
 ## 4. 优先级与时间投入

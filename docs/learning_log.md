@@ -3829,3 +3829,159 @@ loader.load("agent", version="v99")
 - **缓存 key 升 tuple 不是免费的**：现有 `_cache` 类型注解从 `Dict[str, ...]` 改成 `Dict[Tuple[str, str], ...]` —— 测试里直接访问 `loader._cache` 验证 key 形式的用例能立刻发现这种变化
 - **"机制跑通"和"生产可用"的差距**：本次只做到了 manifest 加载 + 缓存 + 兼容，生产可用还需要：reload prompt 不重启服务（已有 mtime）、多实例同步（v2 阶段）、监控哪个版本被加载（v2 阶段）
 
+---
+
+## 34. P2 / SSE 流式中断续传 — checkpoint 重发 + 静默 resume（2026-07-15）
+
+### What（做了什么）
+
+P2 backlog 第 3 项「流式中断续传（SSE resume）」闭环。核心思路：**checkpoint 重发 + 静默 resume**，用户视角完全无感。
+
+- 后端：每条 SSE event 加 `id: {seq}\n` 行（SSE 标准 Last-Event-ID 协议）
+- 后端：每个 token event 异步写 Redis checkpoint（`chat:stream:{sid}:{stream_id}`），TTL 600s
+- 后端：每个流式回合分配 `stream_id = uuid4().hex[:12]`（注入 meta 事件）
+- 后端：`done` 事件后清理 checkpoint；`CancelledError` 同步兜底写最终 checkpoint
+- 后端：新增 `POST /api/chat/resume` 端点，读 checkpoint 后 yield `resume_prefix` 事件一次性重发
+- 后端：限流（`STREAM_MAX_RESUME_TIMES = 2`，同 `(session_id, stream_id)` 最多 2 次）
+- 前端：`streamChat` 解析 `id:` 行挂到 `event.id`；`resumeChat()` 新函数 POST `/api/chat/resume`
+- 前端：`ChatPage.vue` catch 块静默调 `resumeChat`，最多自动 1 次；超限或失败仅显示"消息未送达，请重试"（不暴露 AI 痕迹）
+- 测试：18 单测（redis_store 6 + sse_format 3 + schema 3 + resume 端点 4 + 常量 2）
+
+### Why（为什么）
+
+P2 backlog 三项核心交付（CI、长程记忆、SSE resume）的最后一项。Sprint 5 阶段 1（Prompt 版本管理）刚闭环，趁热打铁收掉 P2 队列。
+
+用户拍板的 MVP 边界（极重要）：
+1. **优先 checkpoint 恢复，不直接 LLM 续写** → resume 端点只重发 prefix，**不调 LLM**。简洁、实现快、行为可预测
+2. **用户侧完全无感** → catch 块静默 resume，**不显示**"网络中断""续传中""AI 正在补救"等任何提示
+3. **失败提示降级** → 仅显示"消息未送达，请重试"（普通网络失败提示），不暴露 AI / 流式 / 续传等技术概念
+4. **限流分层** → 后端硬限 2 次（同 stream_id），前端自动 1 次 + 手动 1 次（用户主动重发 query）
+
+这条边界背后的产品逻辑：**AI 客服的"拟人度"是核心 KPI**——任何暴露技术痕迹的提示（"续传中""AI 正在思考"）都会让用户立刻意识到"对面是 AI"。V3.1 业务架构 §6 明确"聊天窗内降低 AI 感知"是合规边界下的最优解。
+
+### Tech（技术栈）
+
+| 项 | 值 |
+|----|----|
+| 后端事件协议 | SSE + 标准 `id:` 行（Last-Event-ID） |
+| Checkpoint 存储 | Redis HSET：`chat:stream:{sid}:{stream_id}` 存 `prefix_text` / `last_event_id` / `query` / `created_at` |
+| Checkpoint TTL | 600s（覆盖典型网络抖动 + 重连） |
+| Stream ID 生成 | `uuid.uuid4().hex[:12]`（前端拿到后存 sessionStorage 备用） |
+| Resume 端点 | `POST /api/chat/resume`，返 `resume_prefix` → `done` → `closed` 三事件 |
+| Resume 限流 | 后端 GET-then-INCR 模式；上限 `STREAM_MAX_RESUME_TIMES = 2` |
+| 前端 SSE 解析 | fetch + ReadableStream，**新增** 解析 `id:` 行 + 兼容多行 SSE event |
+| 前端断流检测 | `for await` 抛错（reader.read 中断 / 网络断开） |
+| 前端静默 resume | 闭包内 `while + resumeAttempt` 循环，最多 1 次自动重试 |
+| 改动文件 | `redis_store.py` (+80) + `chat.py` (+120) + `schemas/chat.py` (+30) + `api.ts` (+90) + `views/ChatPage.vue` (+50) + `types.ts` (+15) + 测试 18 用例 |
+
+### Flow（输入 → 输出）
+
+#### 正常流（无断流）
+
+```
+客户端 POST /api/chat
+    ↓
+后端分配 stream_id = uuid4().hex[:12]，seq = 0
+    ↓
+事件循环：
+  meta → id:1, data:{type:meta, stream_id, ...}
+  token "你" → id:2, data:{type:token, text:"你"}；full_answer="你"；异步 HSET checkpoint
+  token "好" → id:3, data:{type:token, text:"好"}；full_answer="你好"；异步 HSET checkpoint
+  ...
+  done → id:N, data:{type:done, session_id}；DEL checkpoint
+  closed → id:N+1, data:{type:closed}
+```
+
+#### 断流 + resume（核心场景）
+
+```
+客户端发起 → 收到 token "你" (id:2) → 网络断开
+    ↓
+后端 CancelledError → 同步写 checkpoint (full_answer="你", seq=2)
+    ↓
+前端 catch（未收到 done）：
+  维护的 lastEventId = 2
+  captured stream_id = "a1b2c3d4e5f6"
+  自动调 resumeChat(sessionId, stream_id, query, 2, ctx)
+    ↓
+后端 POST /api/chat/resume：
+  - 读 checkpoint → 命中
+  - 校验 query 匹配
+  - INCR resume_count = 1（< 2 通过）
+  - yield id:1, data:{type:resume_prefix, prefix_text:"你", from_event_id:2}
+  - yield id:2, data:{type:done, session_id}
+  - yield id:3, data:{type:closed}
+    ↓
+前端消费：
+  - 收到 resume_prefix → streamingText.value = "你"（**替换**而非追加，因为前次流已清空）
+  - 收到 done → 固化 assistant 消息（full_answer="你"）
+  - 收到 closed → 完成
+    ↓
+用户视角：消息完整呈现，无任何"续传"提示
+```
+
+#### 异常路径
+
+| 场景 | 后端响应 | 前端处理 |
+|------|---------|---------|
+| checkpoint TTL 过期（>600s） | 410 Gone | catch → 第 2 次自动 resume 失败 → "消息未送达" |
+| query 不匹配（注入防护） | 410 Gone | 同上 |
+| 同 stream_id resume 第 3 次 | 410 Gone（限流） | 同上 |
+| 前端 catch 时无 stream_id | （无法 resume） | "消息未送达，请重试" |
+
+### Problem & Fix（问题 → 解决）
+
+| 问题 | 解决 |
+|------|------|
+| 异步 checkpoint 写入在 CancelledError 时可能丢失 | `CancelledError` 块同步写一次（覆盖异步未完成部分） |
+| SSE parser 原本只解析 `data:` 行，忽略 `id:` | 重写 parser：每 event 遍历 lines，分别处理 `id:` 和 `data:` |
+| Resume 后 LLM 怎么"接着 prefix 续写"？输出可能偏移 | **不做 LLM 续写**（用户拍板 MVP 边界）：resume 只重发 prefix，done 即视为完成。LLM 续写作为未来增强 |
+| Resume 后前端 fullAnswer 已包含 prefix，resume_prefix 又重发 → 重复 | `resume_prefix` 处理时**替换** `fullAnswer = prefix_text` + `streamingText.value = prefix_text`（不追加） |
+| `asyncio.create_task(asyncio.to_thread(...))` 在 generator 异常时 task 可能被取消 | `try/except RuntimeError` 兜底；正常情况 task 已 fire-and-forget 跑完 to_thread |
+| Redis 单例 + import alias 导致 mock 困难（`from app.clients.redis_client import get_client as redis_get` 后 patch 原函数无效） | 测试中**同时 patch 两个位置**：`app.clients.redis_client.get_client` + `app.services.redis_store.redis_get` |
+| 前端 fetch + ReadableStream 拿不到标准 `Last-Event-ID`（浏览器不自动管理） | 手动解析 `id:` 行挂到 `event.id`，caller 自己维护 lastEventId 状态 |
+
+### Architecture Role（在系统中的位置）
+
+- **位置**：横跨 chat 后端 + 前端 ChatPage；不破坏任何模块边界
+- **接口新增**：`POST /api/chat/resume`（与 `/api/chat` 同 prefix、同 router、同 SSE 协议）
+- **Schema 新增**：`ResumeRequest`（与 `ChatRequest` 字段高度重叠，独立 schema 便于版本演进）
+- **依赖**：`redis_store`（新增 4 个函数：`set/get/del/increment_resume_count`）
+- **§9.6 Prompt 独立管理**：本次**未涉及 prompt**（resume 走 prefix 重发，不调 LLM）
+- **§9.7 自检 5 问**：
+  1. 无 A→B 直接 import（chat 后端调 `redis_store` 接口，不是直接连 Redis）
+  2. 模块边界清晰（仅 chat + 前端 ChatPage，不侵入 RAG / Emotion / Order）
+  3. Protocol 先于实现：复用现有 `StreamingResponse` 协议，不破坏 chat 接口签名
+  4. 不破坏接口签名（chat 接口签名不变；新加 resume 子端点）
+  5. 可独立测试：18 个 mock 单测，无需真实 Redis / LLM
+
+### Tests（测试方案）
+
+| 类 | 用例数 | 覆盖点 |
+|----|--------|--------|
+| `TestRedisStoreStreamCheckpoint` | 6 | pipeline 写入 / TTL=600 / get 命中 + miss / del 双 key / INCR 返值 |
+| `TestSseFormatWithSeq` | 3 | seq=None 向后兼容 / seq=N 加 id 行 / seq=1 渲染 |
+| `TestResumeRequestSchema` | 3 | 必填字段 / stream_id 长度=12 / query 长度≤2000 |
+| `TestChatResumeEndpointPreCheck` | 4 | checkpoint miss 410 / query mismatch 410 / 限流 410 / 正常返 StreamingResponse |
+| `TestStreamResumeConstants` | 2 | MAX_RESUME_TIMES=2 / CHECKPOINT_TTL=600 |
+
+验证：321/322 PASS（303 既有 + 18 新增；1 个 `test_prompt_loader_version.py` 是 pre-existing flaky test，git stash 后仍失败，与本次无关）
+
+### 已知限制（MVP 边界）
+
+- **不调 LLM 续写**：resume 只重发已流的 prefix；如果 LLM 本来还能继续生成 N 个 token，用户看到的就是 prefix（消息看起来"突然变短"）
+  - 缓解：通常 prefix 已包含核心信息（"退款流程是先..."），用户察觉概率低
+  - 升级路径：未来可加 `/chat/resume?continue=1` 调 LLM "接着写..." 模式
+- **跨设备 / 跨浏览器不续传**：前端 checkpoint 在内存（不存 sessionStorage，因为这是 stream 状态不是用户偏好）；切设备 = 用户重新发问
+- **同 stream_id 限 2 次**：用户第 3 次断流需要手动重发 query（前端不再自动 retry）
+- **pre-existing flaky test**：`test_prompt_loader_version.py::test_v2_content_change_picks_up`（mtime 缓存刷新问题，与本次无关，已知 4 天以上）
+
+### 反思（教训沉淀）
+
+- **MVP 边界是产品决策，不是技术决策**：原方案设计了 3 种 resume 策略（重发 / LLM 续写 / 拼接），用户拍板"checkpoint 重发即可"。如果按技术完备性去做 LLM 续写，会引入 prompt 工程复杂度 + byte-level 一致性保证 + 续写 prompt 配置化，反而离用户目标（拟人度）更远
+- **AI 客服的"拟人度"是核心 KPI**：resume 失败时**只显示"消息未送达"**而非"网络中断，AI 正在续传"，是这条原则的具体落地。任何带"AI""续传""补救"等字眼的提示都会立刻让用户意识到对面不是人
+- **SSE `id:` 行是协议级 hook**：浏览器 EventSource 原生支持 `Last-Event-ID` 自动重传；但本项目用 fetch + ReadableStream（因要 POST body），必须手动解析。前端 `event.id` 是协议合规的体现，不是冗余字段
+- **`asyncio.create_task` 在 generator 内的陷阱**：fire-and-forget 的 task 在 generator 抛 CancelledError 时**不保证完成**。所有 fire-and-forget 的副作用必须在 except 块同步重做（这里就是同步写 checkpoint）
+- **Redis mock 的 import alias 陷阱**：`from X import Y as Z` 后，`Y` 和 `Z` 在目标模块里都是本地变量绑定；`patch("X.Y")` 不会影响已 import 走的 `Z`。测试需要 patch **所有**别名路径（`app.clients.redis_client.get_client` + `app.services.redis_store.redis_get`）
+- **resume_prefix 替换 vs 追加**：前端 catch 后 `streamingText.value = ''`（已清空），resume 返回的 prefix 必须**替换**而非追加。文档化和代码注释都强调这点，避免后人"想当然"用 `+=` 拼接
+
