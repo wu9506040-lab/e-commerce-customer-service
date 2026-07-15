@@ -1,24 +1,24 @@
-# 项目当前状态 · 恢复记忆（2026-07-14 **Sprint 5 阶段 1 Prompt 版本管理 完成**后）
+# 项目当前状态 · 恢复记忆（2026-07-15 **P2 SSE 流式中断续传 完成**后）
 
 > 本文件是**会话级恢复记忆**，不是长期文档基线。
 > 长期基线：`CLAUDE.md`（V2.1） / `docs/architecture/business.md` / `docs/development/roadmap.md`。
 > 本文件下次启动开发时**先读**，然后决定是否仍相关（轻量修订即可）。
 >
-> **本次会话状态**：完成 Sprint 5 阶段 1（Prompt 版本管理：manifest 模式 + 兼容模式），MVP 边界（用户拍板）：保留 version 机制 / 暂缓 rollout 灰度 / 暂缓 6 YAML 全量迁移。pytest 全量 **286/286 PASS**。下一动作：commit + push + CI 验证。
+> **本次会话状态**：完成 P2 SSE 流式中断续传（checkpoint 重发 + 静默 resume），MVP 边界（用户拍板）：优先 checkpoint 恢复 / **不调 LLM 续写** / 用户侧完全无感 / 失败提示降级到"消息未送达"。pytest **321/322 PASS**（1 个 pre-existing flaky test 与本次无关）。下一动作：commit + push + CI 验证。
 
 ---
 
 ## 0. 一句话状态
 
-**Phase 0 治理 + Sprint 1/2/3 + Sprint 4（5 阶段 + 收尾）+ Phase 4 A4（Multi-Query 检索增强）+ P2 长程记忆（跨 session 用户画像）+ Sprint 5 阶段 1（Prompt 版本管理）全部完成 ✅。**
+**Phase 0 治理 + Sprint 1/2/3 + Sprint 4（5 阶段 + 收尾）+ Phase 4 A4（Multi-Query 检索增强）+ P2 长程记忆（跨 session 用户画像）+ Sprint 5 阶段 1（Prompt 版本管理）+ P2 SSE 流式中断续传 全部完成 ✅。**
 
-**28 个 commit 已提交**（Sprint 1：4 / Sprint 2：4 / Sprint 3：5 / Sprint 4：9 / Phase 4 A4：2 / P2 长程记忆：2 / Sprint 5 阶段 1：2 [1 feat + 1 docs]），**pytest 286 passed**（含 Phase 4 A4 19 + P2 长程记忆 27 + Sprint 5 阶段 1 16 新增用例），架构验收 🟢 8 / 🟡 3 / 🔴 0。
+**29 个 commit 已提交**（Sprint 1：4 / Sprint 2：4 / Sprint 3：5 / Sprint 4：9 / Phase 4 A4：2 / P2 长程记忆：2 / Sprint 5 阶段 1：2 / **P2 SSE resume：1**），**pytest 321 passed**（含 Phase 4 A4 19 + P2 长程记忆 27 + Sprint 5 阶段 1 16 + **SSE resume 18** 新增用例），架构验收 🟢 8 / 🟡 3 / 🔴 0。
 
-P2 backlog（CI 配置增强 / SSE resume / HTTPS · 3/5 已启动 2 项）或 Phase 4 A5+（并行多路 / RRF 加权 / HyDE / 融合后 rerank）待启动。Sprint 5 后续阶段（traffic_ratio 灰度 + 5 YAML 迁移 + 多租户）按需启动。
+P2 backlog（CI 配置增强 / SSE resume / HTTPS · 5/5 中已完成 4 项）或 Phase 4 A5+（并行多路 / RRF 加权 / HyDE / 融合后 rerank）待启动。Sprint 5 后续阶段（traffic_ratio 灰度 + 5 YAML 迁移 + 多租户）按需启动。
 
 ---
 
-## 1. 已完成的 Sprint（6/6 阶段 = 100%）+ Phase 4 A4 + P2 长程记忆 + Sprint 5 阶段 1
+## 1. 已完成的 Sprint（6/6 阶段 = 100%）+ Phase 4 A4 + P2 长程记忆 + Sprint 5 阶段 1 + P2 SSE resume
 
 | Sprint | 主题 | commit 数 | 行数变化 | 关闭 Roadmap 缺口 | 状态 |
 |--------|------|----------|---------|------------------|------|
@@ -32,6 +32,7 @@ P2 backlog（CI 配置增强 / SSE resume / HTTPS · 3/5 已启动 2 项）或 P
 | Phase 4 A4 | query_rewriter 多路改写 + policy 多路 RRF 融合 | 2 | +353 / -14（feature）+ test+docs+eval | 业务能力纵深（新增能力层） | ✅ 完成 |
 | **P2 长程记忆** | user_profiles + profile_service + prompt 注入 | 2 | +419 / -3（feature）+ test+docs | §9.5 用户级分析基础设施 | ✅ 完成 |
 | **Sprint 5 阶段 1** | Prompt 版本管理（manifest + 兼容 + mtime max） | 2 | +85（feat）+ test+docs | §9.6 Prompt 版本管理基础 | ✅ 完成 |
+| **P2 SSE resume** | SSE 流式中断续传（checkpoint 重发 + 静默 resume） | 1 | 后端 + 前端 + 测试 18 | P2 backlog 第 3 项；AI 客服"拟人度"KPI | ✅ 完成 |
 | S5 阶段 2+ | traffic_ratio 灰度 + 5 YAML 迁移 | - | - | §9.6 灰度 | ⏸ 按需启动 |
 | S6 | 多租户 MVP 预备 | - | - | G9 | ⏸ 待办 |
 
