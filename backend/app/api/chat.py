@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Generator, Optional, Tuple, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -29,13 +30,21 @@ from app.api.deps import get_current_user_optional
 from app.core.config import settings
 from app.core.context import set_session_id, set_user_id  # M8
 from app.models.user import User
-from app.schemas.chat import ChatRequest
+from app.schemas.chat import ChatRequest, ResumeRequest
 from app.services.audit_service import try_log_action
 from app.services.behavior_monitor import behavior_monitor  # M11.5 P2
 from app.services.chat.orchestrator import Synthesizer  # Sprint 3：从 services/synthesizer 切到 services/chat/orchestrator
 from app.services.chat.prompt_assembler import _build_meta_contexts  # Sprint 3：原 services/synthesizer
 from app.services.metrics import metrics  # M8
 from app.services.policy_service import PolicyService
+# Sprint P2 / SSE Resume：stream checkpoint 写入/读取/清理
+from app.services.redis_store import (
+    STREAM_MAX_RESUME_TIMES,
+    del_stream_checkpoint,
+    get_stream_checkpoint,
+    increment_resume_count,
+    set_stream_checkpoint,
+)
 from app.services.session_service import (
     ANONYMOUS_USER_ID,
     append_exchange,
@@ -73,8 +82,14 @@ def _user_agent(request: Request) -> Optional[str]:
     return ua[:500] if ua else None
 
 
-def _sse_format(data: dict) -> str:
-    """格式化为 SSE data 行（每条 event 以 \\n\\n 结束）"""
+def _sse_format(data: dict, seq: Optional[int] = None) -> str:
+    """格式化为 SSE data 行（每条 event 以 \\n\\n 结束）
+
+    Sprint P2 / SSE Resume：传 seq 时加 `id: {seq}\\n` 行（SSE 标准 Last-Event-ID 协议）。
+    seq 为 None 时保持原格式（向后兼容 guard/cache 等不需要 resume 的路径）。
+    """
+    if seq is not None:
+        return f"id: {seq}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
@@ -258,6 +273,10 @@ async def chat(
         scores: list = []
         last_heartbeat = time.time()
         chat_start = time.perf_counter()  # M8：记录 chat 总耗时
+        # Sprint P2 / SSE Resume：本回合 stream_id（前端拿到后用于 resume）
+        # + seq 计数器（每个 SSE event 自增，写入 id: 行）
+        stream_id = uuid.uuid4().hex[:12]
+        seq = 0
         # 把 Synthesizer.run_stream 包装成 async iterator
         # （它原本是同步 generator，用 to_thread 异步化）
         from app.services.chat.orchestrator import Synthesizer as _S
@@ -303,13 +322,25 @@ async def chat(
                 event_type, data = item
 
                 if event_type == "meta":
-                    meta_payload = {**data}
+                    seq += 1
+                    meta_payload = {**data, "stream_id": stream_id}
                     contexts = meta_payload.get("contexts", [])
                     scores = meta_payload.get("scores", [])
-                    yield _sse_format({"type": "meta", **meta_payload})
+                    yield _sse_format({"type": "meta", **meta_payload}, seq=seq)
                 elif event_type == "token":
+                    seq += 1
                     full_answer += data
-                    yield _sse_format({"type": "token", "text": data})
+                    yield _sse_format({"type": "token", "text": data}, seq=seq)
+                    # Sprint P2 / SSE Resume：异步写 checkpoint（fire-and-forget，
+                    # 不阻塞流；CancelledError 块会同步兜底覆盖最终状态）
+                    try:
+                        asyncio.create_task(asyncio.to_thread(
+                            set_stream_checkpoint,
+                            session_id, stream_id, full_answer, seq, payload.query,
+                        ))
+                    except RuntimeError:
+                        # 无 running loop（极端边界）→ 跳过；下次 token 会覆盖
+                        pass
                 elif event_type == "done":
                     # write-through（best-effort）
                     try:
@@ -366,7 +397,15 @@ async def chat(
                         },
                     )
 
-                    yield _sse_format({"type": "done", "session_id": session_id})
+                    yield _sse_format({"type": "done", "session_id": session_id}, seq=seq + 1)
+                    seq += 1
+                    # Sprint P2 / SSE Resume：正常完成清理 checkpoint
+                    try:
+                        await asyncio.to_thread(
+                            del_stream_checkpoint, session_id, stream_id
+                        )
+                    except Exception as e:
+                        logger.warning(f"checkpoint 清理失败（TTL 自然过期兜底）: {e}")
                     # M8：记录 chat 延迟（流式总耗时）
                     metrics.record_chat_latency(
                         round((time.perf_counter() - chat_start) * 1000, 1)
@@ -385,6 +424,14 @@ async def chat(
                 f"/chat 客户端取消（CancelledError）: "
                 f"session={session_id[:12]}..., answer_so_far={len(full_answer)} {user_ctx}"
             )
+            # Sprint P2 / SSE Resume：同步写最终 checkpoint（兜底覆盖异步 task 可能丢失的写入）
+            # 同步调用，不 await，避免在 CancelledError 路径再次被取消
+            try:
+                set_stream_checkpoint(
+                    session_id, stream_id, full_answer, seq, payload.query
+                )
+            except Exception as e:
+                logger.warning(f"checkpoint 同步落盘失败: {e}")
             # 不再 yield（连接已断，yield 无效）
             raise
         except ValueError as e:
@@ -411,3 +458,167 @@ async def chat(
     )
     # M8：ContextVar 是 per-task，generator 跑在同一 task 内无需 reset
     # （下一个请求会覆盖 set）
+
+
+# =============================================================
+# POST /chat/resume - SSE 流式中断续传（Sprint P2 / SSE Resume）
+# =============================================================
+# 设计：
+#   - 客户端在 /chat 流中断（未收到 done）后调用
+#   - 后端从 Redis checkpoint 读取 prefix_text，重发到前端
+#   - 不调 LLM 续写（用户拍板：checkpoint 重发即可，不强求"补全"）
+#   - 同 (session_id, stream_id) 最多 resume STREAM_MAX_RESUME_TIMES 次
+#   - 第 3 次断流 → 前端走普通重试（catch 后重新调 /chat）
+@router.post(
+    "/chat/resume",
+    summary="SSE 流式中断续传（checkpoint 重发）",
+    description=(
+        "当 /chat 流中断且未收到 done 时调用。"
+        "后端从 Redis checkpoint 读取 prefix_text 一次性重发，"
+        "前端可立即渲染（用户视角无感）。"
+        "同 (session_id, stream_id) 最多 2 次续传。"
+    ),
+    response_class=StreamingResponse,
+)
+async def chat_resume(
+    request: Request,
+    payload: ResumeRequest,
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    """SSE 流式中断续传端点
+
+    事件流：
+        id: 1
+        data: {"type":"resume_prefix","prefix_text":"...","from_event_id":42}\\n\\n
+
+        id: 2
+        data: {"type":"done","session_id":"..."}\\n\\n
+
+        id: 3
+        data: {"type":"closed"}\\n\\n
+
+    异常路径（前置校验失败，返 410 / 404）：
+        - checkpoint 不存在 / TTL 过期 → 410 Gone
+        - query 不匹配 → 410 Gone（防 query mismatch 注入）
+        - resume 次数超限 → 410 Gone
+    """
+    session_id = payload.session_id
+    stream_id = payload.stream_id
+    user_id = user.id if user else ANONYMOUS_USER_ID
+    user_ctx = (
+        f"user={user.username}(id={user.id})" if user else "user=anonymous"
+    )
+
+    # 1. 读 checkpoint（不存在或 TTL 过期 → 410）
+    cp = await asyncio.to_thread(
+        get_stream_checkpoint, session_id, stream_id
+    )
+    if not cp:
+        logger.info(
+            f"/chat/resume checkpoint miss: session={session_id[:12]}..., "
+            f"stream_id={stream_id} {user_ctx}"
+        )
+        raise HTTPException(
+            status_code=410,
+            detail="checkpoint not found or expired",
+        )
+
+    # 2. query 校验（防 query mismatch 注入；用户拍板不缓存 query 无关前缀）
+    if cp["query"] != payload.query:
+        logger.warning(
+            f"/chat/resume query mismatch: session={session_id[:12]}..., "
+            f"stream_id={stream_id} {user_ctx}"
+        )
+        raise HTTPException(
+            status_code=410,
+            detail="query mismatch (resume 必须传相同的 query)",
+        )
+
+    # 3. 限流：先 GET 计数，超限直接 410（避免误扣）
+    #    race window 极小（< 1ms），业务上可接受
+    from app.clients.redis_client import get_client as _redis_get
+    count_key = f"chat:stream:resume_count:{session_id}:{stream_id}"
+    current_count_raw = await asyncio.to_thread(_redis_get().get, count_key)
+    current_count = int(current_count_raw or 0)
+    if current_count >= STREAM_MAX_RESUME_TIMES:
+        logger.info(
+            f"/chat/resume 限流: session={session_id[:12]}..., "
+            f"stream_id={stream_id}, count={current_count} {user_ctx}"
+        )
+        raise HTTPException(
+            status_code=410,
+            detail=f"resume limit exceeded (max={STREAM_MAX_RESUME_TIMES})",
+        )
+
+    # 4. INCR 增加计数（在 GET 通过后；race 时最多多扣 1 次，可接受）
+    await asyncio.to_thread(
+        increment_resume_count, session_id, stream_id
+    )
+
+    logger.info(
+        f"/chat/resume start: session={session_id[:12]}..., "
+        f"stream_id={stream_id}, prefix_len={len(cp['prefix_text'])}, "
+        f"count_after={current_count + 1} {user_ctx}"
+    )
+
+    # 5. ContextVar 注入（与 chat 端点对齐，便于日志追踪）
+    set_session_id(session_id)
+    set_user_id(user_id if user else None)
+
+    # 6. async generator：resume_prefix → done → closed
+    async def resume_event_generator():
+        seq = 0
+        try:
+            # 客户端断开检测（resume 流极短，但保留健壮性）
+            if await request.is_disconnected():
+                logger.info(
+                    f"/chat/resume 客户端提前断开: session={session_id[:12]}..., "
+                    f"stream_id={stream_id} {user_ctx}"
+                )
+                return
+
+            # 6.1 resume_prefix：一次性把已流 prefix 重发给前端
+            seq += 1
+            yield _sse_format(
+                {
+                    "type": "resume_prefix",
+                    "prefix_text": cp["prefix_text"],
+                    "from_event_id": int(cp["last_event_id"]),
+                    "stream_id": stream_id,
+                },
+                seq=seq,
+            )
+
+            # 6.2 done（标记本回合完成）
+            seq += 1
+            yield _sse_format(
+                {"type": "done", "session_id": session_id},
+                seq=seq,
+            )
+
+            # 6.3 graceful close
+            seq += 1
+            yield _sse_format({"type": "closed"}, seq=seq)
+
+            logger.info(
+                f"/chat/resume done: session={session_id[:12]}..., "
+                f"stream_id={stream_id}, prefix_len={len(cp['prefix_text'])} {user_ctx}"
+            )
+
+        except asyncio.CancelledError:
+            # resume 流极短，CancelledError 概率极低；保留防御性日志
+            logger.info(
+                f"/chat/resume CancelledError: session={session_id[:12]}..., "
+                f"stream_id={stream_id} {user_ctx}"
+            )
+            raise
+
+    return StreamingResponse(
+        resume_event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
