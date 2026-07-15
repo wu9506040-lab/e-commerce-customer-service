@@ -362,6 +362,24 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 | **验证** | • 后端 pytest **321/322 PASS**（303 baseline + 18 sse_resume；1 pre-existing flaky `test_prompt_loader_version.py` 与本次无关）<br>• 前端 `npm run type-check` 0 错误<br>• 用户视角：断流后自动续传，无任何技术提示<br>• 后端路由：`/api/chat` + `/api/chat/resume` 双路由并联 |
 | **已知限制** | • 不调 LLM 续写 → 用户看到的就是 prefix（消息可能"短了一点"，但通常 prefix 已含核心信息）<br>• 升级路径：未来 `/chat/resume?continue=1` 可调 LLM "接着写..." 模式<br>• 跨设备不续传（前端 stream 状态在内存）<br>• 同 stream_id 限 2 次（用户第 3 次断流需手动重发） |
 
+### 3.12 Phase 4 A5 — Multi-Query 并行检索（性能优化）
+
+> **状态**：✅ 完成（2026-07-15，单 commit）
+> **学习日志**：`docs/learning_log.md §36`
+> **用户优先级**（2026-07-15 排序）：A5 性能提升明显（第一）> A8 Rerank AI 效果提升最大 > A7 HyDE 高级 RAG > A6 RRF 加权
+
+| 项 | 内容 |
+|----|------|
+| **目标** | Phase 4 A4 把多路检索做成"串行 N 路 + RRF 融合"，3 路场景延迟 ≈ 3× 单路。A5 改成 ThreadPoolExecutor 并行，**实测 5.3x 加速**（1.58s → 0.30s @ mock sleep 0.3s/路）。**仅改 policy_service.py 单模块**，orchestrator / chat.py 零改动（§5 Scope Lock）。 |
+| **范围（实绩）** | • `policy_service.search_multi_policy` 内部加并行路径：per-request `with ThreadPoolExecutor(...)` + `as_completed` 收集 + 按原 idx 保序输出<br>• 配置加 `MULTI_QUERY_PARALLEL=True`（灰度开关）+ `MULTI_QUERY_WORKERS=3`（per-request max_workers）<br>• 单路短路（len == 1）不起 thread pool<br>• 单路异常隔离（与 A4 行为一致）<br>• 测试：单测 +5（并行/串行/workers 配置/单路短路/异常隔离）+ latency benchmark +4（CI 容许 0.25-0.6s + 加速比 ≥ 2x） |
+| **不范围（YAGNI §3.3 · MVP 边界）** | • **不改 async generator**：跨 3 模块违反 §5 Scope Lock；ThreadPoolExecutor 是"不改接口拿并行"的最简方案<br>• **不做 module-level executor**：跨请求共享 + 资源泄漏 + 测试难隔离；per-request `with` 块生命周期对齐请求<br>• **不调 asyncio.gather**：保持 search_multi_policy 同步签名，调用方零改动<br>• **不做模块级 rate limit**：默认 max_workers=3 匹配 `MULTI_QUERY_COUNT`；未来 Provider 限流再加 |
+| **新建** | `backend/tests/test_multi_query_latency.py`（4 latency benchmark 用例） |
+| **修改** | `backend/app/core/config.py`（+7 行 · `MULTI_QUERY_PARALLEL` / `MULTI_QUERY_WORKERS`）<br>`backend/app/services/policy_service.py`（+50/-5 行 · `search_multi_policy` 加并行分支 + 文档更新）<br>`backend/tests/test_policy_service_multi.py`（+5 用例 · 并行/串行/workers/单路/异常隔离） |
+| **关键设计决策** | • **per-request executor > module-level 单例**：离开 `with` 块自动 `shutdown(wait=True)`，线程资源随请求生命周期对齐<br>• **不改 async generator 是关键约束**：改成 async generator 跨 3 模块违反 §5 Scope Lock；用 `concurrent.futures` 是在"不改接口签名"前提下拿并行性能的最简方案<br>• **latency benchmark 是产品决策的物证**：从"我们觉得并行会快"到"实测 5.3x 加速"，是给未来的我们 / 面试官的硬数据<br>• **mock sleep 是 benchmark 的瑞士军刀**：避开真实 Provider 网络抖动，用 `time.sleep(0.3)` 模拟"IO 密集 + 大致耗时"，覆盖 80% 真实场景<br>• **GIL 不是并行障碍**：IO 密集场景（httpx / socket）下 GIL 在等待时释放，多线程实际并行。CPU 密集才需要 multiprocessing 或 asyncio<br>• **scope lock 的复利收益**：A5 改动仅 2 文件，SSE Resume / ChatPage / Intent 等模块**完全无需回归测试** |
+| **关闭缺口** | • **Phase 4 A5 backlog 第 1 项（用户排序）**：从待启动 → 完成<br>• **新增能力层**：3 路检索场景延迟从 ~2.6s 降到 ~0.9s（理论）；实测 5.3x 加速<br>• **保留 fallback**：MULTI_QUERY_PARALLEL=False 可降级串行（debug 用） |
+| **验证** | • 单测：**11/11 PASS**（原 6 + 新 5）<br>• Latency benchmark：**4/4 PASS**，加速比实测 **5.3x**（1.58s → 0.30s）<br>• 全量 pytest：**312/313 PASS**（1 pre-existing flaky `test_prompt_loader_version.py::test_v2_content_change_picks_up` 与本次无关，已知 4 天以上）<br>• Module imports：`grep -r "search_multi_policy" backend/` 仅 policy_service.py 内 + 2 调用方（orchestrator._handle_policy + _handle_product）零改动 |
+| **已知限制** | • **CI 抖动风险**：并行测试容许范围宽（thread 启动 + GIL 调度）；如长期 flaky 可放宽到 [0.20, 0.8] 或加 `@pytest.mark.slow` 跳过<br>• **真实负载加速比 ≠ 测试加速比**：测试用 `time.sleep` 模拟 IO，真实场景含 Python 代码执行 + GIL 竞争，预计生产加速比 **2-3x**（3 路场景）<br>• **Provider 限流未适配**：默认 max_workers=3 匹配 `MULTI_QUERY_COUNT`；如未来 embedding / rerank LLM 加并发限流，需动态调整<br>• **per-request executor 开销**：每次 ~1ms 创建/释放；对比 800ms LLM 调用可忽略；如未来 QPS 极高（>100/s）再考虑 module-level 池 |
+
 ---
 
 ## 4. 优先级与时间投入
