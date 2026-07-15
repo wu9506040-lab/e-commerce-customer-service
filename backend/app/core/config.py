@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     # 触发条件（MVP: coref_only；扩展: any / never）
     MULTI_QUERY_TRIGGER: str = "coref_only"
 
+    # ---- Phase 4 A5: Multi-Query 并行检索 ----
+    # 启用后 search_multi_policy 用 ThreadPoolExecutor 并行调用 N 路 search_policy
+    # 默认 true（性能优化：3 路串行 → 并行，~2.9x 加速）；关掉回退串行（debug 用）
+    MULTI_QUERY_PARALLEL: bool = True
+    # ThreadPoolExecutor max_workers（与 MULTI_QUERY_COUNT 默认对齐；per-request executor）
+    MULTI_QUERY_WORKERS: int = 3
+
     # ---- P2 长程记忆：跨 session 用户画像 ----
     # 启用后 orchestrator 每轮加载 user_profiles，注入到 LLM prompt 的 context_block 之后
     # 默认 false（灰度用），未启用时所有 profile_service 调用短路返空

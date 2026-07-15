@@ -1,13 +1,21 @@
 """
-Phase 4 A4: PolicyService.search_multi_policy 单测
+Phase 4 A4 + A5: PolicyService.search_multi_policy 单测
 
 覆盖：
+A4 部分（6 用例）：
 1. queries 为空 → 返空 list
 2. 单路（queries 长度 = 1）→ 短路返回 search_policy 结果
 3. 多路正常 → 走 RRF 融合
 4. 单路异常 → 仅该路降级，其他路继续
 5. RRF 异常 → 降级返回首路结果
 6. schema 与 search_policy 一致（含 text/source/score/rerank_score/rrf_score）
+
+A5 部分（5 用例）：
+7. 并行模式启用时进入 ThreadPoolExecutor 分支
+8. MULTI_QUERY_PARALLEL=False 走原串行（不起 thread pool）
+9. MULTI_QUERY_WORKERS=2 时并发数 ≤ 2
+10. 单路查询短路，不创建 thread pool
+11. 并行模式下单路异常隔离（与 A4 测试 4 行为一致）
 """
 import os
 import sys
@@ -140,6 +148,146 @@ def test_schema_matches_search_policy():
         f"search_multi_policy 缺字段: {expected_keys - set(h.keys())}"
 
 
+# =============================================================
+# Phase 4 A5: Multi-Query 并行检索 单测
+# =============================================================
+
+def test_parallel_uses_thread_pool_when_enabled():
+    """场景 7：A5 默认 MULTI_QUERY_PARALLEL=True → 走 ThreadPoolExecutor 并行。"""
+    import threading
+    from app.core.config import settings
+    from app.services.policy_service import PolicyService
+
+    settings.MULTI_QUERY_PARALLEL = True
+    settings.MULTI_QUERY_WORKERS = 3
+    thread_names = []
+
+    def fake_search(query, top_k=3):
+        thread_names.append(threading.current_thread().name)
+        return _make_fake_hits(query, 2)
+
+    try:
+        with patch.object(PolicyService, "search_policy", side_effect=fake_search):
+            result = PolicyService.search_multi_policy(["q1", "q2", "q3"], top_k=3)
+
+        assert len(result) > 0
+        # ThreadPoolExecutor 用 thread_name_prefix="multi-policy"
+        assert any(t.startswith("multi-policy") for t in thread_names), \
+            f"并行模式应起 thread pool，实际 thread names: {thread_names}"
+    finally:
+        settings.MULTI_QUERY_PARALLEL = True
+        settings.MULTI_QUERY_WORKERS = 3
+
+
+def test_parallel_disabled_falls_back_to_serial():
+    """场景 8：MULTI_QUERY_PARALLEL=False → 走原串行（不起 thread pool）。"""
+    import threading
+    from app.core.config import settings
+    from app.services.policy_service import PolicyService
+
+    settings.MULTI_QUERY_PARALLEL = False
+    thread_names = []
+
+    def fake_search(query, top_k=3):
+        thread_names.append(threading.current_thread().name)
+        return _make_fake_hits(query, 2)
+
+    try:
+        with patch.object(PolicyService, "search_policy", side_effect=fake_search):
+            result = PolicyService.search_multi_policy(["q1", "q2", "q3"], top_k=3)
+
+        assert len(result) > 0
+        # 串行路径不起 pool，所有调用都在主线程
+        assert all(not t.startswith("multi-policy") for t in thread_names), \
+            f"串行模式不应起 thread pool，实际 thread names: {thread_names}"
+    finally:
+        settings.MULTI_QUERY_PARALLEL = True
+
+
+def test_parallel_workers_respects_config():
+    """场景 9：MULTI_QUERY_WORKERS=2 时 max_workers 上限为 2。"""
+    import threading
+    from app.core.config import settings
+    from app.services.policy_service import PolicyService
+    from concurrent.futures import ThreadPoolExecutor
+
+    settings.MULTI_QUERY_PARALLEL = True
+    settings.MULTI_QUERY_WORKERS = 2
+    active_workers = set()
+    active_lock = threading.Lock()
+
+    def fake_search(query, top_k=3):
+        with active_lock:
+            active_workers.add(threading.current_thread().name)
+        import time
+        time.sleep(0.05)  # 给并发观察窗口
+        return _make_fake_hits(query, 2)
+
+    try:
+        with patch.object(PolicyService, "search_policy", side_effect=fake_search):
+            PolicyService.search_multi_policy(["q1", "q2", "q3", "q4", "q5"], top_k=3)
+
+        # 5 个 query / 2 workers → 最多同时 2 个 worker thread
+        parallel_threads = {t for t in active_workers if t.startswith("multi-policy")}
+        assert len(parallel_threads) <= 2, \
+            f"workers=2 时实际并发 thread 数: {len(parallel_threads)}（{parallel_threads}）"
+    finally:
+        settings.MULTI_QUERY_WORKERS = 3
+
+
+def test_parallel_single_query_no_pool():
+    """场景 10：单路查询（len=1）→ 短路，不创建 thread pool。"""
+    import threading
+    from app.core.config import settings
+    from app.services.policy_service import PolicyService
+
+    settings.MULTI_QUERY_PARALLEL = True
+    thread_names = []
+
+    def fake_search(query, top_k=3):
+        thread_names.append(threading.current_thread().name)
+        return _make_fake_hits(query, 2)
+
+    try:
+        with patch.object(PolicyService, "search_policy", side_effect=fake_search):
+            result = PolicyService.search_multi_policy(["only"], top_k=3)
+
+        assert len(result) == 2  # 单路短路
+        assert all(not t.startswith("multi-policy") for t in thread_names), \
+            f"单路不应起 thread pool，实际 thread names: {thread_names}"
+    finally:
+        settings.MULTI_QUERY_PARALLEL = True
+
+
+def test_parallel_exception_isolation_unchanged():
+    """场景 11：并行模式下单路异常 → 仅该路降级，其他路继续。"""
+    from app.core.config import settings
+    from app.services.policy_service import PolicyService
+
+    settings.MULTI_QUERY_PARALLEL = True
+    settings.MULTI_QUERY_WORKERS = 3
+    call_count = [0]
+
+    def side_effect(query, top_k=3):
+        call_count[0] += 1
+        # 第 2 路失败（多线程下不一定严格是 2，但失败一定会出现一次）
+        if call_count[0] == 2:
+            raise RuntimeError("Qdrant timeout")
+        return _make_fake_hits(f"ok-{call_count[0]}", 2)
+
+    try:
+        with patch.object(PolicyService, "search_policy", side_effect=side_effect), \
+             patch("app.services.policy_service.logger"):
+            result = PolicyService.search_multi_policy(["q1", "q2", "q3"], top_k=3)
+
+        assert len(result) > 0  # 其他路结果继续
+        all_sources = [h["source"] for h in result]
+        assert any("ok-" in s for s in all_sources)
+    finally:
+        settings.MULTI_QUERY_PARALLEL = True
+        settings.MULTI_QUERY_WORKERS = 3
+
+
 if __name__ == "__main__":
     os.environ.setdefault("JWT_SECRET", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
     os.environ.setdefault("DATABASE_URL", "mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=utf8mb4")
@@ -149,4 +297,9 @@ if __name__ == "__main__":
     test_single_query_exception_continues_others()
     test_rff_fuse_failure_falls_back_to_first()
     test_schema_matches_search_policy()
-    print("\nALL 6 SCENARIOS PASSED")
+    test_parallel_uses_thread_pool_when_enabled()
+    test_parallel_disabled_falls_back_to_serial()
+    test_parallel_workers_respects_config()
+    test_parallel_single_query_no_pool()
+    test_parallel_exception_isolation_unchanged()
+    print("\nALL 11 SCENARIOS PASSED")
