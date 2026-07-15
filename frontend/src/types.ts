@@ -144,6 +144,10 @@ export interface RegisterPayload {
 export type StreamEvent =
   | {
       type: 'meta';
+      // Sprint P2 / SSE Resume：每个 SSE event 的 seq（id: 行解析）
+      id?: number;
+      // Sprint P2 / SSE Resume：本回合 stream_id（前端 catch 时存到 sessionStorage 用于 resume）
+      stream_id?: string;
       intent: string;
       entities: Entities;
       contexts: string[];
@@ -159,8 +163,10 @@ export type StreamEvent =
       v3_engine?: string;
       tool_result_preview?: string;
     }
-  | { type: 'token'; text: string }
-  | { type: 'done'; session_id: string }
-  | { type: 'error'; message: string }
-  | { type: 'heartbeat'; ts: number }
-  | { type: 'closed' };
+  | { type: 'token'; id?: number; text: string }
+  | { type: 'done'; id?: number; session_id: string }
+  | { type: 'error'; id?: number; message: string }
+  | { type: 'heartbeat'; id?: number; ts: number }
+  | { type: 'closed'; id?: number }
+  // Sprint P2 / SSE Resume：resume 端点一次性重发已流 prefix
+  | { type: 'resume_prefix'; id?: number; prefix_text: string; from_event_id: number; stream_id?: string };

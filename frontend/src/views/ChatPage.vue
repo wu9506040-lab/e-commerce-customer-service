@@ -14,6 +14,8 @@ import {
   deleteConversation,
   updateConversationTitle,
   streamChat,
+  // Sprint P2 / SSE Resume：流式中断续传
+  resumeChat,
 } from '../api';
 import type { Conversation, Message, StreamEvent } from '../types';
 import ConversationList from '../components/ConversationList.vue';
@@ -165,9 +167,14 @@ async function setAutoTitle(sessionId: string, firstUserText: string) {
 }
 
 // =============================================================
-// 发送消息（SSE 流式 + M9.5 context 透传）
+// 发送消息（SSE 流式 + M9.5 context 透传 + Sprint P2 / SSE Resume）
 // ctx: { sku?, orderNo? } —— 从 /shop/:sku 或订单卡片跳转过来时携带
 // =============================================================
+// SSE Resume 边界：
+//   - 自动 resume 最多 1 次（同 stream_id；后端限 2 次，留 1 次给手动重试）
+//   - 失败 fallback：仅显示"消息未送达"，不暴露 AI 痕迹
+const MAX_AUTO_RESUME = 1;
+
 async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string }) {
   if (streaming.value) return;
   if (!text.trim()) return;
@@ -191,50 +198,106 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
   const startSessionId = currentSessionId.value;
   const isFirstUserMessage = !startSessionId; // 新会话（无 sid）才设标题
 
+  // Sprint P2 / SSE Resume：本回合 stream_id + 最后 seq（catch 时用于续传）
+  let streamId: string | undefined;
+  let lastEventId: number | undefined;
+
   try {
-    for await (const event of streamChat(text, startSessionId ?? undefined, ctx)) {
-      switch (event.type) {
-        case 'meta':
-          capturedMeta = event;
-          streamingMeta.value = event;
-          break;
-        case 'token':
-          streamingText.value += event.text;
-          fullAnswer += event.text;
-          break;
-        case 'done':
-          currentSessionId.value = event.session_id;
-          {
-            const meta = capturedMeta && capturedMeta.type === 'meta' ? capturedMeta : null;
-            const assistantMsg: Message = {
-              role: 'assistant',
-              content: fullAnswer,
-              intent: meta?.intent ?? null,
-              entities: meta?.entities ?? null,
-              tool_result_preview: meta?.tool_result_preview ?? null,
-              contexts: meta?.contexts ?? null,
-              scores: meta?.scores ?? null,
-              create_time: new Date().toISOString(),
-            };
-            messages.value = [...messages.value, assistantMsg];
+    // 3) 流式消费（带自动 resume：最多 MAX_AUTO_RESUME 次静默续传）
+    let resumeAttempt = 0;
+    while (true) {
+      let iter: AsyncGenerator<StreamEvent, void, void>;
+      if (resumeAttempt === 0) {
+        iter = streamChat(text, startSessionId ?? undefined, ctx);
+      } else if (streamId && startSessionId && lastEventId !== undefined) {
+        iter = resumeChat(
+          startSessionId,
+          streamId,
+          text,
+          lastEventId,
+          ctx,
+        );
+      } else {
+        // 无法 resume（无 streamId）→ 抛出原始错误
+        throw new Error('网络异常');
+      }
+
+      try {
+        let streamEnded = false;
+        for await (const event of iter) {
+          // Sprint P2 / SSE Resume：捕获 event.id 给续传用
+          if (event.id !== undefined) lastEventId = event.id;
+
+          switch (event.type) {
+            case 'meta':
+              if (event.stream_id) streamId = event.stream_id;
+              capturedMeta = event;
+              streamingMeta.value = event;
+              break;
+            case 'token':
+              streamingText.value += event.text;
+              fullAnswer += event.text;
+              break;
+            case 'resume_prefix':
+              // Sprint P2 / SSE Resume：resume 端点一次性重发 prefix
+              // 前一次流已清空 streamingText → 用 prefix 重置
+              streamingText.value = event.prefix_text;
+              fullAnswer = event.prefix_text;
+              lastEventId = event.from_event_id;
+              break;
+            case 'done':
+              currentSessionId.value = event.session_id;
+              {
+                const meta = capturedMeta && capturedMeta.type === 'meta' ? capturedMeta : null;
+                const assistantMsg: Message = {
+                  role: 'assistant',
+                  content: fullAnswer,
+                  intent: meta?.intent ?? null,
+                  entities: meta?.entities ?? null,
+                  tool_result_preview: meta?.tool_result_preview ?? null,
+                  contexts: meta?.contexts ?? null,
+                  scores: meta?.scores ?? null,
+                  create_time: new Date().toISOString(),
+                };
+                messages.value = [...messages.value, assistantMsg];
+              }
+              streamingText.value = '';
+              streamingMeta.value = null;
+              if (isFirstUserMessage && currentSessionId.value) {
+                await setAutoTitle(currentSessionId.value, text);
+              }
+              await loadConversations();
+              streamEnded = true;
+              break;
+            case 'error':
+              error.value = event.message || '生成失败';
+              streamingText.value = '';
+              streamingMeta.value = null;
+              streamEnded = true;
+              break;
           }
-          streamingText.value = '';
-          streamingMeta.value = null;
-          // 新会话首条 user 消息 → 先 PATCH 改短标题，再 refresh 一次避免列表闪烁
-          if (isFirstUserMessage && currentSessionId.value) {
-            await setAutoTitle(currentSessionId.value, text);
-          }
-          await loadConversations();
-          break;
-        case 'error':
-          error.value = event.message || '生成失败';
-          streamingText.value = '';
-          streamingMeta.value = null;
-          break;
+        }
+        // 正常结束（reader done）→ 跳出循环
+        return;
+      } catch (streamErr) {
+        // 流中断（reader 抛错 / 网络断开）
+        if (
+          resumeAttempt < MAX_AUTO_RESUME &&
+          streamId &&
+          startSessionId &&
+          lastEventId !== undefined
+        ) {
+          // 静默 resume：不显示任何提示，用户视角无感
+          resumeAttempt++;
+          continue;
+        }
+        // 超限或无法 resume → 抛出给外层 catch
+        throw streamErr;
       }
     }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '请求失败';
+    // 用户视角的"消息未送达"（不暴露 AI 痕迹 / 网络 / 流中断等技术细节）
+    error.value = '消息未送达，请重试';
     streamingText.value = '';
     streamingMeta.value = null;
   } finally {

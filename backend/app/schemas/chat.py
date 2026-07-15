@@ -53,3 +53,42 @@ class ChatResponse(BaseModel):
         description="对应 contexts 的余弦相似度分数",
     )
     session_id: str = Field(..., description="会话 ID（用于下一轮对话）")
+
+
+class ResumeRequest(BaseModel):
+    """SSE 流式中断续传请求（Sprint P2 / SSE Resume）
+
+    客户端在 /chat 流中断后未收到 done 时调用；后端从 Redis checkpoint 恢复
+    已流 prefix + 重新调 LLM 接着生成。
+    """
+    session_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="会话 ID（必须与原 /chat 请求一致）",
+    )
+    stream_id: str = Field(
+        ...,
+        min_length=12,
+        max_length=12,
+        description="流式回合 ID（从 meta 事件 stream_id 字段拿到）",
+    )
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="用户问题（必须与原 /chat 请求一致；不匹配返 410）",
+    )
+    last_event_id: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="客户端最后收到的 SSE id（用于服务端去重校验，可选）",
+    )
+    sku: Optional[str] = Field(
+        default=None, max_length=64,
+        description="当前商品 SKU（M9.5 context 透传）",
+    )
+    order_no: Optional[str] = Field(
+        default=None, max_length=64,
+        description="当前订单号（M9.5 context 透传）",
+    )

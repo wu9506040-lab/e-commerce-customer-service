@@ -274,6 +274,11 @@ export async function getMetrics(): Promise<MetricsSnapshot> {
  * - 从 /shop/:sku 跳转带 ?sku=ZP1 → 后端注入【当前商品】到 prompt
  * - 从订单卡片跳转带 ?order_no=ORD... → 后端注入【当前订单】到 prompt
  * - 用户追问时会带当前 session_id（后端可继续注入同 context）
+ *
+ * Sprint P2 / SSE Resume：
+ * - 后端每条 SSE event 加 `id: {seq}\n` 行；前端解析后挂到 event.id
+ * - 调用方在 catch（异常退出）时若未收到 done，可根据 event.id + 已收 token 文本
+ *   调 resumeChat() 续传（用户视角完全无感）
  */
 export async function* streamChat(
   query: string,
@@ -324,27 +329,151 @@ export async function* streamChat(
       buffer = parts.pop() ?? '';
 
       for (const part of parts) {
-        const line = part.trim();
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload) continue;
+        // Sprint P2 / SSE Resume：解析 `id:` 行（每 event 可选）+ `data:` 行
+        // 一个 event 可能由多行组成（id + data + event 等），按行分别处理
+        let currentId: number | undefined;
+        let currentData: string | null = null;
+        for (const line of part.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('id:')) {
+            const n = parseInt(trimmed.slice(3).trim(), 10);
+            if (!Number.isNaN(n)) currentId = n;
+          } else if (trimmed.startsWith('data:')) {
+            currentData = trimmed.slice(5).trim();
+          }
+        }
+        if (!currentData) continue;
         try {
-          const event = JSON.parse(payload) as StreamEvent;
+          const event = JSON.parse(currentData) as StreamEvent;
+          if (currentId !== undefined) {
+            (event as StreamEvent & { id?: number }).id = currentId;
+          }
           yield event;
         } catch (e) {
-          console.warn('SSE 解析失败:', payload, e);
+          console.warn('SSE 解析失败:', currentData, e);
         }
       }
     }
 
     // 收尾：处理 buffer 里残留的最后一段
-    if (buffer.trim().startsWith('data:')) {
-      const payload = buffer.trim().slice(5).trim();
-      if (payload) {
+    const tail = buffer.trim();
+    if (tail.startsWith('data:') || tail.includes('\nid:') || tail.includes('\ndata:')) {
+      let currentId: number | undefined;
+      let currentData: string | null = null;
+      for (const line of tail.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('id:')) {
+          const n = parseInt(trimmed.slice(3).trim(), 10);
+          if (!Number.isNaN(n)) currentId = n;
+        } else if (trimmed.startsWith('data:')) {
+          currentData = trimmed.slice(5).trim();
+        }
+      }
+      if (currentData) {
         try {
-          yield JSON.parse(payload) as StreamEvent;
+          const event = JSON.parse(currentData) as StreamEvent;
+          if (currentId !== undefined) {
+            (event as StreamEvent & { id?: number }).id = currentId;
+          }
+          yield event;
         } catch {
           /* ignore */
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// =============================================================
+// SSE Resume（Sprint P2 / SSE Resume）
+// =============================================================
+/**
+ * 流式中断续传
+ * - 客户端在 streamChat catch 且未收到 done 时调用
+ * - 后端从 Redis checkpoint 读取 prefix_text 一次性重发（resume_prefix 事件）
+ * - 不调 LLM 续写（用户拍板 MVP 边界：checkpoint 重发即可）
+ * - 同 (sessionId, streamId) 最多 resume 2 次（后端 410 限流）
+ *
+ * 用法：
+ *   try { yield* streamChat(...) }
+ *   catch (e) {
+ *     if (!hasReceivedDone && streamId && accText) {
+ *       yield* resumeChat(sessionId, streamId, query, lastEventId, opts)
+ *     } else { throw e }
+ *   }
+ */
+export async function* resumeChat(
+  sessionId: string,
+  streamId: string,
+  query: string,
+  lastEventId: number | undefined,
+  opts?: { sku?: string; orderNo?: string },
+): AsyncGenerator<StreamEvent, void, void> {
+  const res = await fetch(`${API}/chat/resume`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      session_id: sessionId,
+      stream_id: streamId,
+      query,
+      last_event_id: lastEventId ?? null,
+      sku: opts?.sku ?? null,
+      order_no: opts?.orderNo ?? null,
+    }),
+  });
+
+  if (!res.ok || !res.body) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+
+      for (const part of parts) {
+        let currentId: number | undefined;
+        let currentData: string | null = null;
+        for (const line of part.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('id:')) {
+            const n = parseInt(trimmed.slice(3).trim(), 10);
+            if (!Number.isNaN(n)) currentId = n;
+          } else if (trimmed.startsWith('data:')) {
+            currentData = trimmed.slice(5).trim();
+          }
+        }
+        if (!currentData) continue;
+        try {
+          const event = JSON.parse(currentData) as StreamEvent;
+          if (currentId !== undefined) {
+            (event as StreamEvent & { id?: number }).id = currentId;
+          }
+          yield event;
+        } catch (e) {
+          console.warn('SSE resume 解析失败:', currentData, e);
         }
       }
     }
