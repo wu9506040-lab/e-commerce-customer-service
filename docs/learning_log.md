@@ -4617,3 +4617,249 @@ RAG Pipeline (orchestrator → PolicyService.search_policy/multi)
 
 5. **测试中文断言在 Windows GBK 终端是反复出现的痛点** —— 跟 memory `feedback_windows_bash_utf8.md` 一脉相承。解法不是「让 pytest 用 utf-8」（改环境全局），而是**测试断言用「通用错误消息片段」**（如「缺少必要字段」「不存在」），不依赖具体字段名中文
 
+---
+
+## 39. C1 + C2 Agent Function Calling 框架（7 commit · 跨模块 §5.2）
+
+**文件**：C1.1/C1.2 - `backend/app/core/providers/llm/{protocols,qwen_provider}.py` + `backend/app/core/qwen.py` + `backend/tests/test_provider_protocols.py`
+       C2.1 - `backend/app/tools/registry.py`
+       C2.2 - `backend/app/services/chat/agent_runner.py` + `backend/app/core/config.py`（+ 2 flag）+ `backend/config/prompts/agent_fc.yaml`
+       C2.3 - `backend/app/services/chat/orchestrator.py`（FC 分支接入）+ `backend/tests/test_agent_fc.py`（新 13 用例）+ `backend/tests/test_synthesizer_refund.py`（附带修）
+
+### What
+**C1：LLMProvider Protocol 扩展 Function Calling**
+- `LLMProvider.chat/stream_chat` 加 `tools: List[Dict]` + `tool_choice: str` 参数（默认 None，向后兼容）
+- `QwenLLMProvider.chat` 透传 tools/tool_choice 给底层 `_legacy_qwen.chat`
+- `app.core.qwen.chat` 把 tools/tool_choice 加进 OpenAI client.create kwargs；返回 dict 新增 `tool_calls` 字段（结构化 list[dict]）
+- 11 个 pytest 用例（TestLLMProtocolToolFields / TestQwenProviderToolPassthrough / TestQwenLegacyToolCallsExtraction）
+
+**C2：Agent FC 框架（跨模块）**
+- `app/tools/registry.py` - ToolSpec Protocol + REGISTRY（注册 lookup_order / search_product / search_policy 三个工具）+ to_openai_tools() 转换器 + dispatch() 路由
+- `app/services/chat/agent_runner.py` - run_stream_agent 主循环（≤MAX_AGENT_TURNS，LLM 决策 → tool_calls dispatch → 下一轮综合 → 伪流式 yield）
+- `app/core/config.py` - 加 2 个 flag：`ENABLE_AGENT_FC: bool = False`（灰度）+ `MAX_AGENT_TURNS: int = 5`
+- `backend/config/prompts/agent_fc.yaml` - FC agent system prompt（独立命名空间，与现有 agent.yaml 分离避免 manifest 冲突）
+- `app/services/chat/orchestrator.py` - run_stream 顶部插入 FC 分支（query.strip() 之后最早 return）；FC 异常自包 try/except fallback 到 V1.2 RAG
+- `backend/tests/test_agent_fc.py` - 13 用例 / 7 类（灰度门禁 / 单轮 / 单工具 / 多轮 / 超限 / orchestrator 集成 / fallback）
+
+### Why
+
+**业务原因**：当前 intent 分派是硬编码 if/elif（orchestrator.py:144-168）—— 复杂 query（"我昨天买的耳机还没到，能改地址吗"）需要 LLM 决策「先查订单 → 看物流 → 改地址」的多步调用。FC 让 LLM 自主决定调什么、按什么顺序。
+
+**为什么拆 3 commit（C2.1/C2.2/C2.3）**：
+- C2.1 是工具层基础（ToolSpec + Registry + Converter），单模块独立可测
+- C2.2 是编排核心（runner + flag + prompt），orchestrator 暂不接入，可单独验证
+- C2.3 才做跨模块接入（orchestrator 加 FC 分支 + 端到端测试 + 异常 fallback）
+- 任一阶段失败可单独回滚，不破坏既有路径
+
+**为什么 LLMProvider Protocol 必须先扩（C1 → C2）**：
+- C2 业务层要传 `tools=[...]` + `tool_choice="auto"` 给 LLM，但 Protocol 当前签名只有 messages/temperature/max_tokens
+- §9.7 自检 #3「先有 Protocol 再实现」强制要求；C1 扩 Protocol 后 C2 才有合法接口可调
+- C1 必须独立 commit（无 C2 业务依赖），证明 Protocol 改动向后兼容（默认 None 兼容既有调用方）
+
+**为什么 ENABLE_AGENT_FC 默认 False**：
+- §9.2.2 模块隔离原则：FC 是新能力，不应默认启用影响既有 intent 分派
+- 灰度策略：先 dev 验证 → 真实流量验证 → 再考虑全量
+
+### Tech Stack
+- **OpenAI Function Calling 协议**（DashScope 兼容）：tool_call_id + type="function" + function.name/arguments JSON string
+- **dataclass + ToolSpec Protocol**（就近放置在 registry.py，避免 §9 禁止的全局 app/interfaces/ 大杂烩）
+- **generator + try/except 边界**：PEP 380 限制 —— yield 不能在 try/finally 内（会 GeneratorExit），用 yield done 在每个 return 路径前替代
+- **monkeypatch settings 灰度**：`monkeypatch.setattr(settings, "ENABLE_AGENT_FC", False)` 跨测试隔离
+- **MagicMock side_effect**：构造 mock LLM 按序返 chat responses 列表（模拟多轮 FC）
+
+### Flow
+
+```
+C2 用户 query
+    ↓
+orchestrator.run_stream(query, user_id, history)
+    ↓ query.strip() 之后
+    ↓ if settings.ENABLE_AGENT_FC:        ← 灰度门禁
+    ↓     run_stream_agent(query, user_id, history)
+    ↓
+    ↓ load agent_fc.yaml system prompt
+    ↓ messages = [system, *history, user]
+    ↓
+    ↓ for turn in 1..MAX_AGENT_TURNS:
+    ↓     resp = llm.chat(messages, tools=to_openai_tools(), tool_choice="auto")
+    ↓
+    ↓     if resp["tool_calls"]:           ← 工具调用分支
+    ↓         append assistant tool_calls msg
+    ↓         for each tc:
+    ↓             result = dispatch(name, args, ctx)
+    ↓             append tool result msg
+    ↓         continue                      ← 下一轮 LLM 综合
+    ↓
+    ↓     else:                            ← 最终答案分支
+    ↓         yield meta(final=True)
+    ↓         for ch in resp["reply"]:      ← 伪流式
+    ↓             yield ("token", ch)
+    ↓         yield done
+    ↓         return
+    ↓
+    ↓ # 超限 fallback
+    ↓ yield "复杂度限制..." + done
+    ↓
+    ↓ 任何异常: orchestrator 顶层 try/except fallback 到 V1.2 RAG
+    ↓
+dispatch(name, args_json, ctx):
+    spec = REGISTRY.get(name)
+    if spec is None → return {"error": "not registered"}
+    try: args = json.loads(args_json)
+    except JSONDecodeError → return {"error": "invalid JSON"}
+    try: result = spec.runner(args, ctx)
+    except Exception → return {"error": "execution failed"}
+    return result
+```
+
+### Problem & Fix（问题 → 解决）
+
+**问题 1：generator + try/finally + yield 的 PEP 380 限制**
+
+**根因**：想用 `try / finally: yield done` 保证 done 事件一定触发，但 generator 内 yield 在 finally 块会触发 GeneratorExit，再 yield 会 RuntimeError
+
+**修复**：放弃 try/finally 模式，改用「每个 return 路径前显式 yield done」：
+```python
+if not tool_calls:
+    final_reply = resp["reply"]
+    yield ("meta", {...})
+    for ch in final_reply: yield ("token", ch)
+    yield ("done", {"answer": final_reply})
+    return  # done 已发
+# 超限路径单独 yield done
+```
+这样 done 永远不会漏，但代码路径要列清楚（每条 return 前都要发 done）
+
+**问题 2：MagicMock 默认 truthy 导致 mock_settings 误触发 FC 路径**
+
+**根因**：`@patch("app.services.chat.orchestrator.settings")` 把 settings 替换为 MagicMock；`if settings.ENABLE_AGENT_FC:` 读 MagicMock 属性返回 MagicMock 实例（truthy），等价于 True —— 即使真实 settings 是 False
+
+**修复**：测试必须显式 `mock_settings.ENABLE_AGENT_FC = False`，把每个 flag 都列出来。**这是个 mock 测试的反模式**（patch 应该列全所有用到的属性），应该整理进 MEMORY feedback
+
+**问题 3：JWT_SECRET setdefault 缺失导致单独跑测试失败（全量跑掩盖）**
+
+**根因**：test_synthesizer_refund.py / test_provider_protocols.py 等多个文件缺 `os.environ.setdefault("JWT_SECRET", ...)`；全量跑时第一个测试 setdefault 后后面都 OK，但单独跑就 fail
+
+**修复**：在文件顶部统一加 `os.environ.setdefault(...)` 2 行。**应该改成 conftest.py 集中处理**（未来重构）
+
+**问题 4：跨模块改动的"接口变化"字段无法最小化**
+
+**根因**：C2.3 改 orchestrator.py 必须扩 ENABLE_AGENT_FC 分支，但 §9.4.2 配置分离要求 settings 集中管理；其他文件（run_stream_agent / agent_runner.py）也读 settings
+
+**修复**：用 `from app.core.config import settings` 单向依赖（§9.2.3 依赖方向），settings 是单例（@lru_cache），所有调用方读同一份；monkeypatch 在测试时改 settings 实例属性（运行时生效）
+
+**问题 5：registry 循环依赖风险**
+
+**根因**：`from app.tools.order_tool import OrderTool` 在 registry.py 顶部 → registry 依赖 order_tool；如果 order_tool 反向引用 registry → 循环
+
+**修复**：所有 runner 函数体内**延迟 import**（`_run_lookup_order` 函数内 `from app.tools.order_tool import OrderTool`）；registry 模块本身只定义 dataclass + 注册表 + dispatch，零外部依赖（除 stdlib）
+
+**问题 6：C1 改动是否破坏既有测试（回归风险）**
+
+**根因**：Protocol chat() 加 2 个参数 → 既有调用方 `llm.chat(messages, temperature=0.7)` 不传 tools，行为必须不变
+
+**修复**：所有新参数 `tools=None, tool_choice=None` 默认值；chat 内部 `if tools is not None: kwargs["tools"] = tools`（不传则不进 OpenAI kwargs）。验证：335 个旧测试 0 失败
+
+**问题 7：agent_runner 异常要不要吞**
+
+**根因**：agent_runner 内部任何异常（LLM 调失败 / dispatch 抛异常 / QWEN_API_KEY 未配置）应该如何处理？吞掉返 fallback 还是抛给上层？
+
+**修复**：抛给上层（不吞），orchestrator 顶层 try/except fallback 到 V1.2 RAG。这样：
+- FC 路径异常时用户看到的是 V1.2 fallback 答案（不会卡死）
+- 但日志能记录「FC 异常」（通过 logger.exception），便于排查
+
+### Architecture Role（在系统中的位置）
+
+```
+[已存在] LLMProvider Protocol（chat/stream_chat 4 参数）
+    ↓ C1 扩
+[新增] LLMProvider.chat(tools, tool_choice) + 返回 tool_calls
+    ↓ C2 业务层用
+[新增] tools/registry.py（ToolSpec + REGISTRY + OpenAI 转换）
+    ↓
+[新增] services/chat/agent_runner.py（FC 主循环）
+    ↓ ENABLE_AGENT_FC=true
+[改动] services/chat/orchestrator.py（run_stream 顶部插入 FC 分支）
+    ↓ 异常 fallback
+[已存在] services/rag/pipeline.py run_stream（V1.2 RAG fallback）
+    ↓
+[未来] C3 eval_agent_fc.py（Agent 决策质量评测 — 评估 FC 调对工具的比例 / 工具调用轮次 / 综合质量）
+```
+
+**Scope Lock 验证（§5 · 跨模块 §5.2 四要素）**：
+| # | 必填项 | C2 落地 |
+|---|--------|---------|
+| 1 | 业务原因 | "复杂 query 需要 LLM 多步决策调工具；当前硬编码 if/elif 不够灵活" |
+| 2 | 接口变化 | LLMProvider.chat +2 参数（C1 单独 commit 完成）；新增 ToolSpec Protocol（就近）|
+| 3 | 影响范围 | chat/services + tools + config + prompt + test = 5 模块 |
+| 4 | 隔离策略 | ENABLE_AGENT_FC=false 灰度；FC 异常 fallback V1.2 |
+
+**§9 架构约束自检**：
+- ✅ §9.2.2 模块隔离：registry 只做注册/转换，runner 只做循环，orchestrator 只做路由（FC 分支包 try/except）
+- ✅ §9.2.3 单向依赖：runner 不直接 import OrderTool/ProductTool（通过 dispatch 间接）；registry 延迟 import 防循环
+- ✅ §9.3.1 5 件套：registry.ToolSpec 含 name/description/parameters/runner（输入/输出/异常/状态/数据格式）
+- ✅ §9.3.3 Provider 抽象：所有 LLM 调用经 `get_llm_provider()`，FC 工具调用经 `dispatch()`，禁止业务层直引 SDK
+- ✅ §9.6 Prompt 配置化：agent_fc.yaml 在 prompts/ 目录，独立命名空间
+- ✅ §9.7 自检 5 问：Protocol 先于实现（C1 Protocol → C2 业务）；模块能脱离其他模块单独测（registry/agent_runner/orchestrator 各自独立 mock 测试）
+
+**业务边界对齐 §9.4.1**：
+- Agent 模块：只做 FC 调度，不实现工具
+- Tools 模块：只做 DB 查询，不调 LLM
+- RAG 模块（fallback）：只做检索，不参与 FC
+- Conversation/Emotion/Order：零改动（FC 不涉及）
+
+### Tests（验证）
+
+| 测试类型 | 数量 | 结果 |
+|---------|------|------|
+| C1.2 Provider Protocol 形状 + 透传 + tool_calls 抽取 | 11 | 11/11 PASS |
+| C2.3 Agent FC 灰度门禁（off 抛错 / 空 query / 全空白） | 3 | 3/3 PASS |
+| C2.3 单轮 FC（直接返答案 / tools+tool_choice 透传） | 2 | 2/2 PASS |
+| C2.3 单工具调用（1 轮 tool_calls → 2 轮综合 + tool 消息） | 2 | 2/2 PASS |
+| C2.3 多轮 FC（连续 2 轮 tool_calls） | 1 | 1/1 PASS |
+| C2.3 超限（MAX_AGENT_TURNS 后 fallback） | 1 | 1/1 PASS |
+| C2.3 Orchestrator 集成（开/关走不同路径） | 2 | 2/2 PASS |
+| C2.3 Orchestrator FC 异常 fallback | 2 | 2/2 PASS |
+| **test_agent_fc.py 新增** | **13** | **13/13 PASS** |
+| **test_synthesizer_refund.py 附带修复** | - | 1 line `mock_settings.ENABLE_AGENT_FC = False` |
+| **全量 pytest（C2.3 末）** | **359**（+24 vs B1.2）| **359/360 PASS**（1 known flaky unrelated）|
+
+**测试设计要点**：
+- `_make_mock_llm(chat_responses)` helper：构造 mock LLM 按序返指定响应，模拟多轮 FC
+- `_consume(gen)` helper：消费 generator 返回所有事件
+- 每个测试用 `monkeypatch.setattr(settings, "ENABLE_AGENT_FC", True/False)` 隔离灰度开关
+- mock target 必须是 module 实际 import 的路径（如 `app.services.chat.agent_runner.get_llm_provider`，不是 `app.core.providers.llm.get_llm_provider`）
+
+### 已知限制
+
+- **流式 Function Calling 不实现（C1 已留接口，C2 不接）** —— 流式 FC 需要 chunk 状态机拼接 tool_call_args（OpenAI 流式 tool_calls 是分多个 chunk 发的），C2 复杂度过高。Agent FC 路径走非流式 `chat()`，综合后伪流式 yield 整段（`for ch in reply: yield ("token", ch)`）；UX 由前端 chunking 弥补
+- **FC 决策质量无评测** —— B1 只评 RAG 检索质量（hit@K / faithfulness）；Agent FC 决策质量（调对工具的比例 / 调对参数的比例 / 综合质量）需要 C3 eval_agent_fc.py 配套（不在 C2 范围）
+- **ENABLE_AGENT_FC 默认 False 不验证决策质量** —— 灰度策略是「先 dev 验证 → 真实流量验证 → 再全量」。C2 只保证「开启后不崩 + 异常 fallback」，不保证决策质量
+- **Prompt 中"何时调工具"靠 LLM 自觉** —— agent_fc.yaml 写明 3 个工具的语义，但 LLM 是否调对、调几次、参数是否准确全靠模型能力。实际表现需真实流量验证
+- **Tool 数量限制 3 个** —— 当前只注册 lookup_order / search_product / search_policy；后续加 refund_query / list_orders 时按 ToolSpec 协议扩展即可，但需考虑 LLM context window（tool descriptions 总 token）
+- **registry 静态注册** —— 不支持运行时注册/注销；多租户场景需要按 tenant_id 动态注册表（V3+ 演进项）
+- **未实现 Tool 调用审计日志** —— tool_call/tool_result 在 meta 事件暴露给前端，但未持久化到 DB（不能用 SQL 分析「哪些 query 调了哪些工具」）。后续可加 `fc_audit_log` 表
+- **未实现 Tool 调用权限分级** —— 所有用户都能调 lookup_order（看自己订单）；但 search_policy 是公开知识库。未来需要按 user_role 限权（V2+ 演进项）
+
+### 反思（写给未来的我）
+
+1. **「跨模块改动必须列 §5.2 四要素」是救命稻草** —— C2 涉及 5 个模块，按 §4 AI 6 步法提前列「业务原因 / 接口变化 / 影响范围 / 隔离策略」让用户拍板。结果：用户认可方案 + 限定 6 文件 + 灰度默认关 + 异常 fallback V1.2 4 条约束都进了实现。如果没走 §5.2，单独 commit 拆错或漏掉 fallback 都会埋雷
+
+2. **C1 → C2 拆 2 阶段是有意义的，不该合并** —— C1 只动 Provider 抽象（无业务依赖），C2 才动业务层。分开 commit 让 review 范围明确（PR #N 是 LLM 接口升级，PR #N+1 是 Agent 框架接入）。如果合并，1 个 500+ 行 PR 谁都不敢合
+
+3. **「灰度门禁 + 异常 fallback」是 Module Isolation 的具体落地** —— §9.2.2 说"模块隔离"，但工程师不知道怎么做。ENABLE_AGENT_FC=False（开关）+ try/except fallback V1.2（兜底）是可操作的实现。新能力接入老系统就该这么搞，不是"上线即默认开"
+
+4. **registry 用 dataclass 而非 ABC / Protocol 的取舍** —— ToolSpec 是 dataclass 不是 Protocol，因为：
+   - Protocol 适合"鸭子类型 + 多实现"，但 ToolSpec 是"注册描述"，没有多实现需求
+   - dataclass + field 比 Protocol 更适合"按字段构造实例"
+   - 业务层只需要 ToolSpec 的 4 个字段（name/description/parameters/runner），不需要 isinstance 检查
+   YAGNI：不为"未来可能有 Protocol 需求"提前抽象
+
+5. **MagicMock truthy 是测试 mock 的隐藏坑** —— `mock_settings.ENABLE_AGENT_FC` 读 MagicMock 返 MagicMock 实例（truthy），即使真实 settings 是 False。这导致 test_synthesizer_refund.py::test_v3_when_env_true 在 C2.3 改动后才暴露问题。**测试 patch 应该列全所有用到的属性**，否则会让"无关"测试莫名 fail。整理进 MEMORY feedback
+
+6. **生成器（generator）+ try/finally + yield 的 PEP 380 陷阱** —— Python generator 的 yield 在 finally 块内会触发 GeneratorExit。Agent FC 主循环需要「不管哪条 return 路径都发 done 事件」，最初想用 try/finally + yield done，写出来才发现不行。最终用「每个 return 路径前显式 yield done」替代，代码冗余但稳定。这个坑不在 CLAUDE.md 里，是 Python 语言细节，未来写 generator 复杂逻辑时要警惕
+
+7. **C2 不实现流式 FC 是正确取舍** —— 流式 FC 需要 tool_call_args 跨 chunk 拼接 + 状态机跟踪，复杂度高且对 UX 提升有限（最终答案本来就 200 字以内）。先用非流式 chat() + 伪流式 yield 跑通业务，V2+ 再考虑流式优化。**这符合 §3.3 YAGNI 原则**：当前不需要的优化不做
+
+8. **Agent FC 的「决策质量」需要单独评测** —— C2 只保证「能跑 + 异常 fallback」，不保证「决策质量」（LLM 是否调对工具、调对参数、综合质量）。这跟 RAG 检索质量（hit@K）类似，需要单独的 eval_agent_fc.py（不在 C2 范围，留 C3+ 演进）
+
