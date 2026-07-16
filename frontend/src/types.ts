@@ -36,7 +36,28 @@ export interface Message {
   intent?: string | null;
   entities?: Entities | null;
   tool_result_preview?: string | null;
+  // M14 Stage 2：SSE meta.card 字段（订单卡片推送）
+  // 与后端 app/schemas/sse_card.py::OrderCardPayload 一一对应
+  card?: OrderCardPayload | null;
   create_time: string;
+}
+
+/**
+ * M14 Stage 2：SSE 订单卡片 payload
+ * 由后端 orchestrator._build_order_card_payload() 生成，塞入 SSE meta 事件
+ *
+ * type=density 组合：
+ * - order_list + list      → N 个候选订单（disambiguate picker）
+ * - order_detail + mini    → 唯一订单详情（context_jump）
+ */
+export interface OrderCardPayload {
+  type: 'order_list' | 'order_detail';
+  density: 'mini' | 'list';
+  reason: 'disambiguate' | 'proactive' | 'context_jump';
+  items: OrderSummary[];
+  truncated: boolean;
+  /** mini 模式下记录已选订单号（向后兼容 OrderSummary） */
+  resolved_order_no?: string | null;
 }
 
 /** Intent 分类器提取的实体（来自 /chat SSE meta） */
@@ -162,6 +183,8 @@ export type StreamEvent =
       days_since_order?: number;
       v3_engine?: string;
       tool_result_preview?: string;
+      // M14 Stage 2：SSE 订单卡片（M14 OrderContextResolver 决策产物）
+      card?: OrderCardPayload;
     }
   | { type: 'token'; id?: number; text: string }
   | { type: 'done'; id?: number; session_id: string }

@@ -119,6 +119,7 @@ onMounted(scrollToBottom);
             intent: streamingMeta.intent,
             entities: streamingMeta.entities,
             tool_result_preview: streamingMeta.tool_result_preview,
+            card: streamingMeta.card,
             create_time: new Date().toISOString(),
           }"
         />
