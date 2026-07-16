@@ -4919,3 +4919,88 @@ C3 写 `scripts/eval_agent_fc.py` 时，沿用 B1 `eval_hitk.py` 同款写法：
 3. **"无关测试莫名 fail" 排查 checklist**：单独跑 PASS + 组合跑 FAIL + 正反序都 FAIL ⇒ 三连命中即判定为 collection 期污染，不要去改测试断言
 4. **同类陷阱**：feedback_test_factory_singleton（工厂单例）+ feedback_mock_magicmock_truthy（mock 灰度门禁 truthy）+ 本条 — 同族「全局状态污染」陷阱，详见 MEMORY 索引
 
+---
+
+## 42. C4 live baseline 验证 — SOP-V1 §1 L2 首个完整落地（2026-07-16）
+
+### What（做了什么）
+按 SOP-V1 §1 L2 任务要求，验证 P0-1/2/3 修复（commit `022453c`）是否真实提升 Agent Function Calling 能力。结果**只诊断不执行**，产出 `docs/reports/c4_baseline_analysis.md`
+
+### Why（为什么）
+- 修复验证必须看真值，不能只看 commit message 自我证明
+- SOP-V1 §1 L2 要求完整 8 类逆向审查（参数错误 / 数据不存在 / 权限 / 第三方 / LLM / 超时 / 重复 / 回滚）
+- "判断不出默认 +1 级"原则应用于环境约束 = 遇到 blocker 不要强行执行，先报告状态再决策
+
+### Tech（技术栈）
+- ECS SSH 探针：`MSYS_NO_PATHCONV=1 ssh aliyun "docker exec ... grep /env"`
+- 时间比对：本地 commit `022453c` 创建于 22:06:19 CST，容器 `customer-service-api:dev` 创建于 21:12:56 CST，**容器早 53 分钟** → 容器跑的是修复前代码
+- OpenAPI 路径收集：`curl /openapi.json | jq .paths` 仍是基线探测手段
+
+### Flow（输入 → 输出）
+```
+P0 commit 已 push（422453c + 432e3bb）
+    ↓
+本地 git confirm: clean working tree, 修复 in-place
+    ↓
+ECS 服务可达性: /health 200 + /openapi.json 200
+    ↓
+容器时间 vs commit 时间: 容器早 53 min → 容器跑旧代码
+    ↓
+容器代码文件 grep: registry.py 无 get_order_by_no / check_refundable; pipeline.py 无 try/except
+    ↓
+环境变量 grep: ENABLE_AGENT_FC 未设 → 灰度仍关
+    ↓
+决策: 不强行执行 eval（环境无意义），只报告
+    ↓
+产出 docs/reports/c4_baseline_analysis.md
+```
+
+### Problem & Fix（问题 → 解决）
+
+| 问题 | 处理 |
+|---|---|
+| `ssh aliyun "docker ps"` 密钥路径问题 | `MSYS_NO_PATHCONV=1` + `IdentitiesOnly=yes` + 别名 `aliyun`，Windows + Git Bash 标准姿势 |
+| `find /` 在容器内太慢 | 先 `ls /app/app/tools/` 定位目录再 grep，避免全盘扫 |
+| `env | grep` 0 命中但 exit 1 | 用 `docker exec customer-service-api env \| head` + 局部 grep，避免单命令 grep 失败误判 |
+
+### Architecture Role（在系统中的位置）
+
+C4 验证闭环的位置：
+```text
+CLAUDE.md §4 AI 6 步法 / SOP-V1 §1 L2
+    ↓
+本任务: 存量审查后修复 + 验证修复
+    ↓
+修复 (commit 022453c/432e3bb) → 验证 → 上线决策
+    ↓
+验证结果: docs/reports/c4_baseline_analysis.md
+```
+
+**当前卡点**：
+1. ECS 镜像陈旧（含 P0 修复的镜像未构建）
+2. ENABLE_AGENT_FC 灰度关闭
+3. eval_agent_fc.py `--mode live` 3 auth bug 未修
+
+**灰度状态**：继续保持 `ENABLE_AGENT_FC=False`，**不达阈值 0.7 不开启**。
+
+### 8 件套交付（CLAUDE.md §9.8 自检）
+- [x] 模块职责说明：本节 What
+- [x] 接口契约：N/A（诊断报告，非新模块）
+- [x] 输入/输出：本节 Flow
+- [x] 数据模型：N/A
+- [x] 依赖关系图：本节 Architecture Role
+- [x] 调用流程：本节 Flow
+- [x] 测试方案：N/A（不入测试的诊断）
+- [x] 已知限制：见报告 §1.2（容器代码陈旧）+ §2（eval 脚本 3 bug）
+
+### 关键决策点（待用户拍板）
+- 选项 A（推荐）：重建 ECS 镜像 + 启灰度 + 修 eval 脚本，一次性闭环（半天）
+- 选项 B：仅修 eval 脚本，但仍跑旧 baseline（无验证价值，1 小时）
+- 选项 C：完整闭环（A + CI/CD 防镜像陈旧，1-2 天）
+
+### 关联记忆
+- `feedback_eval_agent_fc_auth_bugs.md` — 3 auth bug 修复模板
+- `project_c4_blocked.md` — 旧 baseline 数据 + 早期 blocker 记录
+- `feedback_docker_compose_env_vs_envfile.md` — enable flag 必须 compose.yml 显式注入
+- `feedback_claude_md_gitignored.md` — CLAUDE.md 不入 git
+
