@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, BigInteger, DateTime, SmallInteger, String, func
+from sqlalchemy import JSON, BigInteger, DateTime, Integer, SmallInteger, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -11,7 +11,7 @@ from app.models.base import Base
 class OperationLog(Base):
     __tablename__ = "operation_logs"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     action: Mapped[str] = mapped_column(String(64), nullable=False)

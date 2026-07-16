@@ -14,7 +14,7 @@ from app.models.base import Base
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 
-    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     frequent_skus: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     preferences: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
