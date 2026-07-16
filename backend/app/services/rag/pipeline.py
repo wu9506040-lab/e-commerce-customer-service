@@ -139,8 +139,17 @@ def run_stream(
     )
 
     # 1. embed + search（同步，快，先拿到 contexts）
-    query_vec = get_embedding_provider().embed_text(query)
-    hits = qdrant_search(query_vec, top_k=top_k)
+    # R3 异常降级：Embedding API 抖动时（timeout/4xx/5xx）整个 pipeline 降级到空召回走 LLM 直答
+    try:
+        query_vec = get_embedding_provider().embed_text(query)
+        hits = qdrant_search(query_vec, top_k=top_k)
+    except Exception as e:
+        logger.warning(
+            f"rag stream: embed/search 异常，降级到纯 LLM: "
+            f"{type(e).__name__}: {str(e)[:200]}"
+        )
+        hits = []
+        query_vec = None
     contexts = [_extract_text(h.get("payload") or {}) for h in hits]
     scores = [float(h.get("score") or 0.0) for h in hits]
 
@@ -150,7 +159,7 @@ def run_stream(
         # 线上无 gold label，用"检索到结果"作为命中代理：rank=1 表示 top-1 命中
         metrics.record_hit_at_k(1)
     else:
-        # 未命中（断路器开路 / 无结果）
+        # 未命中（断路器开路 / 无结果 / Embedding 降级）
         metrics.record_hit_at_k(0)
 
     yield ("meta", {"contexts": contexts, "scores": scores})
