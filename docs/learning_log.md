@@ -4863,3 +4863,34 @@ if not tool_calls:
 
 8. **Agent FC 的「决策质量」需要单独评测** —— C2 只保证「能跑 + 异常 fallback」，不保证「决策质量」（LLM 是否调对工具、调对参数、综合质量）。这跟 RAG 检索质量（hit@K）类似，需要单独的 eval_agent_fc.py（不在 C2 范围，留 C3+ 演进）
 
+---
+
+## 40. C3 · Agent FC 决策质量评测 harness（2026-07-16 · commit 76d4dd4 + test+docs commit）
+
+### What（做了什么）
+为 C2 的 Agent Function Calling 建评测 harness `scripts/eval_agent_fc.py`，量化「调对工具 / 调对顺序 / 答对内容 / 不幻觉」四类决策质量。配套 21 用例回归测试 + README §8 文档。
+
+### Why（为什么）
+§39 收尾第 8 点埋的坑：C2 只保证「能跑 + 异常 fallback」，不保证「决策质量」。`ENABLE_AGENT_FC` 灰度默认关，启用前必须有数据支撑 LLM 决策是否靠谱——正如 RAG 有 hit@K，Agent FC 需要 tool_selection_accuracy 等指标。
+
+### Tech（技术栈）
+- 双模式：`--mode mock`（mock LLM side_effect + mock dispatch，CI 友好）/ `--mode live`（真实 `/api/chat/stream` SSE，自动登录 demotest）
+- 4 指标纯函数：tool_selection_accuracy（集合匹配）/ tool_round_efficiency（轮次比值）/ answer_keyword_match（substring）/ hallucination_free（敏感词）
+- mini-judge 兜底（B1 faithfulness 同款）：答案 < 10 字或无期望词时触发，mock 模式走 fallback 规则不调 LLM
+
+### Flow（输入 → 输出）
+评测集 JSON（30 条 · 5 类）→ 逐条 evaluate_case_mock/live → 提取 actual_tools + done.answer → 4 指标计算 → summarize（全局均值 + by_category + failures + latency p50/p90）→ 报告 + JSON 落盘
+
+### Problem & Fix（问题 → 解决）
+1. **mock 模式 config 启动校验挡路** —— registry 延迟 import 触发 config 校验 JWT_SECRET/DATABASE_URL，mock 模式无真实值 → 全部 skipped。修复：`evaluate_case_mock` 内 import 前 `os.environ.setdefault` 补占位值（mock 不连真实 DB，dispatch 已 mock）
+2. **print_report 在 valid=0 时 KeyError** —— summarize 返回 `{"valid":0}` 无 avg_metrics。修复：print_report 加 early return 守卫
+3. **评测集不进 Git** —— `data/` 已 `.gitignore`（B1 同款约定），`data/eval_agent_set.json` 是 local artifact；回归测试全部 inline 构造 / tmp_path，不依赖该文件（照搬 B1 `_make_fake_eval_set` 模式）
+
+### Architecture Role（在系统中的位置）
+`scripts/` 一次性工具（CLAUDE.md §9.12 例外，不强求接口化）。与 B1 RAG 评测并列，共同构成「AI 质量可观测」层：B1 管检索质量，C3 管决策质量。为 `ENABLE_AGENT_FC` 灰度开关提供上线前数据门禁。
+
+### 已知限制
+- mock 模式指标恒为 1.0（mock LLM 完美跟随 expected_tools）——只验证 harness 逻辑不退化，真实决策质量必须跑 `--mode live`
+- live 模式依赖 server 在跑 + `ENABLE_AGENT_FC=true`，尚未在真实环境跑过基线（灰度启用前的下一步）
+- tool_selection_accuracy 用集合匹配，不惩罚「顺序错」（多工具场景顺序敏感度留 C3+ 演进）
+

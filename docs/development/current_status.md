@@ -1,20 +1,20 @@
-# 项目当前状态 · 恢复记忆（2026-07-16 **C1+C2 Agent Function Calling 框架闭环**后）
+# 项目当前状态 · 恢复记忆（2026-07-16 **C3 Agent FC 决策质量评测 harness 闭环**后）
 
 > 本文件是**会话级恢复记忆**，不是长期文档基线。
 > 长期基线：`CLAUDE.md`（V2.1） / `docs/architecture/business.md` / `docs/development/roadmap.md`。
 > 本文件下次启动开发时**先读**，然后决定是否仍相关（轻量修订即可）。
 >
-> **本次会话状态**：完成 **B1 RAG 评测 harness 增强**（2 commit）+ **C1 LLMProvider Protocol 扩 tools**（2 commit）+ **C2 Agent Function Calling 框架**（3 commit · 跨模块 §5.2）。共 7 commit。B1 新增 3 个评测脚本（eval_faithfulness / compare_modes / eval_hitk --latency-bench）+ 15 用例；C1 扩 LLMProvider.chat 加 tools/tool_choice/tool_calls；C2 新增 tools/registry + chat/agent_runner + agent_fc.yaml + orchestrator FC 灰度接入（ENABLE_AGENT_FC 默认 False）。pytest **359/360 PASS**（24 新增 C1+C2 用例全绿；1 known flaky unrelated）。下一动作：见 §10。
+> **本次会话状态**：完成 **B1 RAG 评测 harness 增强**（2 commit）+ **C1 LLMProvider Protocol 扩 tools**（2 commit）+ **C2 Agent Function Calling 框架**（3 commit · 跨模块 §5.2）+ **C3 Agent FC 决策质量评测 harness**（2 commit）。共 9 commit。C3 新增 `scripts/eval_agent_fc.py`（双模式 mock/live + 4 指标 tool_selection_accuracy/round_efficiency/keyword_match/hallucination_free + mini-judge 兜底）+ `tests/test_eval_agent_fc.py` 21 用例 + README §8。评测集 `data/eval_agent_set.json`（30 条 · 5 类）为 local artifact（.gitignore data/）。pytest **380/381 PASS**（21 新增 C3 用例全绿；1 known flaky unrelated）。下一动作：见 §10。
 
 ---
 
 ## 0. 一句话状态
 
-**Phase 0 治理 + Sprint 1/2/3 + Sprint 4（5 阶段 + 收尾）+ Phase 4 A4（Multi-Query 检索增强）+ A5（并行优化）+ A8（融合后 rerank）+ P2 长程记忆（跨 session 用户画像）+ Sprint 5 阶段 1（Prompt 版本管理）+ P2 SSE 流式中断续传 + AI 感知测试 5/5 PASS + B1 RAG 评测 harness 增强 + **C1 LLMProvider Protocol 扩 tools** + **C2 Agent Function Calling 框架**全部完成 ✅。**
+**Phase 0 治理 + Sprint 1/2/3 + Sprint 4（5 阶段 + 收尾）+ Phase 4 A4（Multi-Query 检索增强）+ A5（并行优化）+ A8（融合后 rerank）+ P2 长程记忆（跨 session 用户画像）+ Sprint 5 阶段 1（Prompt 版本管理）+ P2 SSE 流式中断续传 + AI 感知测试 5/5 PASS + B1 RAG 评测 harness 增强 + **C1 LLMProvider Protocol 扩 tools** + **C2 Agent Function Calling 框架** + **C3 Agent FC 决策质量评测 harness**全部完成 ✅。**
 
-**41 个 commit 已提交**（Sprint 1：4 / Sprint 2：4 / Sprint 3：5 / Sprint 4：9 / Phase 4 A4：2 / Phase 4 A5+A8：2 / P2 长程记忆：2 / Sprint 5 阶段 1：2 / P2 SSE resume：3 / **B1.1 + B1.2：2** / **C1.1 + C1.2：2** / **C2.1 + C2.2 + C2.3：3**），**pytest 360 passed**（含 Phase 4 A4 19 + A5 + A8：23 + P2 长程记忆 27 + Sprint 5 阶段 1 16 + SSE resume 18 + B1：15 + **C1：11 + C2：13** 新增用例），架构验收 🟢 8 / 🟡 3 / 🔴 0。
+**43 个 commit 已提交**（Sprint 1：4 / Sprint 2：4 / Sprint 3：5 / Sprint 4：9 / Phase 4 A4：2 / Phase 4 A5+A8：2 / P2 长程记忆：2 / Sprint 5 阶段 1：2 / P2 SSE resume：3 / **B1.1 + B1.2：2** / **C1.1 + C1.2：2** / **C2.1 + C2.2 + C2.3：3** / **C3.1 + C3.2：2**），**pytest 380 passed**（含 Phase 4 A4 19 + A5 + A8：23 + P2 长程记忆 27 + Sprint 5 阶段 1 16 + SSE resume 18 + B1：15 + **C1：11 + C2：13 + C3：21** 新增用例），架构验收 🟢 8 / 🟡 3 / 🔴 0。
 
-P2 backlog（CI / 长程记忆 / SSE resume / Prompt 版本管理 · **4/5 已闭环** / 仅 HTTPS 待启动）或 Phase 4 A6/A7（RRF 加权 / HyDE 高级 RAG）或 **C3 eval_agent_fc.py（Agent FC 决策质量评测）** 待启动。Sprint 5 后续阶段（traffic_ratio 灰度 + 5 YAML 迁移 + 多租户）按需启动。
+P2 backlog（CI / 长程记忆 / SSE resume / Prompt 版本管理 · **4/5 已闭环** / 仅 HTTPS 待启动）或 Phase 4 A6/A7（RRF 加权 / HyDE 高级 RAG）或 **Agent FC 灰度启用（跑 `eval_agent_fc.py --mode live` 取真实决策质量基线 → 决定是否开 ENABLE_AGENT_FC）** 待启动。Sprint 5 后续阶段（traffic_ratio 灰度 + 5 YAML 迁移 + 多租户）按需启动。
 
 ---
 

@@ -40,8 +40,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = PROJECT_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
-try:
-    from dotenv import load_dotenv  # type: ignore
+
+def _load_env() -> None:
+    """加载 .env（仅脚本入口调用，禁止 import 时执行）。
+
+    Why：`.env.dev` 含 USE_LANGGRAPH_REFUND=true 等业务开关；若在 import 期
+    load_dotenv，pytest collection 导入本模块（test_eval_agent_fc）时会污染
+    os.environ，导致 settings 单例首次加载读到脏值，令无关测试（如 refund V2/V3
+    分派）随收集顺序偶发 fail。故只在 main() 里加载。
+    """
+    try:
+        from dotenv import load_dotenv  # type: ignore
+    except ImportError:
+        return
     for env_file in [
         BACKEND_DIR / ".env",
         PROJECT_ROOT / "deploy" / ".env.dev",
@@ -50,8 +61,7 @@ try:
         if env_file.exists():
             load_dotenv(env_file)
             break
-except ImportError:
-    pass
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -218,7 +228,9 @@ def evaluate_case_mock(case: Dict[str, Any]) -> Dict[str, Any]:
     """
     # 在 import 之前设置 mock 环境（settings 是单例，agent_runner 内部读）
     os.environ["EVAL_AGENT_FC_MOCK"] = "1"
-    os.environ["ENABLE_AGENT_FC"] = "true"
+    # 注意：不要设 os.environ["ENABLE_AGENT_FC"]——agent_runner/orchestrator 读的是
+    # settings 对象属性（下方直接覆盖），设 env 会污染 settings 首次加载值，
+    # 导致 finally 恢复的"原值"是 True（破坏同进程后续测试）。
     # mock 模式不连真实 DB / 不签发 token，补占位值通过 config 启动校验
     os.environ.setdefault("JWT_SECRET", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
     os.environ.setdefault(
@@ -234,7 +246,9 @@ def evaluate_case_mock(case: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning(f"agent_runner / registry 加载失败: {e}")
         return {"category": case.get("category"), "skipped": True, "reason": str(e)}
 
-    # 直接覆盖 settings（不依赖 reload）
+    # 直接覆盖 settings（不依赖 reload）——保存原值，finally 恢复，避免污染全局单例
+    _orig_enable_fc = settings.ENABLE_AGENT_FC
+    _orig_max_turns = settings.MAX_AGENT_TURNS
     settings.ENABLE_AGENT_FC = True
     settings.MAX_AGENT_TURNS = 5
 
@@ -314,6 +328,9 @@ def evaluate_case_mock(case: Dict[str, Any]) -> Dict[str, Any]:
         finally:
             ar_mod.dispatch = original_dispatch
             ar_mod.get_llm_provider = original_get_llm_provider
+            # 恢复 settings 全局单例，避免污染同进程后续测试（pytest import 复用）
+            settings.ENABLE_AGENT_FC = _orig_enable_fc
+            settings.MAX_AGENT_TURNS = _orig_max_turns
 
     # 计算 4 类指标
     actual_rounds = len(actual_tools)
@@ -548,6 +565,7 @@ def print_report(summary: Dict[str, Any]) -> None:
 # 8. 主流程
 # =============================================================
 def main() -> int:
+    _load_env()  # 仅入口加载 .env，避免 import 期污染 os.environ（见 _load_env 说明）
     parser = argparse.ArgumentParser(description="Agent FC 决策质量评估")
     parser.add_argument("--mode", choices=["mock", "live"], default="live",
                         help="mock=CI 模式（mock LLM + mock dispatch）; live=手动模式（调真实 API）")
