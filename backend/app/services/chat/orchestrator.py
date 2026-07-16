@@ -74,6 +74,23 @@ class Synthesizer:
             raise ValueError("query 不能为空")
         query = query.strip()
 
+        # C2：Agent Function Calling 灰度入口（ENABLE_AGENT_FC=True 时）
+        # FC 路径独立：不走 query rewrite / profile / intent 分派；
+        # 异常自包 try/except fallback 到 V1.2 RAG（与既有 fallback 路径一致）
+        if settings.ENABLE_AGENT_FC:
+            from app.services.chat.agent_runner import run_stream_agent
+            try:
+                yield from run_stream_agent(query, user_id=user_id, history=history)
+                return
+            except Exception as e:
+                logger.exception(
+                    f"synth.agent_fc 异常，fallback 到 V1.2 RAG: {e}",
+                    extra={"intent": "agent_fc_error"},
+                )
+                for event_type, data in v12_rag_run_stream(query, 5, history):
+                    yield (event_type, data)
+                return
+
         # M12：query 改写（指代补全）— 改写后的 query 供后续 intent + RAG 使用
         # product_query/policy_query 走 PolicyService.search_policy → 改写有效
         # order_query/refund_query 走 tool 查 DB → 改写无效但无害
