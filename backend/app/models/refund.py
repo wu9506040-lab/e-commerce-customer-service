@@ -3,7 +3,7 @@ import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, Numeric, SmallInteger, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Integer, Numeric, SmallInteger, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -20,7 +20,7 @@ class RefundStatus(str, Enum):
 class Refund(Base):
     __tablename__ = "refunds"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     refund_no: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     order_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)

@@ -11,7 +11,7 @@ from app.models.base import Base
 class Message(Base):
     __tablename__ = "messages"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False)

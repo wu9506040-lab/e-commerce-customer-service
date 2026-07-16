@@ -26,7 +26,7 @@ class OrderStatus(str, Enum):
 class Order(Base):
     __tablename__ = "orders"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     order_no: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=OrderStatus.PENDING.value)
@@ -45,7 +45,7 @@ class Order(Base):
 class OrderItem(Base):
     __tablename__ = "order_items"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     order_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     product_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # 冗余字段：商品改名/下架后，订单历史仍可读
