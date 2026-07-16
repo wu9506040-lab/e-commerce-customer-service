@@ -38,7 +38,7 @@ class ToolContext:
     （OpenAI FC 没有"隐藏参数"概念，必须注入到 arguments 或 ctx）。
 
     Why dataclass：
-        - 业务层无侵入（不要求 OrderTool.get_order_detail 等改签名）
+        - 业务层无侵入（不要求 OrderTool.get_order_by_no 等改签名）
         - 后续可加 request_id / tenant_id 等（按 CLAUDE.md §9.4.3 多租户预留）
     """
     user_id: Optional[int] = None
@@ -76,7 +76,7 @@ def _run_lookup_order(args: dict, ctx: ToolContext) -> dict:
         return {"error": "order_no is required"}
     if ctx.user_id is None or ctx.user_id == 0:
         return {"error": "anonymous user cannot query order"}
-    detail = OrderTool.get_order_detail(ctx.user_id, order_no)
+    detail = OrderTool.get_order_by_no(ctx.user_id, order_no)
     if not detail:
         return {"error": f"order {order_no} not found or not owned by user"}
     return detail
@@ -104,6 +104,19 @@ def _run_search_policy(args: dict, ctx: ToolContext) -> dict:
     top_k = int(args.get("top_k", 5))
     docs = PolicyService.search_policy(query, top_k=top_k)
     return {"policy_docs": docs}
+
+
+def _run_check_refundable(args: dict, ctx: ToolContext) -> dict:
+    """check_refundable: 判断指定订单能否退款（纯规则，不调 LLM）。"""
+    # 延迟 import 避免 registry ↔ refund_tool 循环依赖
+    from app.tools.refund_tool import RefundTool
+
+    order_no = args.get("order_no")
+    if not order_no:
+        return {"error": "order_no is required"}
+    if ctx.user_id is None or ctx.user_id == 0:
+        return {"error": "anonymous user cannot check refund"}
+    return RefundTool.check_refundable(ctx.user_id, order_no)
 
 
 REGISTRY: dict[str, ToolSpec] = {
@@ -164,6 +177,22 @@ REGISTRY: dict[str, ToolSpec] = {
             "required": ["query"],
         },
         runner=_run_search_policy,
+    ),
+    "check_refundable": ToolSpec(
+        name="check_refundable",
+        description="判断指定订单能否退款（已签收 7 天内 / 其他状态均可，已退款或超期不可退）。"
+                    "用户问'能不能退'/'还能退吗'/'还在退款期吗'时调用。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "order_no": {
+                    "type": "string",
+                    "description": "订单号，例如 'ORD20240101001'",
+                },
+            },
+            "required": ["order_no"],
+        },
+        runner=_run_check_refundable,
     ),
 }
 
