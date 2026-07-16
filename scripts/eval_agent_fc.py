@@ -33,7 +33,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from unittest.mock import MagicMock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -371,6 +371,43 @@ def evaluate_case_mock(case: Dict[str, Any]) -> Dict[str, Any]:
 # =============================================================
 # 5. Live 模式评测（手动跑）
 # =============================================================
+def _parse_sse_event(raw_line: bytes) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """解析一行 SSE bytes → (event_type, payload_data)。
+
+    兼容 backend/app/api/chat.py:_sse_format + agent_runner 的实际 schema：
+    - meta 事件含 tool_call/tool_result/final（顶层，不在 data 嵌套）
+    - token 事件含 text 字段
+    - done 事件含 answer 字段
+
+    返回:
+      ("tool_call", {"name": "...", ...})  - meta.tool_call
+      ("done",      {"answer": "..."})    - done
+      ("token",     {"text": "..."})      - 流式片段
+      ("meta",      {...})                 - 其他 meta（tool_result / final / heartbeat）
+      None                                 - 非 data 行 / 解析失败 / 非 JSON
+    """
+    try:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return None
+    if not line.startswith("data:"):
+        return None
+    try:
+        event = json.loads(line[5:].strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(event, dict):
+        return None
+    event_type = event.get("type")
+    if event_type == "meta" and isinstance(event.get("tool_call"), dict):
+        return ("tool_call", event["tool_call"])
+    if event_type == "done" and "answer" in event:
+        return ("done", {"answer": event["answer"]})
+    if event_type == "token" and "text" in event:
+        return ("token", {"text": event["text"]})
+    return None
+
+
 def evaluate_case_live(
     case: Dict[str, Any], base_url: str, opener: "urllib.request.OpenerDirector"
 ) -> Dict[str, Any]:
@@ -395,6 +432,7 @@ def evaluate_case_live(
 
     actual_tools = []
     done_answer = ""
+    token_acc = []  # token.text 累积（done 未到达时的 fallback）
     t0 = time.perf_counter()
     try:
         req = urllib.request.Request(
@@ -405,19 +443,23 @@ def evaluate_case_live(
         )
         with opener.open(req, timeout=60) as resp:
             for raw_line in resp:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line.startswith("data:"):
+                parsed = _parse_sse_event(raw_line)
+                if parsed is None:
                     continue
-                try:
-                    event = json.loads(line[5:].strip())
-                except json.JSONDecodeError:
-                    continue
-                event_type = event.get("type")
-                data = event.get("data", {})
-                if event_type == "meta" and "tool_call" in data:
-                    actual_tools.append(data["tool_call"]["name"])
+                event_type, payload_data = parsed
+                if event_type == "tool_call":
+                    name = payload_data.get("name")
+                    if name:
+                        actual_tools.append(name)
                 elif event_type == "done":
-                    done_answer = data.get("answer", "")
+                    done_answer = payload_data.get("answer") or ""
+                elif event_type == "token":
+                    text = payload_data.get("text")
+                    if text:
+                        token_acc.append(text)
+        # done 未到达时的 fallback：拼接 token 流
+        if not done_answer and token_acc:
+            done_answer = "".join(token_acc)
         elapsed_ms = (time.perf_counter() - t0) * 1000
     except Exception as e:
         logger.warning(f"live 模式请求失败: query={case['query']}, err={e}")
