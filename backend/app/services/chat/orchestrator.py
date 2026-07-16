@@ -49,6 +49,8 @@ from app.services import profile_service
 
 from app.services.chat import prompt_assembler, stream_dispatcher
 from app.services.chat.refund_handler import handle_refund_v2, handle_refund_v3
+# M14 Stage 3：BusinessFlow 抽象（仅 refund_query 接入；其他 intent 暂不抽象）
+from app.services.business_flow import create_business_flow
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +184,26 @@ class Synthesizer:
                 )
                 return
             elif intent == "refund_query":
-                # V3 开关：USE_LANGGRAPH_REFUND=true 时走 LangGraph 版
+                # M14 Stage 3：BusinessFlow 抽象（灰度 ENABLE_BUSINESS_FLOW=True 时走 RefundFlow）
+                # RefundFlow 包装 V3 LangGraph + yield flow_stage meta；与 handle_refund_v3 行为兼容
+                flow = create_business_flow(
+                    intent="refund_query",
+                    query=query,
+                    user_id=user_id,
+                    intent_result=intent_result,
+                    order_no=order_no,
+                    context_block=context_block,
+                    history=history,
+                )
+                if flow is not None:
+                    logger.info(
+                        f"refund_query → {flow.name}",
+                        extra={"intent": intent, "flow": flow.name},
+                    )
+                    metrics.inc_chat(intent, v3_engine="flow")  # M8：Flow 路径独立计数
+                    yield from flow.run()
+                    return
+                # 灰度关闭 / 不参与 Flow 抽象 → 走原有 V3/V2 路径
                 if settings.USE_LANGGRAPH_REFUND:
                     logger.info("refund_query → LangGraph V3", extra={"intent": intent})
                     metrics.inc_chat(intent, v3_engine="v3")  # M8
