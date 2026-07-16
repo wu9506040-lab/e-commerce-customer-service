@@ -282,6 +282,7 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
                   intent: meta?.intent ?? null,
                   entities: meta?.entities ?? null,
                   tool_result_preview: meta?.tool_result_preview ?? null,
+                  card: meta?.card ?? null,
                   contexts: meta?.contexts ?? null,
                   scores: meta?.scores ?? null,
                   create_time: new Date().toISOString(),

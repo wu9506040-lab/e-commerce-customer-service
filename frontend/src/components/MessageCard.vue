@@ -6,9 +6,13 @@
  * - order_query / refund_query + order_no → OrderCard mini
  * - tool_result_preview 存在 → 折叠面板
  *
+ * M14 Stage 2：新增 SSE meta.card 分支（M14 OrderContextResolver 决策产物）
+ * - card.type === 'order_list' → 多订单 picker（OrderCard list）
+ * - card.type === 'order_detail' → 唯一订单详情（OrderCard mini）
+ *
  * 设计原则：只在消息气泡下方追加，不替换正文（用户先看 LLM 答得对不对）
  */
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { Message, Product, OrderSummary } from '../types';
 import { getProduct, getOrderDetail } from '../api';
 import ProductCard from './ProductCard.vue';
@@ -82,14 +86,55 @@ const intentLabel = (intent: string): string => {
 const shouldRenderCard = () => {
   return !!(props.message.intent && props.message.entities);
 };
+
+// M14 Stage 2：SSE meta.card 渲染分支（computed 返回干净 primitive，避免模板 TS 断言）
+const cardKind = computed<'orders' | 'order' | null>(() => {
+  const c = props.message.card;
+  if (!c) return null;
+  if (c.type === 'order_list' && c.items.length > 0) return 'orders';
+  if (c.type === 'order_detail' && c.items.length > 0) return 'order';
+  return null;
+});
+
+const cardOrders = computed<OrderSummary[]>(() => {
+  const c = props.message.card;
+  return c?.type === 'order_list' ? c.items : [];
+});
+
+const cardOrder = computed<OrderSummary | null>(() => {
+  const c = props.message.card;
+  return c?.type === 'order_detail' ? c.items[0] ?? null : null;
+});
+
+const cardTruncated = computed<boolean>(() => {
+  return props.message.card?.truncated === true;
+});
 </script>
 
 <template>
-  <div v-if="message.role === 'assistant' && shouldRenderCard()" class="message-card">
+  <div v-if="message.role === 'assistant' && (shouldRenderCard() || message.card)" class="message-card">
 
-    <!-- product_query + sku → 商品卡 -->
+    <!-- M14 Stage 2：SSE meta.card 推送（M14 OrderContextResolver 决策产物，优先级最高） -->
+    <template v-if="cardKind === 'orders'">
+      <div class="order-card-list-wrap">
+        <OrderCard
+          v-for="o in cardOrders"
+          :key="o.order_no"
+          :order="o"
+          density="list"
+        />
+      </div>
+      <div v-if="cardTruncated" class="card-truncated-hint">
+        还有更多订单，请提供订单号查询具体状态
+      </div>
+    </template>
+    <template v-else-if="cardKind === 'order' && cardOrder">
+      <OrderCard :order="cardOrder" density="mini" />
+    </template>
+
+    <!-- product_query + sku → 商品卡（M9 fallback） -->
     <ProductCard
-      v-if="message.entities?.sku && message.intent === 'product_query'"
+      v-else-if="message.entities?.sku && message.intent === 'product_query'"
       :product="product"
       :loading="productLoading"
       :error="productError"
@@ -97,7 +142,7 @@ const shouldRenderCard = () => {
       @retry="loadProduct"
     />
 
-    <!-- order_query / refund_query + order_no → 订单卡 -->
+    <!-- order_query / refund_query + order_no → 订单卡（M9 fallback） -->
     <OrderCard
       v-else-if="message.entities?.order_no && (message.intent === 'order_query' || message.intent === 'refund_query')"
       :order="order ?? { order_no: message.entities.order_no, status: 'unknown', total_amount: 0, create_time: null, item_count: 0 }"
@@ -176,5 +221,16 @@ const shouldRenderCard = () => {
   color: var(--gray-700);
   border: 1px solid var(--gray-300);
   font-family: var(--font-mono);
+}
+.card-truncated-hint {
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
+  padding: 4px 0;
+  border-top: 1px dashed var(--gray-200);
+}
+.order-card-list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
 }
 </style>

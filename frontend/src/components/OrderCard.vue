@@ -194,8 +194,12 @@ function onRefundCancel() {
 
     <!-- list 模式：简略 -->
     <template v-if="density === 'list'">
-      <div class="order-row">
+      <div v-if="order.item_count > 0" class="order-row">
         <span>共 {{ order.item_count }} 件商品</span>
+        <span class="amount">{{ totalText(order) }}</span>
+      </div>
+      <div v-else class="order-row">
+        <span></span>
         <span class="amount">{{ totalText(order) }}</span>
       </div>
       <div class="order-row time">
@@ -261,6 +265,11 @@ function onRefundCancel() {
   background: var(--gray-0);
   border: var(--border);
   padding: var(--sp-3) var(--sp-4);
+}
+.order-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
 }
 .order-header {
   display: flex;
