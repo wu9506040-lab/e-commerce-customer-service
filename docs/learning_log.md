@@ -4458,3 +4458,162 @@ PolicyService.search_multi_policy
 
 4. **重构顺序：先抽公共方法 → 再加新方法 → 再改主入口** —— A8 的实施顺序是：(1) 抽 `_coarse_retrieval` (2) 加 `search_policy_coarse` 调用同一方法 (3) 重构 `search_multi_policy` 加 3 路径分支。每步可独立测试，不破旧行为
 
+---
+
+## §38 · B1 RAG 评测 harness 增强（2026-07-16 · commit 57eaa6a + 本 test+docs commit）
+
+### What（做了什么）
+
+把 RAG 评测从「单脚本 hit@K」升级到 **3 维度全栈评测体系**：
+
+| 维度 | 工具 | 解决什么 |
+|---|---|---|
+| **检索质量** | `eval_hitk.py`（扩 --latency-bench flag） | 防抖动 + hit@K 报告 |
+| **答案忠实度** | `eval_faithfulness.py`（新建） | 评估 LLM 生成答案是否引用 KB + 是否幻觉 |
+| **多模式 A/B** | `compare_modes.py`（新建） | 一键对比 baseline / rerank / bm25 / hybrid / multi_query / fuse_first_rerank 6 模式 |
+| **黄金集** | `data/eval_set_v2.json`（30 条 / 15 sources） | 从 v1 筛选 + 加 expected_keywords |
+| **忠实度评测集** | `data/eval_faith_set.json`（30 条 / 20 sources） | 含 expected_keywords + sensitive_keywords |
+| **回归测试** | `tests/test_eval_hitk.py`（15 用例 mock） | 保障评测脚本核心逻辑不退化 |
+| **文档** | `scripts/README.md`（新建） | 如何跑 / 加新 query / 数据集是 local artifacts |
+
+**关键决策：忠实度评测采用「轻量化」方案** —— 80% 走规则路径（substring 匹配 expected_keywords + sensitive_keywords），20% 走 mini-judge 兜底（50 token，max_tokens=5）。完整 LLM-as-judge 是 20000 token/100 条 → 轻量化 < 1000 token/100 条 = **成本 -95%**。
+
+### Why（为什么做）
+
+**背景**：M11 已闭环推理成本优化（guard + 缓存 + max_tokens + 工具直答 + 行为监控），但**没有任何体系评估 RAG 检索 / 生成质量**。优化是否真有效、上 A7 HyDE 还是不上、调 rerank 阈值到多少 — 全靠肉眼判断。
+
+**驱动**：
+- 「RAG 进阶优化」需要 **A/B 数据**而不是拍脑袋
+- 「Agent 框架」上线前需要 **决策质量评测**（function call 选对 tool 比例）
+- 简历/面试需要「自建评测体系」的硬证据
+
+### Tech（技术栈）
+
+- **Python 3.11** + 标准库（json / re / statistics / time / argparse / pathlib）
+- **pytest 9.1** + `unittest.mock.patch`（mock embedding/qdrant/rerank/bm25）
+- **Qwen Provider 抽象**（`core/providers/`）— `get_llm_provider().chat()` 用于 mini-judge 兜底
+- **统计**：hit@K 召回率 + percentile latency + rule-based faithfulness
+
+### Flow（输入 → 输出）
+
+```
+eval_hitk.py：
+  data/eval_set_v2.json (30 条 query + relevant_doc_id)
+  + Qdrant + Embedding Provider
+  ↓
+  per query: embed → qdrant top-15 → [optional: rerank] → top-10
+  ↓
+  对比 relevant_doc_id 是否在 top-K
+  ↓
+  hit@1/3/5/10 + p50/p90/max latency + miss_samples
+
+eval_faithfulness.py：
+  data/eval_faith_set.json (query + expected_keywords + sensitive_keywords)
+  + 已有 LLM 答案（answers.json）
+  ↓
+  rule path（80%）：substring 匹配 expected + sensitive
+  ↓ 或
+  mini-judge path（20%）：50 token LLM 输出 1/0
+  ↓
+  citation_rate + no_hallucination_rate + faithfulness_score
+
+compare_modes.py：
+  data/eval_set_v2.json
+  ↓
+  顺序跑 6 模式（避免 LLM Provider 限流）
+  ↓
+  对比表（按 hit@5 降序）+ 推荐建议
+  ↓
+  data/eval_compare_report.json
+```
+
+### Problem & Fix（问题 → 解决）
+
+**问题 1：完整 LLM-as-judge 成本爆炸（20000 token/100 条）**
+
+**根因**：每条 query 调 1 次 LLM，max_tokens=200，单条 ~200 token，100 条 = 20000 token + $0.3/次
+**修复**：规则优先 + mini-judge 兜底 — 实体抽取（SKU 正则 + 数字正则）+ substring 匹配；置信度低时（答案 < 10 字 或 expected_keywords 空）才调 LLM，max_tokens=5 → **成本 -95%**
+
+**问题 2：data/ 整目录被 .gitignore 忽略，评测集无法版本化**
+
+**根因**：`.gitignore` 第 82 行 `data/`（历史约定：评测报告属 local artifacts）
+**修复**：**保持现状**（与 `eval_hitk_*.json` 报告一致）+ 在 `scripts/README.md` §1 明确标注「评测集是 local artifacts，不参与版本控制」。改动最小化，避免动 `.gitignore` 引入未授权变更
+
+**问题 3：pytest 中文断言在 Windows GBK 终端乱码**
+
+**根因**：`assert "query" in str(e)` 在 GBK 终端 pytest 输出乱码，但断言本身逻辑正确
+**修复**：测试断言改为 `assert "缺少必要字段" in str(e) and "relevant_doc_id" in str(e)`（错误消息会复述完整 item，无论字段名如何），避开 GBK 乱码问题
+
+**问题 4：mock patch 目标错（patch 在函数内部 import）**
+
+**根因**：`evaluate_single` 内部 `from app.core.providers.rerank import get_rerank_provider`，但测试用了 `patch("scripts.eval_hitk.get_rerank_provider")` — 名字不在 module 顶层，patch 失败
+**修复**：改为 `patch("app.core.providers.rerank.get_rerank_provider")`（patch 实际 import 的目标）
+
+**问题 5：summarize round 后浮点比较失败**
+
+**根因**：`summarize` 内部 `round(hit_rates[k], 3)` 把 5/6 = 0.83333... round 成 0.833；测试断言 `== 5/6` 触发浮点不等
+**修复**：用 `pytest.approx(5/6, abs=1e-3)` 容差比较
+
+### Architecture Role（在系统中的位置）
+
+```
+RAG Pipeline (orchestrator → PolicyService.search_policy/multi)
+  ↓ 输出
+[已有] scripts/eval_hitk.py（hit@K 单模式）
+  ↓ B1.1 增强
+[新增] --latency-bench flag（防抖动）
+[新增] eval_faithfulness.py（忠实度 · 轻量化）
+[新增] compare_modes.py（6 模式 A/B）
+  ↓
+[新增] tests/test_eval_hitk.py（15 用例 mock · 阈值门禁 hit@5 ≥ 0.6）
+  ↓
+[未来] C2 Agent FC 框架 → eval_agent_fc.py（Agent 决策质量评测）
+```
+
+**Scope Lock 验证（§5）**：
+- ✅ scripts/eval_hitk.py 修改（+30 行）
+- ✅ scripts/eval_faithfulness.py 新建（~340 行）
+- ✅ scripts/compare_modes.py 新建（~190 行）
+- ✅ data/eval_set_v2.json + eval_faith_set.json（local artifacts · 不进 Git）
+- ✅ tests/test_eval_hitk.py 新建（15 用例 ~280 行）
+- ✅ scripts/README.md 新建（~200 行）
+- ❌ 业务代码（chat / policy / intent / RAG）零改动
+
+**业务边界对齐 §9.6（Prompt 配置化）/ §9.7（自检 5 问）**：
+- 评测脚本不在业务模块边界内（CLAUDE.md §9.12 例外条款：一次性脚本不强求接口化）
+- 数据集 JSON 是评测输入，不是 Prompt；不进 `config/prompts/`
+- 测试用 mock 全部覆盖，不引入新依赖
+
+### Tests（验证）
+
+| 测试类型 | 数量 | 结果 |
+|---------|------|------|
+| eval_hitk 核心逻辑（load + evaluate + summarize + threshold） | 11 | 11/11 PASS |
+| evaluate_single 4 模式（baseline / rerank / bm25 / multi_query） | 4 | 4/4 PASS |
+| 阈值门禁（hit@5 < 0.6 fail / ≥ 0.6 pass） | 2 | 2/2 PASS |
+| latency-bench 中位数语义 | 1 | 1/1 PASS |
+| **test_eval_hitk.py 新增** | **15** | **15/15 PASS** |
+| 全量 pytest（B1.2 末） | **336**（+15）| **335/336 PASS**（1 known flaky unrelated）|
+
+**eval_faithfulness demo 模式**：30 条 placeholder 答案跑通，输出 `综合 Faithfulness Score: 0.767`，低分案例分析正确。
+
+### 已知限制
+
+- **轻量 LLM-as-judge 在中文语义级判断上弱于完整 judge** — 仅适合「实体级引用」评测（如 SKU / 政策关键词 / 数字），不适合「语义级正确性」（如"答案是否符合用户意图」）。后者需完整 LLM-as-judge
+- **评测集是 local artifacts，不进 Git** — 部署到新环境需重新生成（参考 `scripts/README.md` §1）
+- **阈值门禁 hit@5 ≥ 0.6 是 mock 数据基准** — 真实流量 hit@5 当前 ~0.90（见 `data/eval_hitk_bm25_rerank.json` baseline）。门禁可调，但需先跑真实数据建 baseline
+- **`compare_modes.py` 顺序执行 6 模式** — 单次跑完 ≈ 6 × 30 query × 1.5s = ~270s。CI 可拆 `--modes baseline rerank hybrid` 跑核心 3 模式
+- **未实现 eval_agent_fc.py** — C2 Agent FC 上线后配套写（不在 B1 范围）
+
+### 反思（写给未来的我）
+
+1. **「评测是优化前置依赖」不是套话，是工程纪律** —— 之前几次优化（Phase 4 A4/A5/A8）全靠肉眼判断 hit@K 提升，没量化数据。B1 把评测做成 CI 可跑的体系（test_eval_hitk.py 15 用例 + 阈值门禁），后续 A7 HyDE / A6 RRF 加权就能「先跑 baseline → 上优化 → 跑对比 → 数据说话」。这是从「凭感觉」到「凭数据」的拐点
+
+2. **轻量化 vs 完整 LLM-as-judge 的取舍要看「评测频率」** —— 如果 1 周跑 1 次 100 条 → 完整 judge 可接受（成本 $1.2/月）；如果 1 天跑 10 次 → 轻量化必须（否则 $36/月）。当前选轻量化是为了 **CI 集成 + 高频跑** 的可能性（虽然还没用到，但留口子）
+
+3. **local artifacts 的边界要明确文档化，不能靠「约定俗成」** —— `data/` 被 .gitignore 排除但历史上没人写过为什么。新人 onboard 不知道评测集从哪来。`scripts/README.md` §1 把这个边界写死，未来部署/新人都不踩坑
+
+4. **mock 测试的 patch 目标要看 import 路径，不能看 module 顶层** —— `evaluate_single` 内部 import 的 `get_rerank_provider` 不在 `scripts.eval_hitk` 的 module 顶层，patch 必须用完整路径 `app.core.providers.rerank.get_rerank_provider`。这个坑在测试 mock 中反复出现，应该整理进 MEMORY feedback
+
+5. **测试中文断言在 Windows GBK 终端是反复出现的痛点** —— 跟 memory `feedback_windows_bash_utf8.md` 一脉相承。解法不是「让 pytest 用 utf-8」（改环境全局），而是**测试断言用「通用错误消息片段」**（如「缺少必要字段」「不存在」），不依赖具体字段名中文
+
