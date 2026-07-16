@@ -1,0 +1,28 @@
+# business_flow.py 业务规则（M14 §10 阶段 3）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("business_flow")
+# 启动期一次加载（不参与热更新）；改完需重启服务（roadmap §3.5）
+#
+# 单一真相源：app/services/business_flow/ 全部 Flow 通过 BusinessFlowFactory.create() 加载
+#
+# 字段分类：
+#   REFUND_FLOW_LLM_TEMPERATURE: synthesize 阶段 LLM 温度（与 refund_graph 同步）
+#   REFUND_FLOW_STREAM_MODE: LangGraph stream 模式（updates/values）
+
+# RefundFlow synthesize 阶段 LLM 温度（与 refund_graph.synthesize_answer 默认 temperature=0.3 对齐）
+# 降低随机性 → 退款答案更稳定（plan §10 阶段 3 L1 决策）
+REFUND_FLOW_LLM_TEMPERATURE: 0.3
+
+# RefundFlow LangGraph stream 模式
+# - updates：每步返回 {node_name: state_update}（Flow 抽象推荐）
+# - values:  每步返回完整 state（调试用，token 占用高）
+REFUND_FLOW_STREAM_MODE: "updates"
+
+# Flow stage 中文映射（前端展示用）
+FLOW_STAGE_LABELS:
+  fetch_order: "查询订单"
+  judge: "审核退款条件"
+  fetch_policy: "召回政策"
+  check_proof: "检查凭证"
+  escalate: "转接人工"
+  synthesize: "生成回复"
