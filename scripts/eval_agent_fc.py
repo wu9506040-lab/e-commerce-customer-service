@@ -371,25 +371,26 @@ def evaluate_case_mock(case: Dict[str, Any]) -> Dict[str, Any]:
 # =============================================================
 # 5. Live 模式评测（手动跑）
 # =============================================================
-def evaluate_case_live(case: Dict[str, Any], base_url: str, token: Optional[str]) -> Dict[str, Any]:
+def evaluate_case_live(
+    case: Dict[str, Any], base_url: str, opener: "urllib.request.OpenerDirector"
+) -> Dict[str, Any]:
     """Live 模式：调真实 /api/chat SSE 流式接口，提取 tool_call + answer。
 
-    注：本函数需要 server 在跑（本地或 ECS），token 由 demotest 账号登录获得。
+    注：本函数需要 server 在跑（本地或 ECS）；opener 由 main() 用 demotest
+    账号登录后构造（httpOnly Cookie 鉴权）。
     """
     import urllib.request
     import urllib.error
 
-    if not token:
-        raise ValueError("live 模式需要 --token（demotest 账号登录 token）")
-
-    url = f"{base_url}/api/chat/stream"
+    # P0 修复点 1：实际 SSE 端点是 POST /api/chat（不是 /api/chat/stream）
+    # P0 修复点 2：鉴权走 httpOnly Cookie（不是 Authorization: Bearer）
+    url = f"{base_url}/api/chat"
     payload = {
         "query": case["query"],
-        "user_id": case.get("user_id", 1),
     }
     headers = {
-        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "Accept": "text/event-stream",
     }
 
     actual_tools = []
@@ -402,7 +403,7 @@ def evaluate_case_live(case: Dict[str, Any], base_url: str, token: Optional[str]
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with opener.open(req, timeout=60) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line.startswith("data:"):
@@ -444,6 +445,48 @@ def evaluate_case_live(case: Dict[str, Any], base_url: str, token: Optional[str]
         "mode": "live",
         "note": case.get("note", ""),
     }
+
+
+# =============================================================
+# 5.5 Live 模式登录：构造带 httpOnly Cookie 的 OpenerDirector
+# =============================================================
+def _build_session_opener(base_url: str) -> "urllib.request.OpenerDirector":
+    """P0 修复：login 改 form-urlencoded（OAuth2PasswordRequestForm）+ Cookie 鉴权。
+
+    后端实际接口契约（见 backend/app/api/auth.py:79）：
+    - POST /api/auth/login 用 OAuth2PasswordRequestForm（application/x-www-form-urlencoded）
+    - token 通过 Set-Cookie 下发（httpOnly），响应 body 不含 token
+    - chat 接口鉴权靠 Cookie（见 backend/app/api/chat.py:119 描述）
+
+    返回的 opener 自带 HTTPCookieProcessor，open() 会自动携带 Cookie。
+    """
+    import urllib.request
+    import urllib.parse
+    import http.cookiejar
+
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+
+    login_url = f"{base_url}/api/auth/login"
+    login_data = urllib.parse.urlencode({
+        "username": "demotest",
+        "password": "demotest123",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        login_url, data=login_data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with opener.open(req, timeout=10) as resp:
+        # 验证：响应 body 不含 token，但 Set-Cookie 必须有 cs_token
+        body = resp.read().decode("utf-8")
+        cookies = [c.name for c in cookie_jar]
+        if "cs_token" not in cookies:
+            raise RuntimeError(
+                f"登录响应未下发 cs_token Cookie（cookies={cookies}, body={body[:200]}）"
+            )
+        logger.info(f"  自动登录 demotest 成功（cookie: {', '.join(cookies)}）")
+    return opener
 
 
 # =============================================================
@@ -572,32 +615,19 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="评测集 JSON 路径")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="详细结果输出")
     parser.add_argument("--base-url", default="http://localhost:8000", help="live 模式 API base URL")
-    parser.add_argument("--token", default=None, help="live 模式 Bearer token")
     args = parser.parse_args()
 
     logger.info(f"加载评测集: {args.input} (mode={args.mode})")
     eval_set = load_eval_set(args.input)
     logger.info(f"  共 {len(eval_set)} 条")
 
-    # live 模式：自动登录拿 token（如未提供）
-    token = args.token
-    if args.mode == "live" and not token:
+    # live 模式：自动登录拿 cookie（如未提供 cookie 文件）
+    opener: Optional["urllib.request.OpenerDirector"] = None
+    if args.mode == "live":
         try:
-            import urllib.request
-            login_url = f"{args.base_url}/api/auth/login"
-            login_payload = json.dumps({"username": "demotest", "password": "demotest123"}).encode("utf-8")
-            req = urllib.request.Request(
-                login_url, data=login_payload,
-                headers={"Content-Type": "application/json"}, method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                login_data = json.loads(resp.read().decode("utf-8"))
-                token = login_data.get("token") or login_data.get("data", {}).get("token")
-                if not token:
-                    raise ValueError(f"登录响应无 token: {login_data}")
-                logger.info(f"  自动登录 demotest 成功")
+            opener = _build_session_opener(args.base_url)
         except Exception as e:
-            logger.error(f"自动登录失败（请手动 --token）: {e}")
+            logger.error(f"自动登录失败: {e}")
             return 1
 
     logger.info(f"开始评估（mode={args.mode}）")
@@ -607,7 +637,7 @@ def main() -> int:
             if args.mode == "mock":
                 r = evaluate_case_mock(case)
             else:
-                r = evaluate_case_live(case, args.base_url, token)
+                r = evaluate_case_live(case, args.base_url, opener)
             results.append(r)
         except Exception as e:
             logger.error(f"[{i}/{len(eval_set)}] query='{case.get('query', '')}' 评估失败: {e}")
