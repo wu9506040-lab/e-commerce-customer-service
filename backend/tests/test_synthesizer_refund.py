@@ -14,9 +14,14 @@ Sprint 3 拆分后：
 
 不依赖 MySQL / Qdrant / LLM API，可独立运行。
 """
+import os
 from unittest.mock import patch, MagicMock
 
 import pytest
+
+# pytest 不走 __main__，env 必须在模块顶部 setdefault
+os.environ.setdefault("JWT_SECRET", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
+os.environ.setdefault("DATABASE_URL", "mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=utf8mb4")
 
 
 # ============ 辅助：构造测试数据 ============
@@ -90,6 +95,8 @@ class TestRefundDispatch:
         """USE_LANGGRAPH_REFUND=True → 走 V3 LangGraph 版"""
         mock_settings.USE_LANGGRAPH_REFUND = True
         mock_settings.LOG_LEVEL = "INFO"
+        # C2 灰度默认关；否则 MagicMock 默认 truthy 会误触发 FC 路径
+        mock_settings.ENABLE_AGENT_FC = False
 
         # V3 走 LangGraph，不走 V2 的 OrderService.list_user_orders 兜底
         # （除非 order_no 为空时还会用一次）
