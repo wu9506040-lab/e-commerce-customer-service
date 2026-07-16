@@ -145,6 +145,15 @@ class Settings(BaseSettings):
     # 默认 false（灰度用），迁移完成后再开 true
     ENABLE_PROMPT_VERSIONING: bool = False
 
+    # ---- C2: Agent Function Calling 框架 ----
+    # 启用后 orchestrator 把 FC-capable query 路由到 chat.agent_runner
+    # （tools/registry.py 注册的 lookup_order / search_product / search_policy）
+    # 默认 false（灰度用），关闭时走原 intent 分派路径（CLAUDE.md §9.2.2 隔离）
+    ENABLE_AGENT_FC: bool = False
+    # Agent 主循环最大工具轮次（防 LLM 死循环/成本失控）
+    # 经验值 5：足够覆盖"查订单 → 查商品 → 查政策"三步场景
+    MAX_AGENT_TURNS: int = 5
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩
