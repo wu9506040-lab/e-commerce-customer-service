@@ -49,6 +49,8 @@ from app.services import profile_service
 
 from app.services.chat import prompt_assembler, stream_dispatcher
 from app.services.chat.refund_handler import handle_refund_v2, handle_refund_v3
+# M14 Stage 5：audit 上报（5 个 resolver action 路径全留痕）
+from app.services.audit_service import try_log_action
 # M14 Stage 3：BusinessFlow 抽象（仅 refund_query 接入；其他 intent 暂不抽象）
 from app.services.business_flow import create_business_flow
 
@@ -372,6 +374,21 @@ class Synthesizer:
                     card_sent=False,
                     card_expected=False,
                 )
+                # M14 Stage 5：audit 留痕（5 个 action 路径通用；orchestrator 无 User/IP，故 user=None）
+                try_log_action(
+                    user=None, action="resolver_decision",
+                    target_type="user", target_id=str(user_id),
+                    detail={
+                        "intent": "order_query",
+                        "resolver_action": result.action.value,
+                        "resolver_reason": result.reason,
+                        "total_orders": result.total_orders,
+                        "card_sent": False,
+                        "direct_answer": True,
+                        "used_llm": False,
+                        "truncated": result.truncated,
+                    },
+                )
                 return
 
         # M14：按 Resolver action 分派
@@ -401,6 +418,21 @@ class Synthesizer:
                 card_sent=True,
                 card_expected=True,
             )
+            # M14 Stage 5：audit 留痕
+            try_log_action(
+                user=None, action="resolver_decision",
+                target_type="user", target_id=str(user_id),
+                detail={
+                    "intent": "order_query",
+                    "resolver_action": result.action.value,
+                    "resolver_reason": result.reason,
+                    "total_orders": result.total_orders,
+                    "card_sent": True,
+                    "card_density": card.get("density") if card else None,
+                    "card_type": card.get("type") if card else None,
+                    "truncated": result.truncated,
+                },
+            )
             return
 
         if result.action == OrderResolverAction.NOT_FOUND:
@@ -423,6 +455,19 @@ class Synthesizer:
                 card_sent=False,
                 card_expected=False,
             )
+            # M14 Stage 5：audit 留痕
+            try_log_action(
+                user=None, action="resolver_decision",
+                target_type="user", target_id=str(user_id),
+                detail={
+                    "intent": "order_query",
+                    "resolver_action": result.action.value,
+                    "resolver_reason": result.reason,
+                    "total_orders": result.total_orders,
+                    "card_sent": False,
+                    "invalid_order_no": result.effective_order_no,
+                },
+            )
             return
 
         if result.action == OrderResolverAction.ASK_LOGIN_OR_LIST:
@@ -444,6 +489,18 @@ class Synthesizer:
                 total_orders=0,
                 card_sent=False,
                 card_expected=False,
+            )
+            # M14 Stage 5：audit 留痕
+            try_log_action(
+                user=None, action="resolver_decision",
+                target_type="user", target_id=str(user_id),
+                detail={
+                    "intent": "order_query",
+                    "resolver_action": result.action.value,
+                    "resolver_reason": result.reason,
+                    "total_orders": 0,
+                    "card_sent": False,
+                },
             )
             return
 
@@ -500,6 +557,21 @@ class Synthesizer:
             total_orders=result.total_orders,
             card_sent=card is not None,
             card_expected=(result.total_orders == 1 and settings.SSE_CARD_V2),
+        )
+        # M14 Stage 5：audit 留痕（DIRECT_ANSWER + LLM 路径）
+        try_log_action(
+            user=None, action="resolver_decision",
+            target_type="user", target_id=str(user_id),
+            detail={
+                "intent": "order_query",
+                "resolver_action": result.action.value,
+                "resolver_reason": result.reason,
+                "total_orders": result.total_orders,
+                "card_sent": card is not None,
+                "card_density": card.get("density") if card else None,
+                "card_type": card.get("type") if card else None,
+                "used_llm": True,
+            },
         )
 
     # ---------- M14: meta 构建助手 ----------
