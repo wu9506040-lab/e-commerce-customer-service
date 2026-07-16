@@ -108,6 +108,8 @@ def chat(
     model: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
+    tools: Optional[List[Dict]] = None,
+    tool_choice: Optional[str] = None,
 ) -> Dict:
     """
     调用千问 chat 端点（带 retry + 指数退避 + 抖动 + 断路器）
@@ -117,9 +119,18 @@ def chat(
         model: 模型名（默认从环境变量 QWEN_MODEL 读）
         temperature: 温度 0-2
         max_tokens: 最大 token 数（None = 模型默认）
+        tools: OpenAI 风格工具定义列表（None = 不传 tools）。格式:
+            [{"type": "function", "function": {"name", "description", "parameters"}}]
+        tool_choice: "auto" / "none" / {"type": "function", "function": {"name": "..."}}
+            None = 不传（由模型默认行为决定）
 
     Returns:
-        {"reply": str, "model": str, "usage": dict}
+        {
+            "reply": str,
+            "model": str,
+            "usage": dict,
+            "tool_calls": Optional[List[Dict]]   # 模型决定调用工具时非空
+        }
 
     Raises:
         BadRequestError / AuthenticationError / PermissionDeniedError: 业务错（不重试）
@@ -138,6 +149,11 @@ def chat(
     }
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if tools is not None:
+        kwargs["tools"] = tools
+        logger.info(f"qwen chat: tools={len(tools)}")
+    if tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
 
     max_retries = settings.LLM_MAX_RETRIES
     base_delay = settings.LLM_RETRY_BASE_DELAY
@@ -147,20 +163,37 @@ def chat(
         try:
             # 断路器包住单次 API 调用（避免重试 4 次算 4 个失败）
             response = _qwen_breaker.call(client.chat.completions.create, **kwargs)
-            reply = response.choices[0].message.content
+            message = response.choices[0].message
+            reply = message.content
             usage = {
                 "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
                 "completion_tokens": response.usage.completion_tokens if response.usage else 0,
                 "total_tokens": response.usage.total_tokens if response.usage else 0,
             }
+            # C1：提取 tool_calls 为结构化 list[dict]
+            tool_calls = None
+            if getattr(message, "tool_calls", None):
+                tool_calls = [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in message.tool_calls
+                ]
             logger.info(
                 f"qwen chat done: total_tokens={usage['total_tokens']} "
+                f"tool_calls={len(tool_calls) if tool_calls else 0} "
                 f"attempt={attempt + 1}/{max_retries + 1}"
             )
             return {
                 "reply": reply,
                 "model": used_model,
                 "usage": usage,
+                "tool_calls": tool_calls,
             }
         except CircuitOpenError:
             # 断路器开路：不重试，立即抛给上游降级
