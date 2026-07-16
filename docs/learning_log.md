@@ -5002,5 +5002,125 @@ CLAUDE.md §4 AI 6 步法 / SOP-V1 §1 L2
 - `feedback_eval_agent_fc_auth_bugs.md` — 3 auth bug 修复模板
 - `project_c4_blocked.md` — 旧 baseline 数据 + 早期 blocker 记录
 - `feedback_docker_compose_env_vs_envfile.md` — enable flag 必须 compose.yml 显式注入
+
+---
+
+## §43 · M14 智能客服升级 — Context 数据层 + Resolver + BusinessFlow + SSE Card 全闭环（2026-07-16 / 2026-07-17 · 4 commit · 跨模块 §5.2 + 8 件套）
+
+**范围**：M14 全 4 阶段闭环 + 阶段 5 收尾（5 commit 总），包括 Context / Resolver / SSE Card / BusinessFlow / 评测指标 / audit / docs。详见 `docs/architecture/m14_module.md`（新增模块架构文档）。
+
+### What（做了什么）
+- **Stage 1**（commit `e1dba26`）：新增 `app/services/context/` 数据层（`context_service.py` + `order_context_resolver.py` + `protocols.py`）；新增 `conversation_context` 表 + migration；orchestrator._handle_order 接入 OrderContextResolver（DIRECT_ANSWER/SHOW_PICKER/NOT_FOUND/ASK_LOGIN_OR_LIST 4 action 路径）；
+- **Stage 4**（commit `e1dba26`）：4 类评测指标（`proactive_list_order_accuracy` / `multi_order_disambiguation_accuracy` / `no_order_no_completion_rate` / `card_triggered_when_expected_rate`）+ `metrics.inc_resolver_decision`（修复 numerator bug：原 `card_sent` 不论 expected 都计数 → 改名为 `card_sent_when_expected`，仅在 expected=True 时计数）；
+- **Stage 2**（commit `5783cab`）：前端 SSE Card 协议扩展（`meta.card` 字段 + OrderCardPayload TypeScript 类型 + MessageCard.vue card 分支 + OrderCard.vue density=list + ChatPage.vue 透传 + `useSseContext.ts` composable 持久化到 sessionStorage）；
+- **Stage 3**（commit `cf486dd`）：新增 `app/services/business_flow/`（`factory.py` + `protocols.py` + `refund_flow.py` + `__init__.py`）；RefundFlow 包装 V3 LangGraph 6 节点 + 推送 `meta.flow_stage`（fetch_order / judge / fetch_policy / check_proof / escalate / synthesize）+ LangGraph 异常 fallback V2；
+- **Stage 5**（本次 commit）：`orchestrator._handle_order` 5 个 action 路径加 `try_log_action(action="resolver_decision", ...)`；新增 `tests/test_audit_resolver.py`（6 单测覆盖 5 路径 + 匿名短路）；新增 `docs/architecture/m14_module.md`（模块架构文档）。
+
+### Why（为什么）
+原 V3.1 闭环电商客服虽能"问答 + 退款 + 工具调"，但用户视角"AI 不认识我"——多订单场景 AI 不知道选哪个，上下文断了 AI 不知道接哪个流程，前端没有卡片主动推。M14 补齐 4 层基础设施（数据 + 决策 + 编排 + 协议），不动 5 大模块对外行为，灰度开关秒级回滚。
+
+### Tech（技术栈）
+- **数据层**：MySQL 新表 `conversation_context`（1:1 → conversation；CLAUDE.md §9.4.4 L1 级）
+- **决策层**：纯函数 OrderContextResolver（不调 LLM，避免成本 + 延迟）
+- **编排层**：`typing.Protocol` 结构类型（`@runtime_checkable`）— 比 ABC 灵活，比 duck typing 形式化
+- **协议层**：SSE meta 字段扩展（与 SSE Resume seq 一致；前端解析器零改动）
+- **状态机**：LangGraph V3（已在 refund_graph.py 落地）+ RefundFlow 包装层；零替换
+- **可观测**：metrics（in-memory + threading.Lock）+ audit（OperationLog 表）+ log（结构化 `extra={"intent": ...}`）
+- **配置**：`config_loader.py` 单例 + `business_rules/{order_context,business_flow}.yaml`（Sprint 4 同模式）
+
+### Flow（输入 → 输出）
+```
+用户 Query
+  → [灰度链路: ENABLE_ORDER_RESOLVER]
+    ├─ False → 老路径（list_user_orders → LLM 综合）
+    └─ True  → Resolver 决策
+        ├─ 0 订单 → ASK_LOGIN_OR_LIST → "您当前还没有订单"
+        ├─ 1 订单 / 提供有效 order_no → DIRECT_ANSWER → 工具直答 or LLM
+        └─ N 订单 → SHOW_PICKER → meta.card{type:order_list} → 前端 list 渲染
+  → [refund_query: ENABLE_BUSINESS_FLOW]
+    ├─ False → handle_refund_v3 双轨制（V3/V2）
+    └─ True  → RefundFlow → LangGraph 6 节点 → yield meta.flow_stage
+  → [ENABLE_CONTEXT_STORE]
+    ├─ False → ctx 永远空（不读不写 DB）
+    └─ True  → ContextService.load → ConversationContext(last_intent, current_order_no, flow_state)
+  → [SSE_CARD_V2]
+    ├─ False → meta 不含 card（前端 fallback entities 渲染）
+    └─ True  → meta.card 字段透传到前端（OrderCard list / mini）
+```
+
+### Problem & Fix（问题 → 解决）
+| 问题 | 处理 |
+|------|------|
+| 评测指标 numerator bug（`card_sent` 不论 `card_expected` 都计数，rate 被人为拉满） | 重命名 `card_sent_when_expected`，仅在 `expected=True` 时 +=1；test 同步改 |
+| OrderCard `item_count=0` 时显示"共 0 件商品"破坏 list UX | MessageCard 列表场景不展开明细；OrderCard 容错无 items_count 行 |
+| Vue `<template>` 内 TS 类型断言 `as { orders: any[] }` 编译报错 | 改用 script setup computed refs（`cardKind` / `cardOrders` / `cardOrder` / `cardTruncated`） |
+| OrderCard `order` prop 仍 required，但 list 场景传 `orders` | MessageCard 包一层 `<div class="order-card-list-wrap">` 内嵌 N 个 OrderCard；OrderCard 保持 `order: required` |
+| RefundFlow test 断言"请提供订单号"找不到 | 实际文本是"请提供要查询退款的订单号"（含"要查询退款"）；拆成 2 子串断言（`"请提供"` + `"订单号"`） |
+| audit 在 orchestrator 内部调，无 Request/User/IP 上下文 | 5 路径用 `try_log_action(user=None, target_id=str(user_id), detail=...)`；完整 User/IP 由上游 `action="chat"` 提供（api/chat.py done 块），通过 `target_id=user_id` + 时间窗关联 |
+| RefundFlow LangGraph 异常 → 流中断 → 审计不到 fallback | try/except 内调 `handle_refund_v2` 生成器 `yield from`（与 handle_refund_v3 同样兜底语义）|
+| Stage 1+4 一并 commit（违反 §4.4 #8「改动是否可以被一两个 commit 表达」）| 在 commit message 拆 stage 标注 |
+
+### Architecture Role（在系统中的位置）
+```text
+CLAUDE.md §9 接口驱动 + 模块隔离 + 依赖倒置（CLAUDE.md 永久铁律）
+   ↓
+Sprint 3 拆分 chat/ → Sprint 4 业务规则 YAML 化
+   ↓
+M14: 在 chat/orchestrator.py 周围补 4 层基础设施
+   ├─ app/services/context/        数据层（新模块）
+   ├─ app/services/business_flow/   编排层（新模块）
+   ├─ orchestrator._handle_order    接入 4 action 分派（5 处埋点 + 5 处 audit）
+   ├─ chat.py SSE 协议扩展          meta.card / meta.flow_stage（前端零改动）
+   └─ api/chat.py 用户上下文        stream_id + checkpoint（SSE Resume P2 已闭环）
+   ↓
+新增能力：AI "认识用户"（context）+ "理解决策"（resolver）+ "显式流程"（flow）+ "主动推送"（card）
+新增可观测：4 指标 + 5 audit 事件 + flow_stage 推送
+```
+
+### Tests（测试覆盖）
+**新增 / 修改测试文件**：
+- `tests/context/test_resolver.py`（Stage 1，~25 用例：0/1/N 决策矩阵 + 越权防护 + 灰度开关）
+- `tests/eval/test_m14_resolver_metrics.py`（Stage 4，~12 用例：4 指标阈值门禁 + 5 路径 assert + 重置 fixture）
+- `tests/business_flow/test_refund_flow.py`（Stage 3，8 用例：灰度/路由/短路/LangGraph/V2 fallback/工厂）
+- `tests/test_audit_resolver.py`（Stage 5，6 用例：DIRECT_ANSWER×2 / SHOW_PICKER / NOT_FOUND / ASK_LOGIN_OR_LIST / 匿名短路）
+
+**指标验证**：
+- pytest 全量 **392/393 PASS**（含 Stage 1+4 30 + Stage 2 前端 18 + Stage 3 8 + Stage 5 6 = 62 新增；1 unrelated pre-existing flake `test_source_attribution` 因本地无 MySQL）
+- Module imports：`grep -r "BusinessFlowFactory\|OrderContextResolver\|flow_stage" backend/` 仅引入 1 处（orchestrator._handle_order）
+
+### 已知限制（CLAUDE.md §9.8 8 件套最后 1 项）
+- **orchestrator 无 Request/User/IP 上下文**：audit `user=None`，由上游 `chat` 事件补全
+- **RefundFlow 5 阶段指标未做**：仅 `meta.flow_stage` 推送，无 metrics 计数器（运营统计需求出现再加）
+- **前端 OrderCard `detailError` UX**：M10 遗留 "Failed to fetch"，M14 list 渲染不涉及但 mini 还可能撞上
+- **Resolver 灰度必须配 SSE_CARD_V2**：否则 card 字段不注入，前端无法感知
+- **conversation_context 表 schema**：纯增量，未加 tenant_id（Sprint 6 同步）
+
+### 5 commit 节奏（节选至 roadmap §3.16）
+1. `e1dba26 feat(m14): Context 数据层 + Resolver + 4 类评测指标`
+2. `5783cab feat(m14): SSE Card 前端渲染 + useSseContext composable`
+3. `cf486dd feat(m14): BusinessFlow 抽象 - RefundFlow 包装 V3 + flow_stage 推送`
+4. （本次）`docs(m14): audit 留痕 + 架构文档 + 学习日志 §43`
+
+---
+
+## 8 件套交付（CLAUDE.md §9.8 自检 · M14 全模块）
+- [x] 模块职责说明：`docs/architecture/m14_module.md` §3 + 各模块 docstring
+- [x] 接口契约：`app/services/context/protocols.py` + `app/services/business_flow/protocols.py`（就近 Protocol）
+- [x] 输入输出模型：`app/schemas/sse_card.py` OrderCardPayload（Pydantic）
+- [x] 数据模型：`app/models/conversation_context.py`（SQLAlchemy 2.0）+ migration `alembic upgrade head`
+- [x] 依赖关系图：`docs/architecture/m14_module.md` §3 架构图 + §5 sequence diagram
+- [x] 调用流程：`docs/architecture/m14_module.md` §5 F1-F2（典型）+ M14 plan §4 + §6（F1-F5 + R1-R5 完整逆向）
+- [x] 测试方案：context + business_flow + eval + audit 4 个测试文件 62 用例全绿
+- [x] 已知限制：`docs/architecture/m14_module.md` §7 + 本节
+
+### 关键决策点（沿用 M14 plan D1-D8，全部按计划落地）
+- D1 SSE meta.card ✅；D2 新表 conversation_context ✅；D3 灰度 ENABLE_ORDER_RESOLVER ✅；D4 第 2 个 Flow 再抽 Base（当前 1 个 Flow 暂不抽）；D5 复用 OrderCard density=list ✅；D6 YAML MAX_PICKER_ITEMS ✅；D7 useSseContext 新建 ✅；D8 RefundFlow 包装 V3 ✅。
+
+### 关联记忆
+- `project_phase0_done.md` — Sprint 1-4 闭环；M14 在其上构建 4 层基础设施
+- `feedback_mock_magicmock_truthy.md` — metrics patch 边界（Stage 4 修复 numerator bug 启示）
+- `feedback_swap_concern.md` — Resolver 0/1/N 决策无副作用（不像 swap 有性能忧虑）；可放心灰度
+- `feedback_resume_no_ai_flavor.md` — M14 阶段 4 阈值（90%/95%/100%）按业务倒推（不是字典里查来的）
+
 - `feedback_claude_md_gitignored.md` — CLAUDE.md 不入 git
 

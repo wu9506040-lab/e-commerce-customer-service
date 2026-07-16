@@ -400,6 +400,31 @@ Phase 3 (P2)：S6           =  1 周    （多租户 SaaS 化铺路）
 
 ---
 
+### 3.14 M14 — 智能客服升级（4 层基础设施 + 5 灰度开关 + 8 件套）
+
+> **状态**：✅ 全 4 阶段闭环（2026-07-16 / 2026-07-17，4 commit）+ 阶段 5 收尾（1 docs commit）
+> **学习日志**：`docs/learning_log.md §43`
+> **模块架构文档**：`docs/architecture/m14_module.md`（新建）
+> **当前位置**：Phase 4 业务能力层之后；Sprint 1-4 闭环后单点能力纵深（不在原 6 个 Sprint 路线内，列为独立 M14 大版本升级）
+> **业务基线影响**：V3.1（业务架构冻结）+ §9 接口驱动 + §9.4.2 配置化 + §9.8 8 件套
+
+| 项 | 内容 |
+|----|------|
+| **目标** | 让 Agent 具备"知道用户是谁"的能力——用户身份上下文 → 用户画像 → 最近订单 → 意图理解 → 业务策略判断 → Agent 决策 → Tool 调用 → UI 交互 → 继续任务。补齐 4 层基础设施（数据层 + 决策层 + 编排层 + 协议层），不动 5 大模块对外行为。 |
+| **范围（4 阶段实绩）** | • **Stage 1**：新增 `app/services/context/`（数据层）+ `conversation_context` 表 + Resolver 决策层 + orchestrator 接入 4 action 路径<br>• **Stage 4**：4 类评测指标（`proactive_list_order_accuracy` / `multi_order_disambiguation_accuracy` / `no_order_no_completion_rate` / `card_triggered_when_expected_rate`）+ metrics.inc_resolver_decision 修复 numerator bug<br>• **Stage 2**：前端 SSE Card 协议扩展（meta.card + OrderCardPayload TS 类型 + MessageCard card 分支 + OrderCard density=list + useSseContext composable sessionStorage 持久化）<br>• **Stage 3**：新增 `app/services/business_flow/`（Flow Protocol + Factory + RefundFlow 包装 V3 LangGraph + 推送 meta.flow_stage）+ business_flow.yaml FLOW_STAGE_LABELS<br>• **Stage 5**（收尾）：orchestrator._handle_order 5 action 路径加 try_log_action + audit resolver test 6 用例 + m14_module.md 架构文档 + learning_log §43 |
+| **不范围（YAGNI §3.3）** | • **不抽 BusinessFlow Base 抽象类**（D4 · 第 2 个 Flow 出现时再抽）<br>• **不替换 LangGraph V3**（D8 · RefundFlow 包装而非替换）<br>• **不做 LogisiticsFlow / AfterSaleFlow**（当前 1 个 Flow 即可）<br>• **不做 Resolver 决策可解释性**（4 指标就位即可）<br>• **不做召回改写 + Resolver 协同**（Phase 4 已是独立的 query_rewriter 路径）<br>• **不做 RefundFlow 阶段 metrics**（仅 meta.flow_stage 推送，运营统计需求出现再加）<br>• **不做 OrderCard `detailError` UX 修复**（M10 遗留，给下次 UX 优化） |
+| **新建** | `app/services/context/{__init__,protocols,context_service,order_context_resolver}.py`（4 文件 · 数据层 + 决策层）<br>`app/services/business_flow/{__init__,protocols,factory,refund_flow}.py`（4 文件 · 编排层）<br>`app/schemas/sse_card.py`（OrderCardPayload Pydantic）<br>`app/models/conversation_context.py`（SQLAlchemy 2.0 ORM）<br>`backend/alembic/versions/xxxx_add_conversation_context.py`（migration）<br>`backend/config/business_rules/order_context.yaml`（MAX_PICKER_ITEMS 等配置）<br>`backend/config/business_rules/business_flow.yaml`（FLOW_STAGE_LABELS + REFUND_FLOW_LLM_TEMPERATURE 等）<br>`tests/context/test_resolver.py`（~25 用例）<br>`tests/business_flow/test_refund_flow.py`（8 用例）<br>`tests/eval/test_m14_resolver_metrics.py`（~12 用例）<br>`tests/test_audit_resolver.py`（6 用例）<br>`docs/architecture/m14_module.md`（模块架构文档 · 12 节）<br>前端 `frontend/src/composables/useSseContext.ts`（sessionStorage composable）|
+| **修改** | `app/core/config.py`（+20 行 · 5 灰度开关 `ENABLE_CONTEXT_STORE` / `ENABLE_ORDER_RESOLVER` / `ENABLE_BUSINESS_FLOW` / `SSE_CARD_V2` / `REFUND_FLOW_LLM_TEMPERATURE`）<br>`app/services/chat/orchestrator.py`（+130 行 · 5 audit 埋点 + Resolver 接入 + BusinessFlow 接入 + 5 action 分派）<br>`app/services/metrics.py`（+60 行 · `inc_resolver_decision` + 4 指标 · 修 numerator bug）<br>`app/services/policy_service.py`（前依赖 `ContextService` 接口）<br>`frontend/src/api/types.ts`（OrderCardPayload + StreamEvent meta 扩）<br>`frontend/src/components/MessageCard.vue`（card 分支 · computed refs 而非 template 断言）<br>`frontend/src/components/OrderCard.vue`（density=list 支持 + item_count=0 容错）<br>`frontend/src/views/ChatPage.vue`（assistantMsg.card 透传）<br>`frontend/src/components/MessageList.vue`（streamingMeta.card 透传）|
+| **关键设计决策（D1-D8 沿用 M14 plan）** | • **D1 SSE meta.card 扩展而非独立 card 事件**（与 SSE Resume seq 一致）<br>• **D2 新表 conversation_context**（L1 级 · 不破坏既有 schema）<br>• **D3 Resolver 全量灰度默认关闭**（秒级回滚）<br>• **D4 BusinessFlow Base 暂不抽**（YAGNI · 当前 1 个 Flow）<br>• **D5 复用 OrderCard density=list**（单一卡片入口）<br>• **D6 MAX_PICKER_ITEMS=5 YAML 化**（§9.4.2 配置化）<br>• **D7 useSseContext composable 新建**（与 stream_id 同 hook 复用）<br>• **D8 RefundFlow 包装 V3**（不替换 LangGraph 投资） |
+| **5 灰度开关（必须按顺序开关）** | `ENABLE_CONTEXT_STORE=False` → `ENABLE_ORDER_RESOLVER=False` → `ENABLE_BUSINESS_FLOW=False` → `SSE_CARD_V2=False` → `REFUND_FLOW_LLM_TEMPERATURE=0.3`。全 `False` 时 M14 代码是 dead branch，行为与 Sprint 4 闭环完全一致（CLAUDE.md §9.4.4 fail-fast 测试就位）。|
+| **关闭缺口 + 新增能力** | • **§9.4.4 L1 数据库分级**：新增 1 张表走 L1（单 commit + pytest + 文档更新）<br>• **§9.5 可观测**：4 指标 + 5 audit 事件 + 1 flow_stage 推送 → 升级为**完整满足**（原 🟡 → 🟢）<br>• **§9.6 配置与逻辑分离**：business_rules 5 YAML 化（降级到 §9.4.2 已就位）<br>• **§9.8 模块开发 8 件套**：本模块 62 测试 + 4 文档 + 5 协议接口<br>• **新增能力层**：① 用户长程上下文延续；② Resolver 决策可度量；③ SSE Card 主动推送；④ RefundFlow 显式状态机 |
+| **验证** | • 单测：**62/62 PASS**（Stage 1+4 30 + Stage 3 8 + Stage 5 6 + 已有 18 Stage 2）<br>• 全量 pytest：**392/393 PASS**（含 B1+C1+C2+C3 累计 39；1 pre-existing flake `test_source_attribution` 因本地无 MySQL，与本次无关）<br>• 前端 `npm run type-check` 0 错误（M14 TS 扩展向后兼容）<br>• Module imports：`grep -rn "BusinessFlowFactory\|OrderContextResolver\|flow_stage" backend/` 仅 orchestrator._handle_order 1 处调用方<br>• 双 remote 已 push（Gitee + GitHub）<br>• CI run # 待用户启动时人工 verify（与 Sprint 5 阶段 1 + P2 SSE resume 同节奏） |
+| **已知限制（CLAUDE.md §9.8 · 8 件套最后 1 项）** | • **orchestrator 无 Request/User/IP 上下文**：audit `user=None`，完整上下文由上游 `chat` 事件补全（通过 `target_id=user_id` + 时间窗关联）<br>• **conversation_context 表无 tenant_id**（Sprint 6 同步）<br>• **前端 OrderCard `detailError` UX**：M10 遗留 "Failed to fetch"，M14 list 渲染不涉及但 mini 路径还可能撞上<br>• **RefundFlow 阶段指标未做**：仅 meta.flow_stage 推送，无 metrics 计数器；运营统计需求出现再加<br>• **Resolver 灰度必须配 SSE_CARD_V2**：否则 card 字段不注入，前端无法感知 |
+| **commit 节奏（4 commit · 跨模块 §5.2）** | 1. `e1dba26 feat(m14): Context 数据层 + Resolver + 4 类评测指标`<br>2. `5783cab feat(m14): SSE Card 前端渲染 + useSseContext composable`<br>3. `cf486dd feat(m14): BusinessFlow 抽象 - RefundFlow 包装 V3 + flow_stage 推送`<br>4. `+本次+ docs(m14): audit 留痕 + 架构文档 + 学习日志 §43` |
+| **下一步可选** | • **V14.x 候选 1**：第 2 个 BusinessFlow 出现（logistics / after_sale）时抽 Base 类<br>• **V14.x 候选 2**：Resolver 决策可解释性（如果 4 指标持续 < 90% 阈值）<br>• **V14.x 候选 3**：profile + context 协同（user_profiles 与 conversation_context 联合查询）<br>• **V14.x 候选 4**：主动推荐 / 反问引导（基于 context + profile）<br>• **P2 backlog 余下**：HTTPS（生产部署前置）|
+
+---
+
 ## 4. 优先级与时间投入
 
 ### 4.1 阶段划分（与 §2 严重度对齐）
