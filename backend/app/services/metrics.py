@@ -106,6 +106,24 @@ class Metrics:
         self.rewrite_multi_total = 0
         self.rewrite_multi_by_reason: Dict[str, int] = {}
 
+        # ----- M14：OrderContextResolver 决策质量指标 -----
+        # 4 类指标（plan §10 阶段 4）：
+        # 1. multi_order_disambiguation_accuracy = SHOW_PICKER / total_orders_many
+        #    （N>=2 订单时返 SHOW_PICKER 卡片让用户选的比例）
+        # 2. no_order_no_completion_rate = ASK_LOGIN_OR_LIST / total_orders_zero
+        #    （0 订单场景返 ASK_LOGIN_OR_LIST 而非误答的比例）
+        # 3. card_triggered_when_expected_rate = card_sent_when_expected / card_expected
+        #    （SSE meta.card 应发且实际发的比例）
+        # 4. proactive_list_order_accuracy（与 #1 等价，复用同分母）
+        # 设计：raw 计数 + snapshot 算 ratio，避免 in-flight 比率漂移
+        self.resolver_total = 0
+        self.resolver_by_action: Dict[str, int] = {}
+        self.resolver_total_orders_zero = 0  # 0 订单
+        self.resolver_total_orders_one = 0   # 1 订单
+        self.resolver_total_orders_many = 0  # N>=2 订单
+        self.resolver_card_expected = 0              # SSE Card 应发总次数
+        self.resolver_card_sent_when_expected = 0    # 应发时实际发送的次数（仅计分子）
+
     # ----- chat -----
 
     def inc_chat(self, intent: str, v3_engine: str = "-") -> None:
@@ -211,6 +229,38 @@ class Metrics:
             self.rewrite_multi_total += 1
             self.rewrite_multi_by_reason[reason] = self.rewrite_multi_by_reason.get(reason, 0) + 1
 
+    # ----- M14：Resolver 决策质量 -----
+
+    def inc_resolver_decision(
+        self,
+        action: str,
+        total_orders: int,
+        card_sent: bool,
+        card_expected: bool,
+    ) -> None:
+        """记录一次 Resolver 决策（用于 4 类质量指标）。
+
+        Args:
+            action: OrderResolverAction.value（如 'show_picker' / 'direct_answer'）
+            total_orders: 用户订单总数（0 / 1 / N）；gray 关闭时传 0
+            card_sent: 本次 SSE meta.card 字段是否实际填充
+            card_expected: 本次按规则是否应该发 card（SHOW_PICKER 或 N=1 时 True）
+        """
+        with self._lock:
+            self.resolver_total += 1
+            self.resolver_by_action[action] = self.resolver_by_action.get(action, 0) + 1
+            if total_orders <= 0:
+                self.resolver_total_orders_zero += 1
+            elif total_orders == 1:
+                self.resolver_total_orders_one += 1
+            else:
+                self.resolver_total_orders_many += 1
+            if card_expected:
+                self.resolver_card_expected += 1
+                # 分子仅在 expected=True 且 sent=True 时累加（避免"非期望发送"膨胀分子）
+                if card_sent:
+                    self.resolver_card_sent_when_expected += 1
+
     # ----- snapshot -----
 
     def _hit_at_k(self, k: int) -> float:
@@ -285,6 +335,47 @@ class Metrics:
                 "by_reason": dict(self.rewrite_multi_by_reason),
             }
 
+            # M14：Resolver 决策质量指标（4 类）
+            show_picker_n = self.resolver_by_action.get("show_picker", 0)
+            ask_zero_n = self.resolver_by_action.get("ask_login_or_list", 0)
+            m14_block = {
+                "resolver_total": self.resolver_total,
+                "by_action": dict(self.resolver_by_action),
+                "by_total_orders": {
+                    "zero": self.resolver_total_orders_zero,
+                    "one": self.resolver_total_orders_one,
+                    "many": self.resolver_total_orders_many,
+                },
+                "card_expected": self.resolver_card_expected,
+                "card_sent_when_expected": self.resolver_card_sent_when_expected,
+                "ratios": {
+                    # N>=2 时返 SHOW_PICKER 的比例
+                    "multi_order_disambiguation_accuracy": (
+                        round(show_picker_n / self.resolver_total_orders_many, 4)
+                        if self.resolver_total_orders_many > 0 else 0.0
+                    ),
+                    # N>=2 时返 SHOW_PICKER 的比例（同上，proactive_list_order 是别名）
+                    "proactive_list_order_accuracy": (
+                        round(show_picker_n / self.resolver_total_orders_many, 4)
+                        if self.resolver_total_orders_many > 0 else 0.0
+                    ),
+                    # 0 订单场景返 ASK_LOGIN_OR_LIST 而非误答的比例
+                    "no_order_no_completion_rate": (
+                        round(ask_zero_n / self.resolver_total_orders_zero, 4)
+                        if self.resolver_total_orders_zero > 0 else 0.0
+                    ),
+                    # SSE meta.card 应发且实际发的比例（分子仅含 expected=True ∩ sent=True）
+                    "card_triggered_when_expected_rate": (
+                        round(
+                            self.resolver_card_sent_when_expected
+                            / self.resolver_card_expected,
+                            4,
+                        )
+                        if self.resolver_card_expected > 0 else 0.0
+                    ),
+                },
+            }
+
             cb_block = circuit_breaker_stats or {}
 
             return {
@@ -297,6 +388,7 @@ class Metrics:
                 "behavior": behavior_block,
                 "rewrite": rewrite_block,
                 "rewrite_multi": rewrite_multi_block,
+                "m14_resolver": m14_block,
             }
 
 

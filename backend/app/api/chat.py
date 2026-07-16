@@ -281,9 +281,11 @@ async def chat(
         # （它原本是同步 generator，用 to_thread 异步化）
         from app.services.chat.orchestrator import Synthesizer as _S
         # M9.5：把 sku/order_no context 传给 synthesizer（让 LLM 知道当前商品/订单）
+        # M14：传 session_id 让 OrderContextResolver 加载会话上下文
         sync_iter = iter(_S.run_stream(
             payload.query, user_id, history,
             sku=payload.sku, order_no=payload.order_no,
+            session_id=session_id,
         ))
 
         try:
