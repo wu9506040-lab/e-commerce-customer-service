@@ -191,12 +191,66 @@ PYTHONPATH=backend python scripts/compare_modes.py --modes baseline rerank hybri
 
 ---
 
-## 7. 版本历史
+## 8. Agent FC 决策质量评测（C3 · `eval_agent_fc.py`）
+
+评测 Agent Function Calling（C2）「调对工具、调对顺序、答对内容、不幻觉」的决策质量。
+
+### 8.1 双模式
+
+| 模式 | 命令 | 用途 |
+|---|---|---|
+| mock | `PYTHONPATH=backend python scripts/eval_agent_fc.py --mode mock` | CI 友好：mock LLM（按 expected_tools 顺序返 tool_calls）+ mock dispatch，验证 harness 逻辑不退化，不依赖 API key / DB |
+| live | `PYTHONPATH=backend python scripts/eval_agent_fc.py --mode live` | 灰度前手动跑：调真实 `/api/chat/stream` SSE，验证真实 LLM 决策质量（自动登录 demotest 拿 token）|
+
+> live 模式需 server 在跑 + `ENABLE_AGENT_FC=true`。
+
+### 8.2 4 类指标
+
+| 指标 | 含义 | 计算 |
+|---|---|---|
+| `tool_selection_accuracy` | 是否调对工具 | `|实际∩期望| / |期望|`（期望为空的 direct case = 1.0）|
+| `tool_round_efficiency` | 是否高效（不冗余调用）| 实际轮次 ≤ 预期 → 1.0；超出 → `预期/实际`|
+| `answer_keyword_match` | 答案是否命中期望关键词 | substring 命中率；答案 < 10 字或无期望词时走 mini-judge 兜底 |
+| `hallucination_free` | 是否无越权承诺 | 答案不含 `sensitive_keywords`（如「直接退款」「全额赔偿」）|
+
+### 8.3 评测集格式（`data/eval_agent_set.json` · local artifact）
+
+```json
+{
+  "query": "我买的耳机 SO001 坏了，退货政策能退吗",
+  "expected_tools": [
+    {"name": "lookup_order", "arguments_contains": {"order_no": "SO001"}},
+    {"name": "search_policy", "arguments_contains": {"keyword": "退货"}}
+  ],
+  "expected_answer_keywords": ["订单", "退货"],
+  "sensitive_keywords": ["直接退款", "全额赔偿"],
+  "category": "mixed",          // order_query/product_query/policy_query/mixed/direct
+  "expected_rounds": 2,
+  "user_id": 1,
+  "note": "订单+政策组合决策"
+}
+```
+
+30 条覆盖 5 类：order_query(8) / product_query(8) / policy_query(6) / mixed(4) / direct(4)。
+
+### 8.4 回归测试
+
+`backend/tests/test_eval_agent_fc.py`（21 用例）：load_eval_set 校验 + 4 指标 + mini_judge fallback + evaluate_case_mock 端到端（单/多/无工具）+ summarize。全部 inline 构造，不依赖 `data/`。
+
+```bash
+PYTHONPATH=backend python -m pytest backend/tests/test_eval_agent_fc.py -q
+```
+
+---
+
+## 9. 版本历史
 
 | 版本 | commit | 内容 |
 |---|---|---|
 | B1.1 | 57eaa6a | 新增 eval_faithfulness.py + compare_modes.py + eval_hitk.py --latency-bench flag |
 | B1.2 | (TBD) | tests/test_eval_hitk.py（15 用例 mock + 阈值门禁）+ 本 README |
+| C3.1 | 76d4dd4 | 新增 eval_agent_fc.py（Agent FC 决策质量 · 双模式 · 4 指标）|
+| C3.2 | (TBD) | tests/test_eval_agent_fc.py（21 用例）+ 本 README §8 |
 
 ---
 
@@ -208,4 +262,4 @@ PYTHONPATH=backend python scripts/compare_modes.py --modes baseline rerank hybri
 | 系统架构 | `docs/architecture/system.md` |
 | 工程纪律 | `CLAUDE.md`（§6 验证分级 / §9.6 Prompt / §9.7 自检 5 问）|
 | Roadmap | `docs/development/roadmap.md` |
-| 学习日志 | `docs/learning_log.md` §38（B1 实绩）|
+| 学习日志 | `docs/learning_log.md` §38（B1 实绩）/ §40（C3 实绩）|
