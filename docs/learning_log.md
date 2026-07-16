@@ -4894,3 +4894,28 @@ if not tool_calls:
 - live 模式依赖 server 在跑 + `ENABLE_AGENT_FC=true`，尚未在真实环境跑过基线（灰度启用前的下一步）
 - tool_selection_accuracy 用集合匹配，不惩罚「顺序错」（多工具场景顺序敏感度留 C3+ 演进）
 
+---
+
+## 41. scripts load_dotenv 放在 import 期的隐性坑（2026-07-16 · C3 回归测试暴露）
+
+### Root cause（为什么发生）
+C3 写 `scripts/eval_agent_fc.py` 时，沿用 B1 `eval_hitk.py` 同款写法：模块顶层调 `load_dotenv(deploy/.env.dev)` 加载业务开关。配套 `tests/test_eval_agent_fc.py` 顶部 `from scripts.eval_agent_fc import ...`——pytest 在 **collection 阶段**就触发 load_dotenv，把 `.env.dev` 里的 `USE_LANGGRAPH_REFUND=true` 等开关写进 `os.environ`。若此刻 `app.core.config.settings` 单例还没首次实例化（按收集顺序而定），settings 就读到脏值。
+
+结果：完全无关的 `test_synthesizer_refund.py::test_default_uses_v2`（期望 refund 走默认 V2 路径）随收集顺序偶发 fail——orchestrator 看到 `USE_LANGGRAPH_REFUND=true` 路由到了 V3 LangGraph，`list_user_orders` 不被调用，断言挂。
+
+**关键迷惑点**：
+- 不是测试逻辑错，是 **collection 期间** 的 env 副作用污染
+- 顺序相关：test_eval_hitk.py 早就存在但全量 suite 收集顺序恰好「settings 先加载」没暴露；新增 test_eval_agent_fc.py 改变收集顺序才引爆
+- 单跑 PASS、组合跑 FAIL、正反序都 FAIL = 收集期污染，不是执行期状态泄漏
+
+### Fix（怎么修）
+1. **`scripts/eval_agent_fc.py`**：把 `load_dotenv` 从模块顶层挪到 `main()` 入口（用 `_load_env()` 包装，`if __name__` 调用）。脚本被当库 import 时（尤其被测试 import）不再有 env 副作用
+2. **`evaluate_case_mock`**：直接改 `settings.ENABLE_AGENT_FC = True` / `MAX_AGENT_TURNS = 5` 后，**必须 `try / finally` 保存-恢复原值**（同进程后续测试依赖 settings 单例）
+3. **回归测试**：写新 `tests/test_*.py` 时，凡 `from scripts.xxx import ...` 都要先确认 xxx 模块顶层无 `load_dotenv` / `os.environ[...]` / settings 单例 mutation
+
+### Prevention（如何预防）
+1. **新写 `scripts/*.py` 模板**：模块顶部只放 `sys.path` 与常量；env 加载、单例 mutation 一律放 `main()`。已加进 scripts/ 写脚本约定
+2. **新写 `tests/test_*.py` 前**：先 grep 目标模块的 import 副作用（`grep -E "load_dotenv|os.environ\[|settings\."`），有副作用先改成入口化
+3. **"无关测试莫名 fail" 排查 checklist**：单独跑 PASS + 组合跑 FAIL + 正反序都 FAIL ⇒ 三连命中即判定为 collection 期污染，不要去改测试断言
+4. **同类陷阱**：feedback_test_factory_singleton（工厂单例）+ feedback_mock_magicmock_truthy（mock 灰度门禁 truthy）+ 本条 — 同族「全局状态污染」陷阱，详见 MEMORY 索引
+
