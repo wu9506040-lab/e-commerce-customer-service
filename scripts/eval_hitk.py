@@ -271,6 +271,7 @@ def main() -> int:
     parser.add_argument("--rerank", action="store_true", help="启用 LLM cross-encoder rerank（top-20→rerank→top-10）")
     parser.add_argument("--bm25", action="store_true", help="启用 BM25 稀疏召回 + RRF 融合（与 --rerank 可叠加）")
     parser.add_argument("--multi-query", action="store_true", help="启用 Phase 4 A4 Multi-Query（query_rewriter 输出 N 路 + policy 多路 RRF 融合）")
+    parser.add_argument("--latency-bench", action="store_true", help="latency benchmark 模式：每条 query 跑 3 次取中位数（防抖动）")
     args = parser.parse_args()
 
     if args.multi_query:
@@ -288,10 +289,27 @@ def main() -> int:
     logger.info(f"  共 {len(eval_set)} 条，模式={mode}")
 
     logger.info(f"开始评估（embedding model: text-embedding-v3, collection: {settings.QDRANT_COLLECTION}）")
+    # B1.1：latency benchmark 模式 → 每条 query 跑 3 次取中位数
+    n_runs = 3 if args.latency_bench else 1
+    if args.latency_bench:
+        logger.info(f"  latency-bench 模式：每条 query 跑 {n_runs} 次取中位数")
     results: List[Dict[str, Any]] = []
     for i, item in enumerate(eval_set, 1):
         try:
-            r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25, use_multi_query=args.multi_query)
+            if n_runs == 1:
+                r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25, use_multi_query=args.multi_query)
+            else:
+                # 跑 3 次取 latency_ms 中位数；其他字段（hit/rank/retrieved_ids）取最后一次
+                latencies = []
+                last_r = None
+                for _ in range(n_runs):
+                    last_r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25, use_multi_query=args.multi_query)
+                    latencies.append(last_r["latency_ms"])
+                median_latency = round(statistics.median(latencies), 2)
+                last_r["latency_ms"] = median_latency
+                last_r["latency_bench_runs"] = n_runs
+                last_r["latency_bench_raw"] = latencies
+                r = last_r
             results.append(r)
         except Exception as e:
             logger.error(f"[{i}/{len(eval_set)}] query='{item['query']}' 评估失败: {e}")
