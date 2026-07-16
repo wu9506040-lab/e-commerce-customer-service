@@ -154,6 +154,24 @@ class Settings(BaseSettings):
     # 经验值 5：足够覆盖"查订单 → 查商品 → 查政策"三步场景
     MAX_AGENT_TURNS: int = 5
 
+    # ---- M14: 用户上下文 + 订单 Resolver + 业务流 ----
+    # ENABLE_CONTEXT_STORE: ContextService 是否读/写 conversation_contexts 表
+    # 关闭时所有 ContextService 调用短路（不读不写），orchestrator 走老路径
+    # 默认 false（灰度用）；ContextService.load 返空 context / update 返 True 短路
+    ENABLE_CONTEXT_STORE: bool = False
+    # ENABLE_ORDER_RESOLVER: OrderContextResolver 是否参与 _handle_order 决策
+    # 关闭时 Resolver 返 DIRECT_ANSWER（orchestrator 走老路径 list_user_orders + LLM）
+    # 默认 false（灰度用）；开 true 后 _handle_order 走 0/1/N 决策树
+    ENABLE_ORDER_RESOLVER: bool = False
+    # ENABLE_BUSINESS_FLOW: business_flow 工厂是否启用（M14 §10 阶段 3 占位）
+    # 关闭时 refund_query / order_query 走原有分派路径，不走显式状态机
+    # 默认 false（灰度用）
+    ENABLE_BUSINESS_FLOW: bool = False
+    # SSE_CARD_V2: 是否在 SSE meta 事件携带 OrderCard payload
+    # 关闭时 orchestrator 不填 meta.card 字段（向后兼容老前端）
+    # 默认 true（M14 阶段 2 落地的 SSE 协议扩展，前端可选订阅）
+    SSE_CARD_V2: bool = True
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩

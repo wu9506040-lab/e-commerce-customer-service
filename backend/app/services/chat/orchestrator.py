@@ -25,6 +25,15 @@ import re as _re
 from typing import Any, Generator, Optional, Tuple
 
 from app.core.config import settings
+from app.services.context import (
+    ConversationContext,
+    ContextService,
+    OrderContextResolver,
+    OrderResolverAction,
+    OrderResolverResult,
+    get_context_service,
+    get_order_context_resolver,
+)
 from app.services.intent_service import IntentService
 from app.services.metrics import metrics
 from app.services.order_service import OrderService
@@ -54,6 +63,7 @@ class Synthesizer:
         history: Optional[list[dict]] = None,
         sku: Optional[str] = None,
         order_no: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Generator[Tuple[str, Any], None, None]:
         """
         主入口：分类 → 分派 → 融合 → LLM 流式输出
@@ -64,6 +74,7 @@ class Synthesizer:
             history: 多轮历史 [{"role":..., "content":...}]
             sku: 当前商品 SKU（M9.5：从 /shop/:sku 跳转携带，注入 prompt 让 LLM 知道是哪款）
             order_no: 当前订单号（M9.5：从 OrderCard 跳转携带，注入 prompt 让 LLM 知道是哪个订单）
+            session_id: 会话 ID（M14：OrderContextResolver 用其加载会话上下文）
 
         Yields:
             ("meta", {intent, entities, ...})
@@ -163,7 +174,12 @@ class Synthesizer:
             if intent == "order_query":
                 metrics.inc_chat(intent, v3_engine="-")  # M8
                 # M9.5：传 order_no 让 order_query 优先用跳转来的订单
-                yield from Synthesizer._handle_order(query, user_id, intent_result, order_no=order_no, context_block=context_block)
+                # M14：传 session_id 让 OrderContextResolver 加载会话上下文
+                yield from Synthesizer._handle_order(
+                    query, user_id, intent_result,
+                    order_no=order_no, context_block=context_block,
+                    session_id=session_id,
+                )
                 return
             elif intent == "refund_query":
                 # V3 开关：USE_LANGGRAPH_REFUND=true 时走 LangGraph 版
@@ -269,14 +285,32 @@ class Synthesizer:
         query: str, user_id: int, intent_result: dict,
         order_no: Optional[str] = None,
         context_block: str = "",
+        session_id: Optional[str] = None,
     ) -> Generator[Tuple[str, Any], None, None]:
-        """order_query：调 OrderService"""
+        """order_query：M14 接入 OrderContextResolver 做 0/1/N 决策
+
+        数据流：
+        1. 加载 ConversationContext（last_intent / current_order_no / flow_state）
+        2. 走 OrderContextResolver 决策（灰度 ENABLE_ORDER_RESOLVER 控制）
+        3. 按 action 分派：
+           - DIRECT_ANSWER → 查详情 / 调 LLM
+           - SHOW_PICKER → 推送 OrderCard list 卡片 + 询问
+           - NOT_FOUND → 报错文本
+           - ASK_LOGIN / ASK_LOGIN_OR_LIST → 兜底话术
+        """
         entities = intent_result["entities"]
         # M9.5：优先用 context 传来的 order_no（用户从订单卡片跳转），其次 intent 抽取
         effective_order_no = order_no or entities.get("order_no")
 
+        # M14：早期加载会话上下文（last_intent / current_order_no），供 Resolver 使用
+        # 灰度 ENABLE_CONTEXT_STORE=False 时 load 返空 ConversationContext
+        ctx = (
+            get_context_service().load(session_id, user_id)
+            if session_id else ConversationContext(session_id="", user_id=user_id)
+        )
+
+        # 匿名用户优先 short-circuit（保持原行为不变）
         if user_id == ANONYMOUS_USER_ID:
-            # 未登录 → 不报错，返回"请登录"
             yield ("meta", {
                 "intent": "order_query",
                 "entities": entities,
@@ -286,42 +320,145 @@ class Synthesizer:
             yield from stream_dispatcher.stream_simple(prompt_assembler.NO_LOGIN_PROMPT)
             return
 
-        # M11.5：先试工具直答（"什么状态"类简单查询，不调 LLM）
-        direct = Synthesizer._try_direct_answer_order(
-            query, user_id, entities, order_no
+        # M14：OrderContextResolver 决策（灰度关闭时返 DIRECT_ANSWER，走老路径）
+        resolver = get_order_context_resolver()
+        result: OrderResolverResult = resolver.resolve(
+            user_id=user_id,
+            intent=intent_result["intent"],
+            entities={**entities, "order_no": effective_order_no},
+            ctx=ctx,
         )
-        if direct is not None:
-            yield ("meta", {
-                "intent": "order_query",
-                "entities": entities,
-                "contexts": [],
-                "scores": [],
-                "direct_answer": True,
-            })
-            yield from stream_dispatcher.stream_simple(direct)
+
+        # M11.5：DIRECT_ANSWER 且满足"什么状态"类模式 → 工具直答（不调 LLM）
+        # 注意：Resolver 已校验有效 order_no 后才走这里，所以 effective_order_no 可信
+        if result.action == OrderResolverAction.DIRECT_ANSWER:
+            direct = Synthesizer._try_direct_answer_order(
+                query, user_id, entities, result.effective_order_no
+            )
+            if direct is not None:
+                meta = Synthesizer._build_order_meta(
+                    intent_result=intent_result,
+                    detail=None,
+                    direct_answer=True,
+                    card=None,
+                )
+                yield ("meta", meta)
+                yield from stream_dispatcher.stream_simple(direct)
+                # M14：埋点（DIRECT_ANSWER 直答，card 不发）
+                metrics.inc_resolver_decision(
+                    action=result.action.value,
+                    total_orders=result.total_orders,
+                    card_sent=False,
+                    card_expected=False,
+                )
+                return
+
+        # M14：按 Resolver action 分派
+        if result.action == OrderResolverAction.SHOW_PICKER:
+            # N 个订单 → 推 OrderCard list 卡片 + 让用户选
+            card = Synthesizer._build_order_card_payload(
+                result, density="list", reason="disambiguate"
+            )
+            meta = Synthesizer._build_order_meta(
+                intent_result=intent_result,
+                detail=None,
+                direct_answer=False,
+                card=card,
+                resolver_result=result,
+            )
+            yield ("meta", meta)
+            text = (
+                f"您有 {result.total_orders} 个相关订单，请选择要查询的订单："
+                if not result.truncated
+                else f"您最近订单较多（{result.total_orders} 个），以下仅展示前 {len(card['items'])} 个："
+            )
+            yield from stream_dispatcher.stream_simple(text)
+            # M14：埋点（card 实际发送 + 期望发送都 True）
+            metrics.inc_resolver_decision(
+                action=result.action.value,
+                total_orders=result.total_orders,
+                card_sent=True,
+                card_expected=True,
+            )
             return
 
-        if effective_order_no:
-            detail = OrderService.get_order_detail(user_id, effective_order_no)
+        if result.action == OrderResolverAction.NOT_FOUND:
+            # order_no 无效 / 不属于当前用户
+            meta = Synthesizer._build_order_meta(
+                intent_result=intent_result,
+                detail=None,
+                direct_answer=False,
+                card=None,
+                resolver_result=result,
+            )
+            yield ("meta", meta)
+            yield from stream_dispatcher.stream_simple(
+                f"订单 {result.effective_order_no} 不存在或不属于当前用户。"
+            )
+            # M14：埋点（card 不应发 / 实际未发）
+            metrics.inc_resolver_decision(
+                action=result.action.value,
+                total_orders=result.total_orders,
+                card_sent=False,
+                card_expected=False,
+            )
+            return
+
+        if result.action == OrderResolverAction.ASK_LOGIN_OR_LIST:
+            # 0 订单
+            meta = Synthesizer._build_order_meta(
+                intent_result=intent_result,
+                detail=None,
+                direct_answer=False,
+                card=None,
+                resolver_result=result,
+            )
+            yield ("meta", meta)
+            yield from stream_dispatcher.stream_simple(
+                "您当前还没有订单记录哦～ 如果刚下单，可能还未同步，请稍后再试。"
+            )
+            # M14：埋点（card 不应发：0 订单无候选）
+            metrics.inc_resolver_decision(
+                action=result.action.value,
+                total_orders=0,
+                card_sent=False,
+                card_expected=False,
+            )
+            return
+
+        # DIRECT_ANSWER 路径（含 Resolver 关闭的 fallback / 唯一 1 单 / 用户提供有效 order_no）
+        # 用 Resolver 选的 effective_order_no（可能与 intent 抽取的不同）
+        final_order_no = result.effective_order_no or effective_order_no
+        if final_order_no:
+            detail = OrderService.get_order_detail(user_id, final_order_no)
             if not detail:
-                tool_block = f"订单 {effective_order_no} 不存在或不属于当前用户。"
+                tool_block = f"订单 {final_order_no} 不存在或不属于当前用户。"
                 contexts, scores = [], []
             else:
                 tool_block = prompt_assembler._format_tool_result("order_query", detail)
                 contexts, scores = prompt_assembler._build_meta_contexts(tool_result=detail)
+            card = None
+            if result.total_orders == 1 and settings.SSE_CARD_V2:
+                # 唯一 1 单 → 详情卡 mini
+                card = Synthesizer._build_order_card_payload(
+                    result, density="mini", reason="context_jump"
+                )
         else:
-            # 无 order_no → 列最近订单（OrderService.list_user_orders 不支持 limit，按默认上限返回）
+            # 兜底（理论上 Resolver 已覆盖 0/1/N；保留以防灰度关闭 + 老逻辑兼容）
             orders = OrderService.list_user_orders(user_id)
             tool_block = prompt_assembler._format_tool_result("order_query", {"orders": orders})
             contexts, scores = prompt_assembler._build_meta_contexts(tool_result={"orders": orders})
+            card = None
 
-        meta = {
-            "intent": "order_query",
-            "entities": entities,
-            "contexts": contexts,
-            "scores": scores,
-            "tool_result_preview": tool_block[:200] if tool_block else "",
-        }
+        meta = Synthesizer._build_order_meta(
+            intent_result=intent_result,
+            detail=None,
+            direct_answer=False,
+            card=card,
+            contexts=contexts,
+            scores=scores,
+            tool_block=tool_block,
+        )
         yield ("meta", meta)
 
         prompt = prompt_assembler._build_chat_prompt(
@@ -334,6 +471,83 @@ class Synthesizer:
             context_block=context_block,
         )
         yield from stream_dispatcher.stream_llm(prompt)
+
+        # M14：埋点（DIRECT_ANSWER 走 LLM 综合，card 仅在 N=1 时发 mini）
+        # 灰度关闭时 result.total_orders=0 → 计入 zero 分桶（语义：未走 Resolver）
+        metrics.inc_resolver_decision(
+            action=result.action.value,
+            total_orders=result.total_orders,
+            card_sent=card is not None,
+            card_expected=(result.total_orders == 1 and settings.SSE_CARD_V2),
+        )
+
+    # ---------- M14: meta 构建助手 ----------
+
+    @staticmethod
+    def _build_order_meta(
+        intent_result: dict,
+        detail: Optional[dict],
+        direct_answer: bool,
+        card: Optional[dict],
+        resolver_result: Optional[OrderResolverResult] = None,
+        contexts: Optional[list] = None,
+        scores: Optional[list] = None,
+        tool_block: str = "",
+    ) -> dict:
+        """构造 order_query meta dict（统一格式，便于 SSE 序列化）。
+
+        Why 独立函数：4 个分支（直答/SHOW_PICKER/NOT_FOUND/DIRECT_ANSWER）都需 meta，
+        重复 5+ 次易漂移；集中维护减少 bug。
+        """
+        meta = {
+            "intent": intent_result["intent"],
+            "entities": intent_result["entities"],
+            "contexts": contexts if contexts is not None else [],
+            "scores": scores if scores is not None else [],
+            "direct_answer": direct_answer,
+        }
+        if tool_block:
+            meta["tool_result_preview"] = tool_block[:200]
+        if resolver_result is not None:
+            meta["resolver_action"] = resolver_result.action.value
+            meta["resolver_reason"] = resolver_result.reason
+            meta["resolver_total_orders"] = resolver_result.total_orders
+            if resolver_result.truncated:
+                meta["resolver_truncated"] = True
+        # SSE Card V2：仅在开启 + 有 card 时塞 meta.card 字段
+        if settings.SSE_CARD_V2 and card is not None:
+            meta["card"] = card
+        return meta
+
+    @staticmethod
+    def _build_order_card_payload(
+        result: OrderResolverResult, density: str, reason: str,
+    ) -> dict:
+        """从 Resolver result 构造 OrderCard payload（走 SSE meta.card 字段）。
+
+        Why 不直接 yield Pydantic model：SSE 序列化用 json.dumps，
+        dict 更轻量，避免引入 schema-to-dict 转换层。
+        """
+        items = []
+        for o in result.candidate_orders:
+            items.append({
+                "order_no": o.get("order_no", ""),
+                "status": o.get("status", ""),
+                "total_amount": float(o.get("total_amount", 0.0)),
+                "create_time": o.get("create_time"),
+                "item_count": 0,  # 列表场景未展开明细（M10 既有行为）
+                "preview": None,
+            })
+        card = {
+            "type": "order_list" if density == "list" else "order_detail",
+            "density": density,
+            "reason": reason,
+            "items": items,
+            "truncated": result.truncated,
+        }
+        if result.effective_order_no and density == "mini":
+            card["resolved_order_no"] = result.effective_order_no
+        return card
 
     @staticmethod
     def _handle_product(

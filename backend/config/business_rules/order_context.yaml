@@ -1,0 +1,23 @@
+# order_context.py 业务规则（M14）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("order_context")
+# 启动期一次加载（不参与热更新）；改完需重启服务（roadmap §3.5）
+#
+# 单一真相源：app/services/context/order_context_resolver.py 是唯一消费者
+#
+# 字段分类：
+#   MAX_PICKER_ITEMS: Resolver 列表上限（防 SSE meta 字段过大）
+#   REQUIRE_LOGIN: 匿名用户查订单是否必须先登录（默认 True）
+#   ORDER_NO_PATTERN: 订单号格式校验正则（与 intent.yaml 同步）
+
+# Resolver 列表上限（M14 §10 阶段 1 决策 D6：YAML 配置化）
+# 当用户有 N>5 个订单时只展示前 5 个 + truncated=true
+MAX_PICKER_ITEMS: 5
+
+# 匿名用户查订单是否必须先登录（生产必须 True；dev 可关）
+REQUIRE_LOGIN: true
+
+# 订单号格式校验（与 intent.yaml ORDER_NO_RE_PATTERN 同步）
+# 注意：与 intent.yaml 是双源（YAGNI：跨模块不合并；后续 Sprint 可单独立项消除）
+# YAML 单引号保留 \d 字面（与 intent.yaml 同写法）
+ORDER_NO_PATTERN: '^ORD\d{8}[A-Z0-9]{3,6}$'
