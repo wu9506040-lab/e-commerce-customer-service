@@ -249,19 +249,21 @@ def _build_refund_scenarios() -> List[Scenario]:
         ))
         counter += 1
 
-    # === 8 个 escalate 分支（超 7 天 completed）===
-    # user 10004 订单 6 (COMPLETED 30 天前)
+    # === 8 个 escalate 分支（质量问题 + 无凭证 → 转人工）===
+    # escalate 触发条件（refund_graph.check_user_proof）：
+    #   refundable=True（先过 fetch_policy）+ query 含 "质量" + user_proof 为空
+    # user 10010 订单 26 (DELIVERED 3 天前, refundable=True) + 质量问题 query
     for i in range(8):
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="refund",
-            name="refund_escalate_over_7_days",
-            user_id=10004,
+            name="refund_escalate_quality_no_proof",
+            user_id=10010,
             intent="refund_query",
-            query=f"我要退款，订单 {MOCK_ORDER_NO_PREFIX}006，30 天前的订单",
-            entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}006", "sku": None},
+            query=f"我要退款，订单 {MOCK_ORDER_NO_PREFIX}026，收到的商品有质量问题",
+            entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}026", "sku": None},
             expected="escalate",
-            note="超 7 天 completed → judge.refundable=False → escalate",
+            note="refundable=True + query含质量 + 无凭证 → check_proof → escalate（转人工）",
         ))
         counter += 1
 

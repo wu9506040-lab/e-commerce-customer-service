@@ -137,7 +137,10 @@ def _run_resolver_scenario(scenario) -> Dict[str, Any]:
             ctx=ctx,
         )
         actual_action = result.action.value
-        expected_action = scenario.expected
+        # query_pool 的 expected 用枚举名（大写 ASK_LOGIN_OR_LIST），
+        # Resolver 返回 result.action.value（小写 ask_login_or_list）；
+        # 统一转小写比较，避免大小写约定差异误判为失败。
+        expected_action = scenario.expected.lower()
         # 业务规则：expected 是 DIRECT_ANSWER 包含 only_one_order / user_provided_order_no / context_order_no_hit
         # 验证只比 action 名字（细分 reason 留给 audit log）
         success = actual_action == expected_action
@@ -491,7 +494,12 @@ def _generate_markdown_report(
 
     # 2. Resolver 4 actions 分布
     md.append("## 2. Resolver 4 Actions 分布\n")
-    resolver_results = [r for r in results if r["category"] == "resolver" and r.get("actual")]
+    md.append("> 含 resolver（40）+ edge（10）两类，均经 OrderContextResolver 决策；"
+              "NOT_FOUND / ASK_LOGIN 由 edge 越权 / 匿名场景触发。\n")
+    resolver_results = [
+        r for r in results
+        if r["category"] in ("resolver", "edge") and r.get("actual")
+    ]
     action_dist: Dict[str, int] = {}
     for r in resolver_results:
         a = r["actual"]
