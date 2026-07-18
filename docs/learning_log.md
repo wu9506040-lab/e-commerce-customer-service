@@ -5197,6 +5197,21 @@ cleanup_mock_data()                           # 26 个 Order hard delete
 | 4 | scripts/ 现有目录已有大量 `eval_*.py` / `verify_*.py` | 决策：放 `scripts/m14_validation/` 子目录，不与现有脚本冲突 |
 | 5 | `OrderStatus.SHIPPED.value` 在 mock_data 是 enum，query_pool 复制后是 string | 改：query_pool 用 `class _OrderStatus(str, Enum)` 兼容两种用法 |
 | 6 | `Settings` 单例在 import 时加载 .env → 跑脚本前必须 load_dotenv | 沿用 `eval_agent_fc.py` 模式：`_load_env()` 在 main() 入口调用，不在 import 期 |
+| 7 | 首跑 resolver 40 + edge 10 全 fail（proactive 0/40）| 根因：query_pool `expected` 用枚举**名**（大写 `ASK_LOGIN_OR_LIST`），Resolver 返回 `action.value`（小写 `ask_login_or_list`）。改：比较前 `expected.lower()` 归一化。决策本身正确，纯大小写约定差 |
+| 8 | escalate 分支测不出（8 条 expected=escalate 实际 synthesize）| 根因：**误解 escalate 触发条件**。读 `refund_graph.py` 路由：`should_fetch_policy` 判 `refundable ? fetch_policy : synthesize` — **refundable=False 走 synthesize（拒退话术）不是 escalate**；escalate 仅由 `check_proof` 的「query 含"质量" + 无凭证」触发。改：escalate 场景改用 refundable=True 订单（10010/026 已签收 3 天）+ 质量问题 query，走通 `judge→fetch_policy→check_proof→escalate` 完整链 |
+
+## 首次实跑结果（2026-07-18 · Docker up · localhost:3307）
+
+| 指标 | 值 | 分子/分母 | 说明 |
+|------|-----|----------|------|
+| 主动查询覆盖率 | **75.0%** | 30/40 | 10 ASK_LOGIN_OR_LIST 是正确决策但非"主动答复"，故非 100% |
+| 业务流程完成率 | **100%** | 30/30 | RefundFlow 4 分支全走完 |
+| Tool 调用成功率 | **100%** | 20/20 | OrderTool get_order/list/logistics |
+| Hallucination Free Rate | **100%** | 100/100 | 0 异常 case |
+
+- 5 resolver actions 全覆盖（resolver+edge 合计）：direct_answer 14 / show_picker 20 / ask_login_or_list 10 / not_found 3 / ask_login 3
+- RefundFlow 4 分支全覆盖：synthesize 8 / escalate 8 / ask_order_no 7 / invalid_order 7
+- 失败 case：0；耗时 ~76s（仅 intent classify 调 LLM，synthesize/escalate 提前 break 省 token）
 
 ## Architecture Role（在系统中的位置）
 
@@ -5207,15 +5222,15 @@ cleanup_mock_data()                           # 26 个 Order hard delete
 ## 简历同步模板（报告 §5 自动生成）
 
 ```text
-■ Agent 编排: 100 business scenarios 验证 4 actions 决策分布，覆盖率 XX%
-■ 业务状态机: RefundFlow 30 场景流程完成率 XX%
-■ 工程落地: Tool 调用成功率 XX%（X/X）
-■ Agent 评测: Hallucination Free Rate XX%（X/100）
+■ Agent 编排: 100 business scenarios 验证 4 actions 决策分布，覆盖率 75%
+■ 业务状态机: RefundFlow 30 场景流程完成率 100%
+■ 工程落地: Tool 调用成功率 100%（20/20）
+■ Agent 评测: Hallucination Free Rate 100%（100/100）
 ```
 
 ## 已知限制
 
-- **依赖 Docker**：MySQL / Redis / Qdrant 必须 up（当前 daemon 未起，**待用户重启 Docker 后跑**）
+- **首跑已完成**（2026-07-18，Docker up）；复跑需 MySQL / Redis / Qdrant up，Windows 主机连 `localhost:3307`
 - **不调 LLM**：synthesize 阶段不验证 final_answer 内容（仅验证 flow_stage 推送正确性）
 - **mock 数据规模**：10 user × 26 订单，与真实业务量级（数千 user）有差距
 - **不验证 ENABLE_CONTEXT_STORE**：conversation_contexts 表依赖未跑（避免 schema 改动）
