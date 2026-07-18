@@ -35,6 +35,11 @@ from app.services.audit_service import try_log_action
 from app.services.behavior_monitor import behavior_monitor  # M11.5 P2
 from app.services.chat.orchestrator import Synthesizer  # Sprint 3：从 services/synthesizer 切到 services/chat/orchestrator
 from app.services.chat.prompt_assembler import _build_meta_contexts  # Sprint 3：原 services/synthesizer
+from app.services.escalation_service import (  # M14 V3：转人工兜底
+    EscalationReason,
+    detect_handoff_keyword,
+    get_escalation_service,
+)
 from app.services.metrics import metrics  # M8
 from app.services.policy_service import PolicyService
 # Sprint P2 / SSE Resume：stream checkpoint 写入/读取/清理
@@ -209,6 +214,42 @@ async def chat(
             logger.info(
                 f"/chat guard blocked: layer={guard_result.layer} "
                 f"reason={guard_result.reason} {user_ctx}"
+            )
+            return
+
+        # M14 V3：转人工关键词检测（在 IntentService.classify 之前，跳过 LLM 调用）
+        if detect_handoff_keyword(payload.query):
+            escalation = get_escalation_service()
+            handoff_payload = escalation.handoff(
+                reason=EscalationReason.USER_REQUESTED,
+                user_id=user_id,
+                history=history,
+                intent_result=None,
+                failure_context=None,
+            )
+            yield _sse_format({
+                "type": "meta",
+                "intent": "handoff",
+                "entities": {"order_no": None, "sku": None, "keywords": []},
+                "contexts": [],
+                "scores": [],
+                "handoff": handoff_payload.to_dict(),
+            })
+            for chunk in _chunk_text(
+                f"{handoff_payload.reason_label}（工单号 {handoff_payload.handoff_id}），人工客服会尽快联系您～",
+                size=10,
+            ):
+                yield _sse_format({"type": "token", "text": chunk})
+            yield _sse_format({"type": "done", "session_id": session_id})
+            yield _sse_format({"type": "closed"})
+            try_log_action(
+                user=user, action="chat_handoff_user_requested", target_type="session",
+                target_id=session_id, ip=ip, user_agent=ua,
+                detail={"handoff_id": handoff_payload.handoff_id},
+            )
+            logger.info(
+                f"/chat handoff (user_requested): handoff_id={handoff_payload.handoff_id} "
+                f"session={session_id[:12]}... {user_ctx}"
             )
             return
 

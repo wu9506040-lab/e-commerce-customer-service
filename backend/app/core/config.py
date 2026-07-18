@@ -171,6 +171,11 @@ class Settings(BaseSettings):
     # 关闭时 orchestrator 不填 meta.card 字段（向后兼容老前端）
     # 默认 true（M14 阶段 2 落地的 SSE 协议扩展，前端可选订阅）
     SSE_CARD_V2: bool = True
+    # ENABLE_ESCALATION_HANDOFF: 转人工兜底（M14 V3）
+    # 开启后：Agent 异常 / 用户说"转人工" → 走 EscalationService，handoff payload 推到 SSE meta
+    # 关闭时：所有 handoff 触发降级为"系统繁忙，请稍后再试"文本
+    # 默认 false（灰度用）；demo 时可开 true
+    ENABLE_ESCALATION_HANDOFF: bool = False
 
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本

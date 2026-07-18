@@ -1,4 +1,4 @@
-"""RefundFlow - 退款业务流（M14 §10 阶段 3）
+"""RefundFlow - 退款业务流（M14 §10 阶段 3 + 2026-07-18 改造 + 2026-07-18 V3 转人工兜底）
 
 包装 refund_graph V3（LangGraph 6 节点）：
   fetch_order → judge → fetch_policy → check_proof → escalate / synthesize
@@ -7,18 +7,93 @@
 - 不替换 V3（D8 决策：Factory → RefundFlow → V3）
 - yield meta.flow_stage 让前端展示阶段指示器（"正在审核 → 召回政策 → 生成回复"）
 - LangGraph 异常 → fallback 到 V2（保留 handle_refund_v2 保险丝）
+- V2 fallback 也失败 → 转人工兜底（M14 V3 新增，settings.ENABLE_ESCALATION_HANDOFF 灰度）
 - yield 顺序与 handle_refund_v3 保持完全一致（向后兼容）
+- 2026-07-18 改造：fetch_order 阶段接入 OrderContextResolver 自动解析
+  - 真实业务场景：顾客不报订单号，CS 用系统查
+  - 1 单 → DIRECT_ANSWER（自动用，无歧义）
+  - N 单 → SHOW_PICKER（yield meta.card 让前端 OrderCard list 渲染）
+  - 0 单 → ASK_LOGIN_OR_LIST
 """
 from __future__ import annotations
 
 import logging
 from typing import Any, Generator, Optional, Tuple
 
+from app.core.config import settings
 from app.services.chat.refund_handler import handle_refund_v2
 from app.services.chat.prompt_assembler import NO_LOGIN_PROMPT, _extract_order_no_from_history
 from app.services.chat.stream_dispatcher import stream_simple
+from app.services.context.context_service import ConversationContext
+from app.services.context.order_context_resolver import (
+    OrderResolverAction,
+    get_order_context_resolver,
+)
+from app.services.escalation_service import (
+    EscalationReason,
+    get_escalation_service,
+)
 from app.services.refund_graph import refund_graph_app
 from app.services.session_service import ANONYMOUS_USER_ID
+
+
+def _build_card(result, density: str = "list", reason: str = "disambiguate") -> dict:
+    """lazy import wrapper for orchestrator.Synthesizer._build_order_card_payload
+
+    Why lazy: orchestrator → business_flow → refund_flow → orchestrator 形成环；
+    refund_handler 已 lazy，但 RefundFlow 被 orchestrator._handle_refund 路径调，
+    在业务模块启动期也会触发 chain。
+    """
+    from app.services.chat.orchestrator import Synthesizer
+    return Synthesizer._build_order_card_payload(result, density=density, reason=reason)
+
+
+def _yield_handoff(
+    reason: EscalationReason,
+    user_id: int,
+    history: Optional[list[dict]],
+    intent_result: Optional[dict],
+    failure_context: Optional[dict] = None,
+) -> Generator[Tuple[str, Any], None, None]:
+    """yield 转人工事件（meta.handoff + token + done）
+
+    灰度开关 ENABLE_ESCALATION_HANDOFF=False 时降级为"系统繁忙"文本（不暴露 payload）。
+    复用入口：RefundFlow V2 fallback 失败 / handle_refund_v3 V2 fallback 失败。
+    """
+    if not settings.ENABLE_ESCALATION_HANDOFF:
+        # 灰度关：降级为固定话术（不推 handoff payload）
+        yield ("meta", {
+            "intent": "refund_query",
+            "entities": {},
+            "contexts": [],
+            "scores": [],
+            "flow_stage": "escalate",
+            "v3_engine": "escalation_disabled",
+        })
+        yield from stream_simple("系统繁忙，请稍后再试或联系人工客服。")
+        yield ("done", {"answer": ""})
+        return
+
+    escalation = get_escalation_service()
+    payload = escalation.handoff(
+        reason=reason,
+        user_id=user_id,
+        history=history,
+        intent_result=intent_result,
+        failure_context=failure_context,
+    )
+    yield ("meta", {
+        "intent": "refund_query",
+        "entities": {},
+        "contexts": [],
+        "scores": [],
+        "flow_stage": "escalate",
+        "v3_engine": "escalation",
+        "handoff": payload.to_dict(),
+    })
+    yield ("token", f"{payload.reason_label}（工单号 {payload.handoff_id}），人工客服会尽快联系您～")
+    yield ("done", {"answer": ""})
+
 
 logger = logging.getLogger(__name__)
 
@@ -82,20 +157,86 @@ class RefundFlow:
             yield from stream_simple(NO_LOGIN_PROMPT)
             return
 
-        # 2. 无 order_no：直接请用户提供（不允许自动 fallback 到最近订单 — M9.5 防串单）
+        # 2. 无 order_no：走 Resolver 自动解析（真实业务场景：CS 用系统查顾客订单，而非问顾客）
+        # 取代旧的"请提供订单号"prompt；M9.5 防串单通过 Resolver 0/1/N 决策兜底
         if not effective_order_no:
-            yield ("meta", {
-                "intent": "refund_query",
-                "entities": entities,
-                "contexts": [],
-                "scores": [],
-                "flow_stage": "fetch_order",
-                "v3_engine": "langgraph",
-            })
-            yield from stream_simple(
-                "请提供要查询退款的订单号（格式示例：ORD20260628004）。"
-            )
-            return
+            resolver = get_order_context_resolver()
+            ctx = ConversationContext(session_id="", user_id=self.user_id)
+            result = resolver.resolve(self.user_id, "refund_query", entities, ctx)
+
+            # 2.1 唯一 1 单 → 自动用（无歧义，安全）
+            if result.action == OrderResolverAction.DIRECT_ANSWER and result.effective_order_no:
+                effective_order_no = result.effective_order_no
+                # 不 return，继续走 LangGraph
+
+            # 2.2 N 单 → yield meta with card 让前端 OrderCard list 渲染
+            elif result.action == OrderResolverAction.SHOW_PICKER:
+                card = _build_card(result, density="list", reason="disambiguate")
+                yield ("meta", {
+                    "intent": "refund_query",
+                    "entities": entities,
+                    "contexts": [],
+                    "scores": [],
+                    "flow_stage": "fetch_order",
+                    "v3_engine": "langgraph",
+                    "card": card if settings.SSE_CARD_V2 else None,
+                    "resolver_action": result.action.value,
+                    "resolver_reason": result.reason,
+                    "total_orders": result.total_orders,
+                    "truncated": result.truncated,
+                })
+                text = (
+                    f"您有 {result.total_orders} 个订单，请选择要退款的订单："
+                    if not result.truncated
+                    else f"您最近订单较多（{result.total_orders} 个），以下仅展示前 {len(card['items'])} 个："
+                )
+                yield from stream_simple(text)
+                return  # 等待用户点选后下一轮带 order_no 进来
+
+            # 2.3 0 单 → 明确告知
+            elif result.action == OrderResolverAction.ASK_LOGIN_OR_LIST:
+                yield ("meta", {
+                    "intent": "refund_query",
+                    "entities": entities,
+                    "contexts": [],
+                    "scores": [],
+                    "flow_stage": "fetch_order",
+                    "v3_engine": "langgraph",
+                    "resolver_action": result.action.value,
+                    "resolver_reason": result.reason,
+                    "total_orders": 0,
+                })
+                yield from stream_simple("您当前没有订单，无法处理退款哦～")
+                return
+
+            # 2.4 NOT_FOUND（提供了无效 order_no）/ ASK_LOGIN（匿名）兜底
+            elif result.action == OrderResolverAction.NOT_FOUND:
+                yield ("meta", {
+                    "intent": "refund_query",
+                    "entities": entities,
+                    "contexts": [],
+                    "scores": [],
+                    "flow_stage": "fetch_order",
+                    "v3_engine": "langgraph",
+                    "resolver_action": result.action.value,
+                    "resolver_reason": result.reason,
+                })
+                yield from stream_simple("订单不存在或不属于当前用户，请检查。")
+                return
+
+            elif result.action == OrderResolverAction.ASK_LOGIN:
+                yield ("meta", {
+                    "intent": "refund_query",
+                    "entities": entities,
+                    "contexts": [],
+                    "scores": [],
+                    "flow_stage": "fetch_order",
+                    "v3_engine": "langgraph",
+                    "resolver_action": result.action.value,
+                    "resolver_reason": result.reason,
+                })
+                yield from stream_simple(NO_LOGIN_PROMPT)
+                return
 
         # 3. 调 LangGraph refund_graph_app.stream() 边执行边输出
         # 与 handle_refund_v3 的关键差异：每个节点都 yield meta + flow_stage
@@ -190,10 +331,32 @@ class RefundFlow:
                 f"RefundFlow LangGraph 执行失败，fallback 到 V2: "
                 f"order={effective_order_no} err={e}"
             )
-            yield from handle_refund_v2(
-                self.query,
-                self.user_id,
-                self.intent_result,
-                order_no=self.order_no,
-                context_block=self.context_block,
-            )
+            try:
+                yield from handle_refund_v2(
+                    self.query,
+                    self.user_id,
+                    self.intent_result,
+                    order_no=self.order_no,
+                    context_block=self.context_block,
+                )
+            except Exception as v2_err:
+                # V2 fallback 也挂了 → 转人工兜底（M14 V3 新增）
+                logger.exception(
+                    f"RefundFlow V2 fallback 也失败，触发转人工: "
+                    f"order={effective_order_no} v3_err={e} v2_err={v2_err}"
+                )
+                yield from _yield_handoff(
+                    reason=EscalationReason.AGENT_UNAVAILABLE,
+                    user_id=self.user_id,
+                    history=self.history,
+                    intent_result=self.intent_result,
+                    failure_context={
+                        "failed_stage": "v3_v2_both_failed",
+                        "v3_error_class": type(e).__name__,
+                        "v3_error_msg": str(e)[:200],
+                        "v2_error_class": type(v2_err).__name__,
+                        "v2_error_msg": str(v2_err)[:200],
+                        "retry_count": 1,
+                    },
+                )
+                return
