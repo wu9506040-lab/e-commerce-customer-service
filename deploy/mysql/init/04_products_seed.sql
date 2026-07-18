@@ -4,7 +4,10 @@
 --       → 每次 ECS 部署 /shop 都是空
 -- 修复：补 10 个商品（手机/耳机/手表/平板/笔记本/键盘/鼠标 全类目）
 -- 命名规范：SKU001-SKU010（M1 升级约定）
+-- 重要：执行必须 `mysql --default-character-set=utf8mb4`，否则 UTF-8 字节被当 latin1 双重编码
+--       容器自动 init 走 docker-entrypoint-initdb.d 也已 SET NAMES utf8mb4 兼容
 -- =============================================================
+SET NAMES utf8mb4;
 USE `customer_service`;
 
 -- 清空旧数据（幂等）
