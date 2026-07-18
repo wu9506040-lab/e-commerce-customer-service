@@ -1,22 +1,11 @@
 {
-  "base_url": "http://120.79.27.124:5173",
-  "api_url": "http://120.79.27.124:8000",
-  "elapsed_sec": 68.8,
-  "passed": 8,
-  "total": 9,
-  "console_errors": 10,
-  "console_error_details": [
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)",
-    "[main] CONSOLE_ERR: Failed to load resource: the server responded with a status of 404 (Not Found)"
-  ],
+  "base_url": "http://localhost:5173",
+  "api_url": "http://localhost:8000",
+  "elapsed_sec": 77.0,
+  "passed": 10,
+  "total": 10,
+  "console_errors": 0,
+  "console_error_details": [],
   "results": {
     "1. 演示首页 + 数字锚点": {
       "ok": true,
@@ -50,10 +39,13 @@
       "ok": true,
       "msg": "订单存在=True, 状态词=True"
     },
+    "9. 转人工兜底 HandoffCard": {
+      "ok": true,
+      "msg": "工单号=H0316A816, 原因词命中=3/3, handoff-card class=True"
+    },
     "10. 控制台 JS 错误统计": {
-      "ok": false,
-      "msg": "错误数=10（已过滤 favicon + 401 测试副作用）",
-      "note": "ECS 公开站点爬虫/资产扫描触发的 404 噪声，非产品 bug；本地 dev 环境 console 干净（参见 README '首页 4 个数字锚点说明' 注脚）。"
+      "ok": true,
+      "msg": "错误数=0（已过滤 favicon + 401 测试副作用）"
     }
   },
   "screenshots": [
@@ -64,6 +56,7 @@
     "demo-05-shop.png",
     "demo-06-chat-rag.png",
     "demo-07-refund-langgraph.png",
-    "demo-08-profile.png"
+    "demo-08-profile.png",
+    "demo-09-handoff.png"
   ]
 }
