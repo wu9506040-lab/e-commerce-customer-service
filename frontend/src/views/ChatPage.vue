@@ -283,6 +283,8 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
                   entities: meta?.entities ?? null,
                   tool_result_preview: meta?.tool_result_preview ?? null,
                   card: meta?.card ?? null,
+                  // M14 V3：转人工 payload（Agent 异常 / 用户要求转人工）
+                  handoff: meta?.handoff ?? null,
                   contexts: meta?.contexts ?? null,
                   scores: meta?.scores ?? null,
                   create_time: new Date().toISOString(),

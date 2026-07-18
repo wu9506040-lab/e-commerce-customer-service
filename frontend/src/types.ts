@@ -39,7 +39,45 @@ export interface Message {
   // M14 Stage 2：SSE meta.card 字段（订单卡片推送）
   // 与后端 app/schemas/sse_card.py::OrderCardPayload 一一对应
   card?: OrderCardPayload | null;
+  // M14 V3：SSE meta.handoff 字段（转人工兜底 payload）
+  // 与后端 app/services/escalation_service.py::HandoffPayload 一一对应
+  handoff?: HandoffPayload | null;
   create_time: string;
+}
+
+/**
+ * M14 V3：转人工兜底 payload
+ * 由后端 EscalationService.handoff() 生成，塞入 SSE meta.handoff 字段
+ *
+ * 触发原因：
+ * - user_requested：用户说"转人工"
+ * - agent_unavailable：Agent 异常（V3+V2 都失败）
+ * - business_rule：业务规则触发（质量问题无凭证等）
+ */
+export interface HandoffPayload {
+  handoff_id: string;
+  reason: 'user_requested' | 'agent_unavailable' | 'business_rule';
+  reason_label: string;
+  created_at: string;
+  user_id: number;
+  user_card: {
+    user_id: number;
+    total_orders: number;
+    recent_order_count: number;
+  };
+  recent_orders: OrderSummary[];
+  recent_messages: Array<{ role: string; content: string; ts?: string }>;
+  current_intent: string | null;
+  current_entities: Entities | null;
+  agent_failure_context: {
+    failed_stage: string;
+    v3_error_class?: string;
+    v3_error_msg?: string;
+    v2_error_class?: string;
+    v2_error_msg?: string;
+    retry_count?: number;
+  } | null;
+  summary_text: string;
 }
 
 /**
@@ -185,6 +223,8 @@ export type StreamEvent =
       tool_result_preview?: string;
       // M14 Stage 2：SSE 订单卡片（M14 OrderContextResolver 决策产物）
       card?: OrderCardPayload;
+      // M14 V3：SSE 转人工 payload（Agent 异常 / 用户要求转人工）
+      handoff?: HandoffPayload;
     }
   | { type: 'token'; id?: number; text: string }
   | { type: 'done'; id?: number; session_id: string }
