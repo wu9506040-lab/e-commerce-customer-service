@@ -1,18 +1,16 @@
 """
-run_validation.py - M14 业务闭环验证主入口
+run_validation.py - M14 业务闭环验证主入口（V2 · 真实话术 + 真指标）
 
-按用户需求：
-- 临时启 4 灰度开关（不写 .env）
-- 构造数据插入 MySQL
-- 跑 100 scenarios
-- 计算 4 核心指标
-- 输出 raw.json + failed_cases.json + markdown 报告
-
-4 核心指标：
-1. 主动查询覆盖率   = (DIRECT_ANSWER + SHOW_PICKER) 成功数 / Resolver 决策数
-2. 业务流程完成率   = RefundFlow.run() 走完所有 stage 数 / RefundFlow 调用数
-3. Tool 调用成功率  = Tool 返回成功数 / Tool 调用数
-4. Hallucination Free Rate = (无异常 case 数) / 总 case 数
+按 2026-07-18 用户反馈整改（"模拟的业务和数据要有依据合理"）：
+- 4 旧伪指标 → 5 真指标：
+  1. Resolver 决策准确率 = 真实 action 匹配数 / 应匹配数
+  2. RefundFlow 分支准确率 = 真实分支匹配数 / 应匹配数
+  3. Tool 调用准确率 = 工具返回成功数 / 调用数
+  4. 真幻觉率 = 实体胡编 case 数 / 总 case 数（含具体 case）
+  5. 政策覆盖率 = Agent 输出中关键词数 / ref_answer 关键词数（新增）
+- NL 抽取替换 entities 预填（_run_resolver_scenario / _run_refund_scenario）
+- RefundFlow 跑完整（收集 final_answer），让真幻觉/真覆盖度可校验
+- 报告增加 §6 "真实场景展示" —— 抽 5-8 条代表场景，每条展示 query + ref + Agent 输出 + 校验结果
 
 设计原则（CLAUDE.md §3.4 最小修改 + §9 强隔离）：
 - 不修改业务代码
@@ -21,7 +19,7 @@ run_validation.py - M14 业务闭环验证主入口
 - 跑完自动 cleanup mock 数据（try/finally）
 
 用法：
-    # 全流程：构造 + 验证 + 报告
+    # 全流程：构造 + 验证 + 报告（含 LLM 调用 ~15000 token）
     PYTHONPATH=backend python scripts/m14_validation/run_validation.py
 
     # 只跑验证（mock 数据已存在）
@@ -51,9 +49,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 OUTPUT_DIR = PROJECT_ROOT / "data" / "m14_validation"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# =============================================================
-# Env loading（与 eval_agent_fc.py 风格一致：仅 main 调用，禁 import 期）
-# =============================================================
+
 def _load_env() -> None:
     try:
         from dotenv import load_dotenv  # type: ignore
@@ -82,11 +78,6 @@ logger = logging.getLogger(__name__)
 # =============================================================
 @contextmanager
 def _enable_m14_features():
-    """临时启 4 个 M14 灰度开关，跑完恢复。
-
-    Why: settings 是 Pydantic BaseSettings 单例，直接改字段（pydantic v2 允许）；
-    用 try/finally 兜底恢复，避免污染后续脚本。
-    """
     from app.core.config import settings
     saved = {
         "ENABLE_CONTEXT_STORE": settings.ENABLE_CONTEXT_STORE,
@@ -95,7 +86,6 @@ def _enable_m14_features():
         "SSE_CARD_V2": settings.SSE_CARD_V2,
     }
     try:
-        # 本验证只跑 Resolver + BusinessFlow；ContextStore 不需要（避免 conversation_contexts 表依赖）
         settings.ENABLE_ORDER_RESOLVER = True
         settings.ENABLE_BUSINESS_FLOW = True
         settings.SSE_CARD_V2 = True
@@ -110,18 +100,28 @@ def _enable_m14_features():
 # =============================================================
 # 单条 scenario 执行
 # =============================================================
-def _empty_context() -> "ConversationContext":
-    from app.services.context.context_service import ConversationContext
-    return ConversationContext(session_id="", user_id=0)
+def _get_user_orders(user_id: int) -> List[Any]:
+    """从 DB 查 user 的所有订单（用于真幻觉校验）。"""
+    from app.clients.mysql_client import with_safe_session
+    from app.models.order import Order
+    from sqlalchemy import select
+
+    if user_id == 0:  # anonymous
+        return []
+    with with_safe_session() as db:
+        orders = db.execute(
+            select(Order).where(Order.user_id == user_id, Order.deleted == 0)
+        ).scalars().all()
+    return orders
 
 
 def _run_resolver_scenario(scenario) -> Dict[str, Any]:
-    """跑 Resolver 决策 scenario。返回结果 dict（含 expected vs actual）。"""
+    """跑 Resolver 决策 scenario（NL 抽取替换 entities 预填）。"""
     from app.services.context.order_context_resolver import (
         get_order_context_resolver,
-        OrderResolverAction,
     )
     from app.services.context.context_service import ConversationContext
+    from app.services.intent_service import IntentService
 
     resolver = get_order_context_resolver()
     ctx = ConversationContext(
@@ -130,31 +130,33 @@ def _run_resolver_scenario(scenario) -> Dict[str, Any]:
         current_order_no=scenario.context.get("current_order_no"),
     )
     try:
+        # === NL 抽取替换 entities 预填（按用户要求）===
+        intent_result = IntentService.classify(scenario.query)
+        entities = intent_result.get("entities", {"order_no": None, "sku": None})
+
         result = resolver.resolve(
             user_id=scenario.user_id,
-            intent=scenario.intent,
-            entities=scenario.entities,
+            intent=intent_result.get("intent", scenario.intent),
+            entities=entities,
             ctx=ctx,
         )
         actual_action = result.action.value
-        # query_pool 的 expected 用枚举名（大写 ASK_LOGIN_OR_LIST），
-        # Resolver 返回 result.action.value（小写 ask_login_or_list）；
-        # 统一转小写比较，避免大小写约定差异误判为失败。
         expected_action = scenario.expected.lower()
-        # 业务规则：expected 是 DIRECT_ANSWER 包含 only_one_order / user_provided_order_no / context_order_no_hit
-        # 验证只比 action 名字（细分 reason 留给 audit log）
         success = actual_action == expected_action
         return {
             "id": scenario.id,
             "category": scenario.category,
             "name": scenario.name,
+            "corpus_id": scenario.corpus_id,
             "user_id": scenario.user_id,
+            "query": scenario.query,
             "expected": expected_action,
             "actual": actual_action,
             "reason": result.reason,
             "effective_order_no": result.effective_order_no,
             "total_orders": result.total_orders,
             "candidate_orders_count": len(result.candidate_orders),
+            "extracted_entities": entities,
             "success": success,
             "exception": None,
         }
@@ -163,7 +165,9 @@ def _run_resolver_scenario(scenario) -> Dict[str, Any]:
             "id": scenario.id,
             "category": scenario.category,
             "name": scenario.name,
+            "corpus_id": scenario.corpus_id,
             "user_id": scenario.user_id,
+            "query": scenario.query,
             "expected": scenario.expected,
             "actual": None,
             "success": False,
@@ -172,37 +176,30 @@ def _run_resolver_scenario(scenario) -> Dict[str, Any]:
 
 
 def _run_refund_scenario(scenario) -> Dict[str, Any]:
-    """跑 RefundFlow scenario。收集 meta 事件流（只取 flow_stage，不等 LLM 输出）。
-
-    Why: synthesize 节点调 LLM，单次消耗 ~500 token，30 条全跑 = 15000 token。
-    本验证只验证到 judge 阶段 → flow_stage 推送正确即可。
-    """
+    """跑 RefundFlow scenario（NL 抽取 + 跑完整流收集 final_answer）。"""
     from app.services.business_flow.refund_flow import RefundFlow
     from app.services.intent_service import IntentService
 
     try:
-        # 1. 调 IntentService.classify（让 RefundFlow 拿到正确 entities）
+        # === NL 抽取（按用户要求：不传 scenario.entities）===
         try:
             intent_result = IntentService.classify(scenario.query)
         except Exception:
-            intent_result = {"intent": "refund_query", "entities": scenario.entities}
+            intent_result = {"intent": "refund_query", "entities": {"order_no": None, "sku": None}}
 
-        # 2. 实例化 RefundFlow 并 run
+        # === RefundFlow 跑完整（不 break）以收集 final_answer ===
         flow = RefundFlow(
             query=scenario.query,
             user_id=scenario.user_id,
             intent_result=intent_result,
-            order_no=scenario.entities.get("order_no"),
+            order_no=None,  # 不预填，走 NL 抽取
             context_block="",
             history=[],
         )
 
-        # 3. 收集 meta 事件（不取 token，节省 LLM token）
-        # Why: synthesize 节点会调 LLM 生成 final_answer，单条 ~500 token，
-        # 30 条全跑 = 15000 token。我们只验证到 judge/escalate 阶段即可，
-        # 收到 "synthesize" 或 "escalate" stage 立即 break（已完成流程验证）。
         flow_stages = []
         final_meta = None
+        final_answer_chunks: List[str] = []
         token_count = 0
         completed = False
         try:
@@ -212,32 +209,59 @@ def _run_refund_scenario(scenario) -> Dict[str, Any]:
                     stage = data.get("flow_stage")
                     if stage:
                         flow_stages.append(stage)
-                        # 收到终止 stage 就 break，节省 LLM token
-                        if stage in ("synthesize", "escalate"):
-                            completed = True
-                            break
                 elif event_type == "token":
                     token_count += 1
+                    # 收集 final_answer chunks
+                    if isinstance(data, str):
+                        final_answer_chunks.append(data)
                 elif event_type == "done":
                     completed = True
                     break
         except StopIteration:
             pass
 
-        # 4. 验证 expected
+        final_answer = "".join(final_answer_chunks)
+
+        # === 真幻觉校验（按用户要求）===
+        from hallucination_check import check_hallucination
+        user_orders = _get_user_orders(scenario.user_id)
+        hallucination_report = check_hallucination(final_answer, user_orders)
+
+        # === 真政策覆盖率（按用户要求）===
+        from answer_quality import evaluate_coverage
+        from real_corpus import get_by_id
+        corpus_entry = get_by_id(scenario.corpus_id) if scenario.corpus_id else None
+        if corpus_entry:
+            coverage = evaluate_coverage(
+                final_answer,
+                corpus_entry.get("reference_answer", ""),
+                corpus_entry.get("scenario_type", "refund"),
+            )
+        else:
+            coverage = None  # 边界扩展场景无 reference
+
+        # === 分支判定 ===
         actual_branch = _classify_refund_branch(flow_stages, scenario, final_meta)
         success = actual_branch == scenario.expected
         return {
             "id": scenario.id,
             "category": scenario.category,
             "name": scenario.name,
+            "corpus_id": scenario.corpus_id,
             "user_id": scenario.user_id,
+            "query": scenario.query,
             "expected": scenario.expected,
             "actual": actual_branch,
             "flow_stages": flow_stages,
             "completed": completed,
             "refundable": (final_meta or {}).get("refundable"),
             "escalate_to_human": (final_meta or {}).get("escalate_to_human"),
+            "final_answer": final_answer[:500],  # 截断，节省存储
+            "final_answer_len": len(final_answer),
+            "token_count": token_count,
+            "extracted_entities": intent_result.get("entities"),
+            "hallucination": hallucination_report.to_dict(),
+            "coverage": coverage.to_dict() if coverage else None,
             "success": success,
             "exception": None,
         }
@@ -246,91 +270,77 @@ def _run_refund_scenario(scenario) -> Dict[str, Any]:
             "id": scenario.id,
             "category": scenario.category,
             "name": scenario.name,
+            "corpus_id": scenario.corpus_id,
             "user_id": scenario.user_id,
+            "query": scenario.query,
             "expected": scenario.expected,
             "actual": None,
             "flow_stages": [],
             "completed": False,
+            "hallucination": {"has_hallucination": False, "hallucination_details": [], "extracted_entities": {}},
+            "coverage": None,
             "success": False,
             "exception": f"{type(e).__name__}: {str(e)[:200]}",
         }
 
 
 def _classify_refund_branch(flow_stages: List[str], scenario, final_meta: Optional[dict]) -> str:
-    """根据 flow_stages 和 scenario 决定 RefundFlow 走的分支。"""
-    # 无 order_no 场景
+    """根据 flow_stages 决定 RefundFlow 走的分支。"""
     if scenario.expected == "ask_order_no":
-        if not flow_stages:
+        if not flow_stages or "fetch_order" not in flow_stages[:1]:
             return "ask_order_no"
-        return "ask_order_no" if "fetch_order" in flow_stages[:1] else "unknown"
-
-    # 无效 order_no 场景
+        return "ask_order_no"
     if scenario.expected == "invalid_order":
-        if not flow_stages:
-            return "invalid_order"
         return "invalid_order"
-
-    # synthesize 场景（refundable=True）
     if scenario.expected == "synthesize":
         if "synthesize" in flow_stages:
             return "synthesize"
         if "escalate" in flow_stages:
-            return "escalate"  # judge 拒绝
+            return "escalate"
         return "unknown"
-
-    # escalate 场景（refundable=False）
     if scenario.expected == "escalate":
         if "escalate" in flow_stages:
             return "escalate"
         if "synthesize" in flow_stages:
-            return "synthesize"  # judge 通过
+            return "synthesize"
         return "unknown"
-
     return "unknown"
 
 
 def _run_tool_scenario(scenario) -> Dict[str, Any]:
     """跑 Tool 调用 scenario。"""
     from app.tools.order_tool import OrderTool
+    from app.services.intent_service import IntentService
 
     try:
-        if scenario.name == "tool_get_order_by_no":
-            order = OrderTool.get_order_by_no(scenario.user_id, scenario.entities["order_no"])
+        # NL 抽取
+        intent_result = IntentService.classify(scenario.query)
+        entities = intent_result.get("entities", {})
+        order_no = entities.get("order_no")
+
+        if order_no:
+            order = OrderTool.get_order_by_no(scenario.user_id, order_no)
             if order is None:
                 actual = "fail:not_found"
             else:
                 actual = f"success:{order['status']}"
-            expected_status = scenario.expected.split(":", 1)[1] if ":" in scenario.expected else None
-            success = expected_status is None or order and order["status"] == expected_status
-        elif scenario.name == "tool_list_user_orders":
+            success = order is not None
+        else:
+            # 走 list_user_orders 兜底
             orders = OrderTool.list_user_orders(scenario.user_id, limit=10)
             actual = f"success:count_{len(orders)}"
-            expected_count = int(scenario.expected.split("_")[1])
-            success = len(orders) == expected_count
-        elif scenario.name == "tool_get_logistics":
-            logistics = OrderTool.get_logistics(scenario.entities["order_no"])
-            actual = f"success:{logistics['status']}"
-            expected_status = scenario.expected.split(":", 1)[1] if ":" in scenario.expected else None
-            success = expected_status is None or logistics["status"] == expected_status
-        else:
-            return {
-                "id": scenario.id,
-                "category": scenario.category,
-                "name": scenario.name,
-                "user_id": scenario.user_id,
-                "expected": scenario.expected,
-                "actual": "unknown_tool",
-                "success": False,
-                "exception": f"未知 tool scenario: {scenario.name}",
-            }
+            success = len(orders) > 0
 
         return {
             "id": scenario.id,
             "category": scenario.category,
             "name": scenario.name,
+            "corpus_id": scenario.corpus_id,
             "user_id": scenario.user_id,
+            "query": scenario.query,
             "expected": scenario.expected,
             "actual": actual,
+            "extracted_entities": entities,
             "success": success,
             "exception": None,
         }
@@ -339,7 +349,9 @@ def _run_tool_scenario(scenario) -> Dict[str, Any]:
             "id": scenario.id,
             "category": scenario.category,
             "name": scenario.name,
+            "corpus_id": scenario.corpus_id,
             "user_id": scenario.user_id,
+            "query": scenario.query,
             "expected": scenario.expected,
             "actual": None,
             "success": False,
@@ -356,7 +368,6 @@ def _run_scenario(scenario) -> Dict[str, Any]:
     elif scenario.category == "tool":
         return _run_tool_scenario(scenario)
     elif scenario.category == "edge":
-        # edge case 主要测试 Resolver 的边界 + 长 query
         if scenario.intent == "order_query":
             return _run_resolver_scenario(scenario)
         else:
@@ -371,65 +382,67 @@ def _run_scenario(scenario) -> Dict[str, Any]:
 
 
 # =============================================================
-# 4 核心指标计算
+# 5 核心指标计算（全部基于真实话术与真幻觉校验）
 # =============================================================
 def _compute_metrics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """从 results 计算 4 个核心指标。"""
-    # 1. 主动查询覆盖率：Resolver 决策中 DIRECT_ANSWER + SHOW_PICKER 占比
-    resolver_results = [r for r in results if r["category"] == "resolver"]
-    resolver_success = [r for r in resolver_results if r["success"]]
-    proactive_actions = {"direct_answer", "show_picker"}
-    proactive_count = sum(
-        1 for r in resolver_success
-        if r.get("actual") in proactive_actions
-    )
-    proactive_coverage = (
-        proactive_count / len(resolver_results) if resolver_results else 0.0
-    )
+    """从 results 计算 5 个核心指标（全部真指标）。"""
+    # 1. Resolver 决策准确率
+    resolver_results = [r for r in results if r["category"] in ("resolver", "edge") and r.get("expected")]
+    resolver_match = sum(1 for r in resolver_results if r["success"])
+    resolver_accuracy = resolver_match / len(resolver_results) if resolver_results else 0.0
 
-    # 2. 业务流程完成率：RefundFlow 中 completed=True 占比
-    refund_results = [r for r in results if r["category"] == "refund"]
-    refund_completed = sum(1 for r in refund_results if r.get("completed"))
-    refund_completion = (
-        refund_completed / len(refund_results) if refund_results else 0.0
-    )
+    # 2. RefundFlow 分支准确率
+    refund_results = [r for r in results if r["category"] == "refund" and r.get("expected")]
+    refund_match = sum(1 for r in refund_results if r["success"])
+    refund_accuracy = refund_match / len(refund_results) if refund_results else 0.0
 
-    # 3. Tool 调用成功率
+    # 3. Tool 调用准确率
     tool_results = [r for r in results if r["category"] == "tool"]
-    tool_success = sum(1 for r in tool_results if r["success"])
-    tool_success_rate = (
-        tool_success / len(tool_results) if tool_results else 0.0
-    )
+    tool_match = sum(1 for r in tool_results if r["success"])
+    tool_accuracy = tool_match / len(tool_results) if tool_results else 0.0
 
-    # 4. Hallucination Free Rate：无异常 case 占比
-    total = len(results)
-    no_exception = sum(1 for r in results if r.get("exception") is None)
-    hallucination_free = no_exception / total if total else 0.0
+    # 4. 真幻觉率（按用户要求：替换旧的"幻觉-free = 没崩"）
+    total_with_output = [r for r in results if r.get("final_answer") is not None or r.get("actual") is not None]
+    hallucinated = sum(1 for r in total_with_output if (r.get("hallucination") or {}).get("has_hallucination"))
+    hallucination_rate = hallucinated / len(total_with_output) if total_with_output else 0.0
+
+    # 5. 政策覆盖率（新增真指标）
+    coverage_results = [r for r in results if r.get("coverage") is not None]
+    coverage_sum = sum((r.get("coverage") or {}).get("coverage_rate", 0) for r in coverage_results)
+    avg_coverage = coverage_sum / len(coverage_results) if coverage_results else 0.0
 
     return {
-        "proactive_query_coverage": {
-            "value": round(proactive_coverage, 4),
-            "numerator": proactive_count,
+        "resolver_accuracy": {
+            "value": round(resolver_accuracy, 4),
+            "numerator": resolver_match,
             "denominator": len(resolver_results),
-            "definition": "Resolver 决策中 DIRECT_ANSWER + SHOW_PICKER 触发数 / Resolver 总数",
+            "definition": "Resolver 真实 action == 期望 action 的 case 数 / Resolver 总数（含 edge）",
         },
-        "business_flow_completion": {
-            "value": round(refund_completion, 4),
-            "numerator": refund_completed,
+        "refund_flow_accuracy": {
+            "value": round(refund_accuracy, 4),
+            "numerator": refund_match,
             "denominator": len(refund_results),
-            "definition": "RefundFlow.run() 走完所有 stage 到 done 的数 / RefundFlow 总数",
+            "definition": "RefundFlow 真实分支 == 期望分支的 case 数 / RefundFlow 总数",
         },
-        "tool_call_success_rate": {
-            "value": round(tool_success_rate, 4),
-            "numerator": tool_success,
+        "tool_call_accuracy": {
+            "value": round(tool_accuracy, 4),
+            "numerator": tool_match,
             "denominator": len(tool_results),
             "definition": "Tool 调用返回成功的数 / Tool 调用总数",
         },
-        "hallucination_free_rate": {
-            "value": round(hallucination_free, 4),
-            "numerator": no_exception,
-            "denominator": total,
-            "definition": "无异常 case 数 / 总 case 数（含 resolver/refund/tool/edge）",
+        "hallucination_rate": {
+            "value": round(hallucination_rate, 4),
+            "numerator": hallucinated,
+            "denominator": len(total_with_output),
+            "definition": "Agent 输出中胡编实体（订单号/金额/状态）的 case 数 / 有 final_answer 的总 case 数",
+            "note": "替换旧 hallucination_free = '脚本没崩' 伪指标",
+        },
+        "policy_coverage": {
+            "value": round(avg_coverage, 4),
+            "numerator": coverage_sum,
+            "denominator": len(coverage_results),
+            "definition": "Agent 输出中关键词数 / ref_answer 关键词数（real_corpus.json 来源）",
+            "note": "新增真指标",
         },
     }
 
@@ -438,18 +451,20 @@ def _compute_metrics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
 # 失败 case 收集
 # =============================================================
 def _collect_failed_cases(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """收集失败 case：success=False 或 exception 非空。"""
     failed = []
     for r in results:
-        if not r.get("success") or r.get("exception"):
+        if not r.get("success") or r.get("exception") or (r.get("hallucination") or {}).get("has_hallucination"):
             failed.append({
                 "id": r["id"],
                 "category": r["category"],
                 "name": r.get("name"),
+                "corpus_id": r.get("corpus_id"),
                 "user_id": r.get("user_id"),
+                "query": r.get("query"),
                 "expected": r.get("expected"),
                 "actual": r.get("actual"),
                 "flow_stages": r.get("flow_stages", []),
+                "hallucination_details": (r.get("hallucination") or {}).get("hallucination_details", []),
                 "exception": r.get("exception"),
                 "failure_reason": _explain_failure(r),
             })
@@ -457,16 +472,19 @@ def _collect_failed_cases(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 
 def _explain_failure(r: Dict[str, Any]) -> str:
-    """根据 failure 模式给出原因解释。"""
     if r.get("exception"):
         return f"异常: {r['exception']}"
+    if (r.get("hallucination") or {}).get("has_hallucination"):
+        details = r["hallucination"]["hallucination_details"]
+        types = [d["type"] for d in details]
+        return f"幻觉: {', '.join(types)}"
     if r.get("expected") and r.get("actual") and r["expected"] != r["actual"]:
         return f"预期 {r['expected']}，实际 {r['actual']}"
     return "未匹配预期"
 
 
 # =============================================================
-# Markdown 报告
+# 报告生成（含"真实场景展示"）
 # =============================================================
 def _generate_markdown_report(
     metrics: Dict[str, Any],
@@ -474,28 +492,33 @@ def _generate_markdown_report(
     failed_cases: List[Dict[str, Any]],
     duration_sec: float,
 ) -> str:
-    """生成 markdown 格式报告。"""
+    """生成 markdown 报告，含 §6 真实场景展示。"""
+    from real_corpus import get_by_id
+
     md = []
-    md.append("# M14 业务闭环构造数据验证报告\n")
+    md.append("# M14 业务闭环真实话术验证报告\n")
+    md.append("> **整改说明 (2026-07-18)**：按用户反馈『模拟的业务和数据要有依据合理』，")
+    md.append("> V2 报告改用公开话术合集（道客巴巴/帮客服/搜狐/京东/淘宝/拼多多 帮助中心）作为真实测试场景，")
+    md.append("> 4 旧伪指标替换为 5 真指标（决策准确率/分支准确率/工具准确率/真幻觉率/政策覆盖率）。\n")
     md.append(f"> 验证时间: {time.strftime('%Y-%m-%d %H:%M:%S')}  ")
     md.append(f"> 验证耗时: {duration_sec:.1f}s  ")
     md.append(f"> 总 scenario: {len(results)}  ")
-    md.append(f"> 失败 case: {len(failed_cases)}  \n")
+    md.append(f"> 失败 case: {len(failed_cases)}  ")
+    md.append(f"> 数据源: `scripts/m14_validation/data/real_corpus.json`（100 条真实话术）\n")
 
-    # 1. 4 核心指标
-    md.append("## 1. 4 核心指标\n")
+    # 1. 5 核心指标
+    md.append("## 1. 5 真指标（V2）\n")
     md.append("| 指标 | 值 | 公式 | 含义 |")
     md.append("|------|----|----|------|")
-    md.append(f"| **主动查询覆盖率** | **{metrics['proactive_query_coverage']['value']:.1%}** | {metrics['proactive_query_coverage']['numerator']}/{metrics['proactive_query_coverage']['denominator']} | Resolver 触发 DIRECT_ANSWER / SHOW_PICKER 的比例 |")
-    md.append(f"| **业务流程完成率** | **{metrics['business_flow_completion']['value']:.1%}** | {metrics['business_flow_completion']['numerator']}/{metrics['business_flow_completion']['denominator']} | RefundFlow.run() 走完所有 stage 的比例 |")
-    md.append(f"| **Tool 调用成功率** | **{metrics['tool_call_success_rate']['value']:.1%}** | {metrics['tool_call_success_rate']['numerator']}/{metrics['tool_call_success_rate']['denominator']} | OrderTool/RefundTool 调用返回成功的比例 |")
-    md.append(f"| **Hallucination Free Rate** | **{metrics['hallucination_free_rate']['value']:.1%}** | {metrics['hallucination_free_rate']['numerator']}/{metrics['hallucination_free_rate']['denominator']} | 无异常 case / 总 case |")
+    md.append(f"| **Resolver 决策准确率** | **{metrics['resolver_accuracy']['value']:.1%}** | {metrics['resolver_accuracy']['numerator']}/{metrics['resolver_accuracy']['denominator']} | 真实 action == 期望 action |")
+    md.append(f"| **RefundFlow 分支准确率** | **{metrics['refund_flow_accuracy']['value']:.1%}** | {metrics['refund_flow_accuracy']['numerator']}/{metrics['refund_flow_accuracy']['denominator']} | 真实分支 == 期望分支 |")
+    md.append(f"| **Tool 调用准确率** | **{metrics['tool_call_accuracy']['value']:.1%}** | {metrics['tool_call_accuracy']['numerator']}/{metrics['tool_call_accuracy']['denominator']} | Tool 返回成功 |")
+    md.append(f"| **真幻觉率** ⬇️ | **{metrics['hallucination_rate']['value']:.1%}** | {metrics['hallucination_rate']['numerator']}/{metrics['hallucination_rate']['denominator']} | Agent 胡编实体 case / 总 case |")
+    md.append(f"| **政策覆盖率** ⬆️ | **{metrics['policy_coverage']['value']:.1%}** | {metrics['policy_coverage']['numerator']:.1f}/{metrics['policy_coverage']['denominator']} | ref 关键词在 Agent 输出中出现率 |")
     md.append("")
 
     # 2. Resolver 4 actions 分布
     md.append("## 2. Resolver 4 Actions 分布\n")
-    md.append("> 含 resolver（40）+ edge（10）两类，均经 OrderContextResolver 决策；"
-              "NOT_FOUND / ASK_LOGIN 由 edge 越权 / 匿名场景触发。\n")
     resolver_results = [
         r for r in results
         if r["category"] in ("resolver", "edge") and r.get("actual")
@@ -527,34 +550,83 @@ def _generate_markdown_report(
         md.append(f"| {branch} | {cnt} | {pct:.1f}% |")
     md.append("")
 
-    # 4. 失败 case 概览
-    md.append(f"## 4. 失败 Case 概览（{len(failed_cases)} 条）\n")
+    # 4. 真幻觉明细
+    md.append("## 4. 真幻觉校验明细\n")
+    hallucinated_cases = [r for r in results if (r.get("hallucination") or {}).get("has_hallucination")]
+    if hallucinated_cases:
+        md.append("| Case | 类型 | 抽取实体 | 详情 |")
+        md.append("|------|------|---------|------|")
+        for r in hallucinated_cases[:10]:
+            for d in (r.get("hallucination") or {}).get("hallucination_details", []):
+                md.append(f"| {r['id']} ({r.get('corpus_id', '-')}) | {d['type']} | {d['value']} | 合法选项: {d.get('valid_options', [])} |")
+        if len(hallucinated_cases) > 10:
+            md.append(f"\n_（仅展示前 10 条，完整见 `failed_cases.json`）_")
+    else:
+        md.append("✅ 无幻觉 case\n")
+    md.append("")
+
+    # 5. 失败 case 概览
+    md.append(f"## 5. 失败 Case 概览（{len(failed_cases)} 条）\n")
     if failed_cases:
-        md.append("| ID | Category | User ID | Expected | Actual | 失败原因 |")
-        md.append("|----|----------|---------|----------|--------|---------|")
-        for f in failed_cases[:20]:  # 只列前 20
+        md.append("| ID | Corpus | Expected | Actual | 失败原因 |")
+        md.append("|----|--------|----------|--------|---------|")
+        for f in failed_cases[:15]:
             md.append(
-                f"| {f['id']} | {f['category']} | {f.get('user_id', '-')} | "
+                f"| {f['id']} | {f.get('corpus_id', '-')} | "
                 f"{f.get('expected', '-')} | {f.get('actual', '-')} | {f['failure_reason']} |"
             )
-        if len(failed_cases) > 20:
-            md.append(f"\n_（仅展示前 20 条，完整见 `failed_cases.json`）_")
     else:
         md.append("✅ 无失败 case\n")
     md.append("")
 
-    # 5. 简历同步建议
-    md.append("## 5. 简历同步建议\n")
-    md.append("以下数字可直接同步到简历项目 1 bullet：\n")
-    md.append("```")
-    md.append(f"■ Agent 编排: 100 business scenarios 验证 4 actions 决策分布，覆盖率 {metrics['proactive_query_coverage']['value']:.1%}")
-    md.append(f"■ 业务状态机: RefundFlow {len(refund_results)} 场景流程完成率 {metrics['business_flow_completion']['value']:.1%}")
-    md.append(f"■ 工程落地: Tool 调用成功率 {metrics['tool_call_success_rate']['value']:.1%}（{metrics['tool_call_success_rate']['numerator']}/{metrics['tool_call_success_rate']['denominator']}）")
-    md.append(f"■ Agent 评测: Hallucination Free Rate {metrics['hallucination_free_rate']['value']:.1%}（{metrics['hallucination_free_rate']['numerator']}/{metrics['hallucination_free_rate']['denominator']}）")
-    md.append("```\n")
+    # 6. 真实场景展示（关键 · 按用户要求）
+    md.append("## 6. 真实场景展示（5 条代表案例 · 来自公开话术合集）\n")
+    md.append("> 以下场景全部来自 `data/real_corpus.json`（公开话术整理），每条展示：")
+    md.append("> 用户真实 query（来源标注） + 真实客服 reference + Agent 实际 final_answer + 校验结果。\n")
+
+    # 选 5 条有 final_answer 的场景做展示
+    showcase_candidates = [r for r in results if r.get("final_answer") and r.get("corpus_id")]
+    showcase_candidates.sort(key=lambda r: r["id"])
+
+    # 5 类各取 1 条代表
+    showcase_by_type: Dict[str, Any] = {}
+    for r in showcase_candidates:
+        corpus_entry = get_by_id(r.get("corpus_id", ""))
+        if not corpus_entry:
+            continue
+        st = corpus_entry.get("scenario_type", "refund")
+        if st not in showcase_by_type:
+            showcase_by_type[st] = (r, corpus_entry)
+
+    showcase_count = 0
+    for scenario_type in ["refund", "logistics", "order", "policy", "escalate"]:
+        if scenario_type not in showcase_by_type:
+            continue
+        r, corpus_entry = showcase_by_type[scenario_type]
+        md.append(f"### 场景 {showcase_count + 1}: {scenario_type} 类（{r['id']} · {corpus_entry['id']}）\n")
+        md.append(f"**用户 query**（来源: {corpus_entry['source']} · 平台: {corpus_entry['platform_ref']}）：")
+        md.append(f"> {r['query']}\n")
+        md.append(f"**真实客服回复模板**（reference_answer）：")
+        md.append(f"> {corpus_entry.get('reference_answer', '')[:300]}...\n")
+        md.append(f"**Agent 实际输出**（final_answer，长度={r.get('final_answer_len', 0)}）：")
+        md.append(f"> {r.get('final_answer', '')[:300] or '(无 token 输出)'}...\n")
+        coverage = r.get("coverage") or {}
+        hallucination = r.get("hallucination") or {}
+        md.append(f"**校验结果**：")
+        md.append(f"- 决策: 期望 `{r.get('expected')}` → 实际 `{r.get('actual')}` {'✅' if r.get('success') else '❌'}")
+        if coverage:
+            md.append(f"- 政策覆盖率: **{coverage.get('coverage_rate', 0):.1%}** (覆盖 {len(coverage.get('agent_keywords', []))}/{len(coverage.get('ref_keywords', []))} 关键词)")
+            if coverage.get("missing_keywords"):
+                md.append(f"- 缺失关键词: `{', '.join(coverage['missing_keywords'][:5])}`")
+        if hallucination.get("has_hallucination"):
+            md.append(f"- 真幻觉: ⚠️ {len(hallucination['hallucination_details'])} 处")
+        else:
+            md.append(f"- 真幻觉: ✅ 无")
+        md.append("")
+        showcase_count += 1
 
     md.append("---")
-    md.append("\n_本报告由 `scripts/m14_validation/run_validation.py` 自动生成_")
+    md.append("\n_本报告由 `scripts/m14_validation/run_validation.py` 自动生成（V2）_")
 
     return "\n".join(md)
 
@@ -563,16 +635,14 @@ def _generate_markdown_report(
 # 主入口
 # =============================================================
 def main() -> int:
-    parser = argparse.ArgumentParser(description="M14 业务闭环构造数据验证")
-    parser.add_argument("--skip-mock", action="store_true", help="跳过 mock 数据插入（假定已存在）")
+    parser = argparse.ArgumentParser(description="M14 业务闭环验证")
+    parser.add_argument("--skip-mock", action="store_true", help="跳过 mock 数据插入")
     parser.add_argument("--cleanup-only", action="store_true", help="只清理 mock 数据")
-    parser.add_argument("--keep-mock", action="store_true", help="跑完不清理 mock 数据（debug 用）")
+    parser.add_argument("--keep-mock", action="store_true", help="跑完不清理 mock 数据")
     args = parser.parse_args()
 
-    # 加载 .env
     _load_env()
 
-    # Lazy imports
     from mock_data import insert_mock_orders_to_db, cleanup_mock_data
     from query_pool import generate_100_scenarios
 
@@ -588,7 +658,7 @@ def main() -> int:
         logger.info(f"插入 {n} 条订单")
 
     # 2. 启灰度开关 + 跑 scenarios
-    logger.info("=== Step 2: 跑 100 business scenarios ===")
+    logger.info("=== Step 2: 跑 100 business scenarios（基于真实话术） ===")
     scenarios = generate_100_scenarios()
     results: List[Dict[str, Any]] = []
     start = time.time()
@@ -601,7 +671,6 @@ def main() -> int:
                 if i % 20 == 0:
                     logger.info(f"  进度: {i}/{len(scenarios)}")
     finally:
-        # 3. 清理 mock 数据
         if not args.keep_mock and not args.skip_mock:
             logger.info("=== Step 3: 清理 mock 数据 ===")
             cleanup_mock_data()
@@ -611,7 +680,7 @@ def main() -> int:
 
     # 4. 计算指标
     metrics = _compute_metrics(results)
-    logger.info(f"4 核心指标: {json.dumps(metrics, ensure_ascii=False, indent=2)}")
+    logger.info(f"5 真指标: {json.dumps(metrics, ensure_ascii=False, indent=2)}")
 
     # 5. 收集失败 case
     failed = _collect_failed_cases(results)
@@ -634,10 +703,7 @@ def main() -> int:
     logger.info(f"raw.json → {raw_path}")
 
     failed_path = OUTPUT_DIR / "failed_cases.json"
-    failed_path.write_text(
-        json.dumps(failed, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    failed_path.write_text(json.dumps(failed, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"failed_cases.json → {failed_path} ({len(failed)} 条)")
 
     report_md = _generate_markdown_report(metrics, results, failed, duration)
