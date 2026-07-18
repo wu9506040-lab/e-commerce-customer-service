@@ -82,12 +82,14 @@ class TestHandoffPayload:
         reset_escalation_service()
 
     def test_handoff_id_format(self):
-        """handoff_id 格式：H + 8 位大写 hex"""
+        """handoff_id 格式：H + 8 位 hex（数字+字母，字母大写）"""
         svc = get_escalation_service()
         p = svc.handoff(reason=EscalationReason.USER_REQUESTED, user_id=1)
         assert p.handoff_id.startswith("H")
         assert len(p.handoff_id) == 9  # H + 8 hex chars
-        assert p.handoff_id[1:].isupper()
+        # hex chars: 0-9 + A-F（字母大写）。isupper() 在含数字时返回 False，故单独断言
+        tail = p.handoff_id[1:]
+        assert all(c in "0123456789ABCDEF" for c in tail), f"非 hex: {tail}"
 
     def test_handoff_ids_unique(self):
         """每次 handoff_id 都不同（防重复）"""
