@@ -78,6 +78,11 @@ export interface HandoffPayload {
     retry_count?: number;
   } | null;
   summary_text: string;
+  // M14 V3+：P0 高风险关键词命中后写入（向后兼容：未命中时为 null）
+  priority?: 'P0' | 'P1' | 'P2' | null;
+  category?: string | null;
+  matched_keyword?: string | null;
+  detected_category?: string | null;
 }
 
 /**
