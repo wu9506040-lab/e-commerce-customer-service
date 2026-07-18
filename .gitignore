@@ -169,6 +169,7 @@ docs/_private/**
 # =============================================================
 frontend/_screenshots/audit/
 frontend/_screenshots/bugrepro/
+frontend/_screenshots/manual/
 
 # =============================================================
 # 内部测试报告（idor / regression_m13 / 性能压测等，含漏洞细节 + 压测数据，不上传公开仓库）
