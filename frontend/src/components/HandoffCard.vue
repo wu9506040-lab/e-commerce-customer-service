@@ -35,6 +35,19 @@ const showFailureContext = computed(() => {
   return props.handoff.reason === 'agent_unavailable' && props.handoff.agent_failure_context;
 });
 
+// M14 V3+：P0/P1/P2 优先级（命中 P0 高风险关键词时后端写入）
+// 优先级配色覆盖 reason 配色：P0 红 / P1 橙 / P2 灰
+const priority = computed(() => props.handoff.priority ?? null);
+
+// 优先级中文标签（badge 展示）
+const priorityLabel = computed(() => {
+  const p = priority.value;
+  if (p === 'P0') return '高优先';
+  if (p === 'P1') return '中优先';
+  if (p === 'P2') return '普通';
+  return '';
+});
+
 // 失败上下文简化展示
 const failureStage = computed(() => {
   return props.handoff.agent_failure_context?.failed_stage ?? '';
@@ -63,7 +76,7 @@ const formatOrder = (o: OrderSummary): string => {
 </script>
 
 <template>
-  <div class="handoff-card" :data-reason="handoff.reason">
+  <div class="handoff-card" :data-reason="handoff.reason" :data-priority="priority">
     <!-- 头部：工单号 + 触发原因 -->
     <div class="handoff-header">
       <div class="handoff-icon">
@@ -76,10 +89,20 @@ const formatOrder = (o: OrderSummary): string => {
         </svg>
       </div>
       <div class="handoff-title-block">
-        <div class="handoff-title">{{ handoff.reason_label }}</div>
+        <div class="handoff-title">
+          {{ handoff.reason_label }}
+          <!-- M14 V3+：P0/P1/P2 优先级徽章 -->
+          <span v-if="priority" class="priority-badge">{{ priority }} {{ priorityLabel }}</span>
+        </div>
         <div class="handoff-subtitle">
           {{ reasonLabelMap[handoff.reason] }} · 工单号
           <span class="handoff-id">{{ handoff.handoff_id }}</span>
+          <!-- 命中类别 + 关键词（给人工看是哪句话触发的） -->
+          <template v-if="handoff.category">
+            <span class="user-card-divider">·</span>
+            <span class="handoff-category">{{ handoff.category }}</span>
+            <span v-if="handoff.matched_keyword" class="handoff-keyword">「{{ handoff.matched_keyword }}」</span>
+          </template>
         </div>
       </div>
     </div>
@@ -156,6 +179,46 @@ const formatOrder = (o: OrderSummary): string => {
 .handoff-card[data-reason="business_rule"] {
   --handoff-color: #722ed1;
   --handoff-bg: #f9f0ff;
+}
+
+/* M14 V3+：优先级配色覆盖 reason 配色（放在 data-reason 之后，等特异性时后者胜出）
+   P0 高风险（投诉/赔付/质量）→ 红；P1 → 橙；P2 → 灰 */
+.handoff-card[data-priority="P0"] {
+  --handoff-color: #cf1322;
+  --handoff-bg: #fff1f0;
+}
+
+.handoff-card[data-priority="P1"] {
+  --handoff-color: #fa8c16;
+  --handoff-bg: #fff7e6;
+}
+
+.handoff-card[data-priority="P2"] {
+  --handoff-color: #8c8c8c;
+  --handoff-bg: #fafafa;
+}
+
+/* 优先级徽章 */
+.priority-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+  background: var(--handoff-color);
+  color: #fff;
+}
+
+.handoff-category {
+  color: var(--handoff-color);
+  font-weight: 500;
+}
+
+.handoff-keyword {
+  font-family: var(--font-mono, monospace);
+  color: var(--gray-700);
 }
 
 .handoff-header {
