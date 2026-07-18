@@ -5660,3 +5660,101 @@ console error 0 → step 7 page.fill 成功 → V3 LangGraph 链路通
 - `feedback_resume_no_ai_flavor.md` — 简历数字按业务倒推
 - `project_m14_done.md` — M14 4 层基础设施 + 5 灰度开关
 
+---
+
+## §48 · M14 RefundFlow 真实工作流重构 V3（2026-07-19 · 6 commit · LangGraph 4 节点 + 3 层决策 + P0 前置拦截）
+
+> 用户原话："我不要顾客发订单号，顾客过来问问题的时候，用户的说有信息都应该拿到" + "以真实的业务场景去考虑项目，顾客会怎么问，客服是怎么回答的"
+
+### What（做了什么）
+
+| # | 模块 | 改动 |
+|---|------|------|
+| 1 | `backend/config/business_rules/decide.yaml` | 新增 decide 节点配置：CONFIDENCE_THRESHOLD=0.7 / MAX_LLM_RETRIES=3 / STATUS_ZH_MAP / HARD_RULES 5 条 / ESCALATE_CATEGORIES / IMAGE_URLS_OVERRIDE |
+| 2 | `refund_graph.py` | 6 节点 → 4 节点（decide / fetch_policy / synthesize / escalate）；decide 节点 3 层决策：L1 硬规则前置（5 条：零单/超期/凭证/承诺/P0）→ L2 LLM 语义决策 → L3 校验兜底（低置信度自动降级 escalate P2 / 非法枚举降级 / 缺失 target_order_no 拒绝） |
+| 3 | `order_context_resolver.py` | SUPPORTED_INTENTS 白名单扩展：`order_query` + `refund_query`；0/1/N 决策逻辑本身 intent-agnostic，移除 gate |
+| 4 | `refund_flow.py` | judge_basic_refundable 移到 run()（不在 LangGraph 内推理，因为是纯业务规则）；initial_state 注入 orders/order_info/refundable/reason/status_zh/days_since_order；langgraph 异常 fallback V2，V2 fallback 失败再兜底转人工 |
+| 5 | `refund_handler.py` | handle_refund_v2 接入 Resolver（修复 M9.5 buggy auto-fallback 取最近单）；handle_refund_v3 委托 RefundFlow（消除 V3 双实现分裂） |
+| 6 | `escalation_service.py` | HandoffPayload 加 4 字段：priority (P0/P1/P2) / category / matched_keyword / detected_category；新增 ESCALATE_P0_KEYWORDS（4 类：投诉 12315/赔付三倍/质量问题/转人工）+ detect_p0_escalate() + get_p0_category_info() |
+| 7 | `chat.py` | IntentService.classify 之前 P0 关键词拦截（detect_p0_escalate），命中即转人工，**节省 LLM token + 避免漏判** |
+| 8 | `HandoffCard.vue` + `types.ts` | 优先级三色样式（data-priority 属性覆盖 data-reason）：P0 红 / P1 橙 / P2 灰；category 中文 label + matched_keyword mono 字体 |
+| 9 | `test_refund_graph.py` | 重写：旧 6 节点测试 → 新 4 节点图结构 + 3 端到端 invoke() 路径（synthesize-no-policy / synthesize-with-policy / escalate）；decide 节点逻辑由 test_decide_node.py 24 case 全覆盖，不重复 |
+| 10 | `test_refund_config.py` | fail-fast stub 补 decide.yaml 完整字段 + try/finally 备份/恢复模块 globals（防 importlib.reload 半初始化污染下游） |
+| 11 | `test_handoff.py` | handoff_id 格式断言修复：isupper() → 显式 hex 字符集（数字 + A-F）|
+
+### Why（为什么）
+
+| 真实业务问题 | 现状根因 | 修复 |
+|--------------|----------|------|
+| 真实客服从不在 IM 问顾客订单号 | RefundFlow / refund_handler / V2 fallback 3 处都强制用户提供 order_no（找不到就回复"请提供订单号"）| OrderContextResolver 0/1/N 决策（1 单 → DIRECT_ANSWER 自动用；N 单 → SHOW_PICKER 卡片；0 单 → ASK_LOGIN_OR_LIST）|
+| LLM 直接决策容易在边界 case 翻车（零单转人工、超期强答）| 旧 refund_graph 是单层 LLM 决策，无硬规则兜底 | decide 节点 3 层：硬规则前置（5 条业务规则拦截）→ LLM 语义决策 → 校验兜底（低置信度自动 escalate P2）|
+| P0 高风险关键词（投诉 12315、赔付三倍）漏判 | 旧版依赖 IntentService 分类（"投诉"被识别成 refund_query 走退款流程，无人转）| chat.py 在 IntentService.classify **之前** detect_p0_escalate，命中即转人工，零 LLM token |
+| retry 与对话轮数耦合导致 LLM 错误时计数暴涨 | 旧 decide_retry_count 包含 LLM retry + dialog turn | 拆 decide_retry_count（仅 LLM 错误）vs dialog_turn_count（独立估算）|
+| fetch_policy 无条件触发浪费 token | 旧 fetch_policy 节点对所有 synthesize 路径都触发 | _should_fetch_policy() 根据 policy_needed 标志 + 订单状态判断 |
+
+### Tech（技术栈）
+
+- **LangGraph StateGraph**（4 节点 decide/fetch_policy/synthesize/escalate）
+- **业务规则 YAML 化**（config_loader + decide.yaml，与 refund/guard/lifecycle 一致）
+- **3 层决策架构**（硬规则 L1 / LLM L2 / 校验 L3）— 类似 LangChain LCEL，但分层更清晰
+- **LLM JSON 解析 4 级 fallback**：json.loads → ast.literal_eval → strip markdown → substring；True/False/None → true/false/null 归一化（防 mock str(dict) 与真 LLM 输出不一致）
+- **Vue3 <script setup>** data-attribute-driven CSS 自定义属性（data-priority 覆盖 data-reason，等特异性后者胜出）
+- **importlib.reload 半初始化处理**：失败时备份 globals + try/finally 恢复（CLAUDE.md §4.4 + 反馈 test_factory_singleton.md）
+
+### Flow（输入 → 输出）
+
+```
+用户问："我昨天买的那件衣服有问题能退吗"
+  ↓
+chat.py: detect_p0_escalate(query) → None（"衣服有问题"非 P0）
+  ↓
+IntentService.classify → refund_query, entities={order_no: None}
+  ↓
+RefundFlow.run() → 无 order_no → Resolver.resolve()
+  ├─ 1 单：DIRECT_ANSWER + 自动用 → 继续 LangGraph
+  ├─ N 单：SHOW_PICKER + yield meta.card → 前端 OrderCard list 渲染 + 等待用户点选
+  └─ 0 单：ASK_LOGIN_OR_LIST → "您当前没有订单"
+  ↓
+RefundFlow.run() 计算 refundable/reason/status_zh/days_since_order → 注入 initial_state
+  ↓
+LangGraph refund_graph_app.stream(initial_state)
+  ├─ decide 节点：_apply_hard_rules → L1 命中则直接 escalate（priority/category/matched_keyword）
+  │                否则 _build_decide_prompt → LLM → _parse_llm_json → _validate_decide_output
+  ├─ fetch_policy 节点（仅当 policy_needed=True）：PolicyService.search_policy 召回
+  ├─ synthesize 节点：LLM 综合 final_answer
+  └─ escalate 节点：build EscalationService.handoff() payload → yield meta.handoff
+```
+
+### Problem & Fix（问题 → 解决）
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| test_refund_config fail-fast 测试用 decide.yaml stub 只有 1 个字段 → reload 在 line 123 抛 KeyError | reload 失败前已执行 line 120 `_RULES = load("decide")` 成功，但 122-126 行的字段访问逐个失败 | stub 加全字段（CONFIDENCE_THRESHOLD/MAX_LLM_RETRIES/STATUS_ZH_MAP/HARD_RULES/IMAGE_URLS_OVERRIDE），让 reload 一路到 line 133 `load("refund")` 才挂 |
+| test_refund_config 失败污染 test_decide_node | importlib.reload 失败留下半初始化 globals（CONFIDENCE_THRESHOLD=0.5 来自 stub），下游 _validate_decide_output 读到错值 → 0.55 < 0.5 假阳性 → 0.55 >= 0.5 真断言失败 | try/finally 备份/恢复 saved_globals（仅 UPPER_CASE 常量）+ reset_config_loader() |
+| test_handoff_id_format flake（10 次跑偶发 fail）| `p.handoff_id[1:].isupper()` 数字 isupper=False（UUID hex 是 0-9 + a-f）| 改用 `all(c in "0123456789ABCDEF" for c in tail)` |
+| test_handoff.py AttributeError 'module refund_flow has no attribute handle_refund_v2' | handle_refund_v2 用了 lazy import，test 在模块层 patch 找不到 | 翻转循环导入方向：refund_flow 顶层 import handle_refund_v2（test patch target 重新可见）+ refund_handler.handle_refund_v3 改 lazy import RefundFlow |
+| P0 关键词命中后 HandoffCard.vue 视觉权重不足 | 只有 reason（橙红/紫/灰）3 种配色，无法突出"投诉"严重程度 | data-priority 三色覆盖（P0 红 #cf1322 / P1 橙 #fa8c16 / P2 灰 #8c8c8c），priority-badge 显示 "P0 高优先" |
+
+### Architecture Role（在系统中的位置）
+
+- **M14 V2 业务闭环** → **M14 V3 真实业务工作流**：从"框架 demo"升级到"真实客服场景"（淘宝/京东客服的实际工作流：后台已有用户/订单/历史，Agent 决策而非查询）
+- **3 层决策架构**是企业级 AI Agent 的标准范式（OpenAI Function Calling、Anthropic Tool Use 都用类似模式：硬规则 → LLM → 校验兜底）
+- **业务规则 YAML 化**是 M14 的核心架构决策（CLAUDE.md §9.6 Prompt 配置独立管理 + §3.3 YAGNI 必要抽象），5 个 YAML（guard/refund/lifecycle/decide/intent）成为业务规则单一真相源
+- **数据层 + 编排层 + 决策层 + UI 层**四层闭环：Context（OrderContextResolver）+ Flow（RefundFlow.run）+ Graph（refund_graph 4 节点）+ Card（HandoffCard.vue 视觉）
+
+### 关联记忆
+
+- `project_m14_done.md` — M14 §43 阶段 1-3
+- `project_m14_validation_v2.md` — M14 V2 验证（真幻觉 28% → ~0% 的基线）
+- `feedback_test_factory_singleton.md` — fail-fast 测试必须 reset factory + 恢复 globals
+- `feedback_mock_magicmock_truthy.md` — patch module.settings 必须列全属性（mock_settings.FLAG 是 MagicMock 实例 truthy）
+- `feedback_generator_try_finally_yield.md` — generator 内 try/finally + yield 触发 GeneratorExit；用「每个 return 路径前显式 yield done」替代
+- `feedback_llm_anti_hallucination.md` — prompt + 业务层双重防护（3 层决策就是业务层防护的具体落地）
+
+### 验证
+
+- ✅ M14 V3 单元测试 **101/101 PASS**（8 文件：test_refund_graph / test_synthesizer_refund / test_audit_resolver / test_refund_config / test_resolver / test_handoff / test_escalation_categories / test_decide_node）
+- ✅ 全量 backend pytest **385/385 PASS**（1 个 pre-existing MySQL-only 测试 test_source_attribution 排除，git stash 后同样失败确认非本 PR 回归）
+- ✅ Frontend type-check + build **PASS**（vue-tsc --noEmit 无报错，vite build 成功）
+- ⏸ M14 V2 真实话术重跑（run_validation.py）：**延后到 ECS**，本地无 MySQL 无法跑；预期 真幻觉率 28% → ~0% / RefundFlow 分支准确率 60% → ~80% / 新增 auto_resolve_rate 指标
+
