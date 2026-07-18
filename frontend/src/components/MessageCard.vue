@@ -10,6 +10,9 @@
  * - card.type === 'order_list' → 多订单 picker（OrderCard list）
  * - card.type === 'order_detail' → 唯一订单详情（OrderCard mini）
  *
+ * M14 V3：新增 SSE meta.handoff 分支（M14 EscalationService 兜底产物）
+ * - 渲染 HandoffCard（橙红色 alert，与 OrderCard 京东红区分）
+ *
  * 设计原则：只在消息气泡下方追加，不替换正文（用户先看 LLM 答得对不对）
  */
 import { ref, computed, watch } from 'vue';
@@ -17,6 +20,7 @@ import type { Message, Product, OrderSummary } from '../types';
 import { getProduct, getOrderDetail } from '../api';
 import ProductCard from './ProductCard.vue';
 import OrderCard from './OrderCard.vue';
+import HandoffCard from './HandoffCard.vue';
 
 const props = defineProps<{
   message: Message;
@@ -112,9 +116,15 @@ const cardTruncated = computed<boolean>(() => {
 </script>
 
 <template>
-  <div v-if="message.role === 'assistant' && (shouldRenderCard() || message.card)" class="message-card">
+  <div v-if="message.role === 'assistant' && (shouldRenderCard() || message.card || message.handoff)" class="message-card">
 
-    <!-- M14 Stage 2：SSE meta.card 推送（M14 OrderContextResolver 决策产物，优先级最高） -->
+    <!-- M14 V3：SSE meta.handoff 推送（Agent 异常 / 用户要求转人工，优先级最高） -->
+    <HandoffCard
+      v-if="message.handoff"
+      :handoff="message.handoff"
+    />
+
+    <!-- M14 Stage 2：SSE meta.card 推送（M14 OrderContextResolver 决策产物） -->
     <template v-if="cardKind === 'orders'">
       <div class="order-card-list-wrap">
         <OrderCard
