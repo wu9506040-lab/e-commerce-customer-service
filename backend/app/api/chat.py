@@ -38,7 +38,9 @@ from app.services.chat.prompt_assembler import _build_meta_contexts  # Sprint 3�
 from app.services.escalation_service import (  # M14 V3：转人工兜底
     EscalationReason,
     detect_handoff_keyword,
+    detect_p0_escalate,
     get_escalation_service,
+    get_p0_category_info,
 )
 from app.services.metrics import metrics  # M8
 from app.services.policy_service import PolicyService
@@ -214,6 +216,56 @@ async def chat(
             logger.info(
                 f"/chat guard blocked: layer={guard_result.layer} "
                 f"reason={guard_result.reason} {user_ctx}"
+            )
+            return
+
+        # M14 V3+：P0 高风险关键词检测（投诉/赔付/质量/主动要人工）
+        # 放在 detect_handoff_keyword 之前：4 类优先级更精准，命中即带 priority/category 元数据。
+        # 未命中再走下面的 detect_handoff_keyword（原 9 词兜底）。
+        p0_hit = detect_p0_escalate(payload.query)
+        if p0_hit:
+            p0_category, p0_keyword = p0_hit
+            p0_priority, p0_label = get_p0_category_info(p0_category)
+            escalation = get_escalation_service()
+            handoff_payload = escalation.handoff(
+                reason=EscalationReason.USER_REQUESTED,
+                user_id=user_id,
+                history=history,
+                intent_result=None,
+                failure_context=None,
+                priority=p0_priority,
+                category=p0_label,
+                matched_keyword=p0_keyword,
+                detected_category=p0_category,
+            )
+            yield _sse_format({
+                "type": "meta",
+                "intent": "handoff",
+                "entities": {"order_no": None, "sku": None, "keywords": []},
+                "contexts": [],
+                "scores": [],
+                "handoff": handoff_payload.to_dict(),
+            })
+            for chunk in _chunk_text(
+                f"{handoff_payload.reason_label}（工单号 {handoff_payload.handoff_id}），人工客服会尽快联系您～",
+                size=10,
+            ):
+                yield _sse_format({"type": "token", "text": chunk})
+            yield _sse_format({"type": "done", "session_id": session_id})
+            yield _sse_format({"type": "closed"})
+            try_log_action(
+                user=user, action="chat_handoff_p0", target_type="session",
+                target_id=session_id, ip=ip, user_agent=ua,
+                detail={
+                    "handoff_id": handoff_payload.handoff_id,
+                    "priority": p0_priority,
+                    "category": p0_category,
+                    "matched_keyword": p0_keyword,
+                },
+            )
+            logger.info(
+                f"/chat handoff (P0 {p0_category}): handoff_id={handoff_payload.handoff_id} "
+                f"kw={p0_keyword} session={session_id[:12]}... {user_ctx}"
             )
             return
 
