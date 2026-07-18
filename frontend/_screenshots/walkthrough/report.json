@@ -1,7 +1,7 @@
 {
   "base_url": "http://120.79.27.124:5173",
   "api_url": "http://120.79.27.124:8000",
-  "elapsed_sec": 95.1,
+  "elapsed_sec": 95.2,
   "passed": 10,
   "total": 10,
   "console_errors": 0,
@@ -41,7 +41,7 @@
     },
     "9. 转人工兜底 HandoffCard": {
       "ok": true,
-      "msg": "工单号=H80ACF3CC, 原因词命中=3/3, handoff-card class=True"
+      "msg": "工单号=HBB4558D7, 原因词命中=3/3, handoff-card class=True"
     },
     "10. 控制台 JS 错误统计": {
       "ok": true,
