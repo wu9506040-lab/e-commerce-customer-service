@@ -34,7 +34,7 @@ from app.services.escalation_service import (
 )
 from app.services.metrics import metrics  # noqa: F401  （保留以便后续加埋点）
 from app.services.order_service import OrderService
-from app.services.refund_graph import refund_graph_app  # V3 LangGraph 版
+from app.services.refund_graph import refund_graph_app  # V3 LangGraph 版（RefundFlow 内部使用）
 from app.services.refund_service import RefundService
 from app.services.session_service import ANONYMOUS_USER_ID
 
@@ -213,204 +213,30 @@ def handle_refund_v3(
     context_block: str = "",
     history: Optional[list[dict]] = None,
 ) -> Generator[Tuple[str, Any], None, None]:
-    """refund_query V3：走 LangGraph refund_graph_app.stream()
+    """refund_query V3：委托 RefundFlow.run()（M14 V3 重构）。
 
-    与 V2 区别：
-    - LLM 调用在 LangGraph Node 6（synthesize_answer），不在 synthesizer
-    - 支持「质量问题无凭证 → escalate」升级人工路径
-    - LangGraph 异常 → fallback 到 handle_refund_v2
+    M14 V3（2026-07-19）历史：
+    - 原 V3 实现：直接调 refund_graph_app.stream()，yield judge / fetch_policy / synthesize
+    - 重构后：judge 已移到 RefundFlow.run()，LangGraph 4 节点 decide / fetch_policy / synthesize / escalate
+    - 为消除重复 + 单一入口，handle_refund_v3 委托 RefundFlow.run()
 
-    SSE 协议兼容：
-    - judge Node → yield meta（含 refundable / reason / days_since_order）
-    - fetch_policy Node → 仅 log，不 yield meta
-    - synthesize / escalate Node → yield token（final_answer 作为整体 token）
-    - done 事件由 api/chat.py 统一处理（write-through）
-
-    M9.5：context_block 透传给 LangGraph state，让 synthesize_answer 节点能看到订单 context
-    M9.5+：history 透传给 LangGraph state，让 synthesize_answer / judge 能从历史提取 order_no
+    SSE 协议（与原 V3 一致）：
+    - decide Node → yield meta（含 refundable / reason / status_zh / days_since_order / decision）
+    - fetch_policy Node → yield meta（含 policy_hits）
+    - synthesize Node → yield token（final_answer）
+    - escalate Node → yield meta.handoff + 转人工 token
+    - done 事件由 RefundFlow 自动 yield
     """
-    entities = intent_result["entities"]
-    # M9.5：优先用 context 传来的 order_no（用户从订单卡片跳转退款）
-    # M9.5+：其次用 intent 解析出的；最后从 history 中最近一条提到 ORD... 的消息兜底
-    effective_order_no = (
-        order_no
-        or entities.get("order_no")
-        or prompt_assembler._extract_order_no_from_history(history)
+    # lazy import 避免 refund_flow ↔ refund_handler 循环导入
+    # （refund_flow 顶层 import handle_refund_v2 作 V2 fallback 保险丝）
+    from app.services.business_flow.refund_flow import RefundFlow
+
+    flow = RefundFlow(
+        query=query,
+        user_id=user_id,
+        intent_result=intent_result,
+        order_no=order_no,
+        context_block=context_block,
+        history=history,
     )
-
-    # 1. 鉴权（与 V2 一致）
-    if user_id == ANONYMOUS_USER_ID:
-        yield ("meta", {
-            "intent": "refund_query",
-            "entities": entities,
-            "contexts": [],
-            "scores": [],
-            "v3_engine": "langgraph",
-        })
-        yield from stream_dispatcher.stream_simple(prompt_assembler.NO_LOGIN_PROMPT)
-        return
-
-    # 2. 无 order_no：走 Resolver 自动解析（真实业务场景：CS 用系统查顾客订单，而非问顾客）
-    # 取代旧的"请提供订单号"prompt；M9.5 防串单通过 Resolver 0/1/N 决策兜底
-    if not effective_order_no:
-        resolver = get_order_context_resolver()
-        ctx = ConversationContext(session_id="", user_id=user_id)
-        result = resolver.resolve(user_id, "refund_query", entities, ctx)
-
-        # 2.1 唯一 1 单 → 自动用（无歧义，安全）
-        if result.action == OrderResolverAction.DIRECT_ANSWER and result.effective_order_no:
-            effective_order_no = result.effective_order_no
-            # 不 return，继续走 LangGraph
-
-        # 2.2 N 单 → yield meta with card 让前端 OrderCard list 渲染
-        elif result.action == OrderResolverAction.SHOW_PICKER:
-            card = _build_card(result, density="list", reason="disambiguate")
-            yield ("meta", {
-                "intent": "refund_query",
-                "entities": entities,
-                "contexts": [],
-                "scores": [],
-                "v3_engine": "langgraph",
-                "flow_stage": "fetch_order",
-                "card": card if settings.SSE_CARD_V2 else None,
-                "resolver_action": result.action.value,
-                "resolver_reason": result.reason,
-                "total_orders": result.total_orders,
-                "truncated": result.truncated,
-            })
-            text = (
-                f"您有 {result.total_orders} 个订单，请选择要退款的订单："
-                if not result.truncated
-                else f"您最近订单较多（{result.total_orders} 个），以下仅展示前 {len(card['items'])} 个："
-            )
-            yield from stream_dispatcher.stream_simple(text)
-            return  # 等待用户点选后下一轮带 order_no 进来
-
-        # 2.3 0 单 → 明确告知
-        elif result.action == OrderResolverAction.ASK_LOGIN_OR_LIST:
-            yield ("meta", {
-                "intent": "refund_query",
-                "entities": entities,
-                "contexts": [],
-                "scores": [],
-                "v3_engine": "langgraph",
-                "flow_stage": "fetch_order",
-                "resolver_action": result.action.value,
-                "resolver_reason": result.reason,
-                "total_orders": 0,
-            })
-            yield from stream_dispatcher.stream_simple("您当前没有订单，无法处理退款哦～")
-            return
-
-        # 2.4 NOT_FOUND / ASK_LOGIN 兜底
-        elif result.action == OrderResolverAction.NOT_FOUND:
-            yield ("meta", {
-                "intent": "refund_query",
-                "entities": entities,
-                "contexts": [],
-                "scores": [],
-                "v3_engine": "langgraph",
-                "flow_stage": "fetch_order",
-                "resolver_action": result.action.value,
-                "resolver_reason": result.reason,
-            })
-            yield from stream_dispatcher.stream_simple("订单不存在或不属于当前用户，请检查。")
-            return
-
-        elif result.action == OrderResolverAction.ASK_LOGIN:
-            yield ("meta", {
-                "intent": "refund_query",
-                "entities": entities,
-                "contexts": [],
-                "scores": [],
-                "v3_engine": "langgraph",
-                "flow_stage": "fetch_order",
-                "resolver_action": result.action.value,
-                "resolver_reason": result.reason,
-            })
-            yield from stream_dispatcher.stream_simple(prompt_assembler.NO_LOGIN_PROMPT)
-            return
-
-    # 3. 调 LangGraph refund_graph_app.stream() 边执行边输出
-    meta_emitted = False
-    try:
-        for event in refund_graph_app.stream(
-            {
-                "user_id": user_id,
-                "order_no": effective_order_no,
-                "query": query,
-                "context_block": context_block,  # M9.5：注入 context 让 synthesize 看得到
-                "history": history or [],  # M9.5+：注入历史让 synthesize 能引用上下文
-            },
-            stream_mode="updates",  # 每步返回 {node_name: state_update}
-        ):
-            for node_name, state_update in event.items():
-                # 跳过 __start__ / __end__ 哨兵节点
-                if node_name.startswith("__"):
-                    continue
-
-                if node_name == "judge":
-                    yield ("meta", {
-                        "intent": "refund_query",
-                        "entities": entities,
-                        "contexts": [],
-                        "scores": [],
-                        "order_no": effective_order_no,
-                        "v3_engine": "langgraph",
-                        "refundable": state_update.get("refundable"),
-                        "reason": state_update.get("reason"),
-                        "days_since_order": state_update.get("days_since_order"),
-                    })
-                    meta_emitted = True
-                elif node_name == "fetch_policy":
-                    logger.info(
-                        f"refund_v3 fetch_policy: order={effective_order_no} "
-                        f"hits={len(state_update.get('policy_docs', []))}"
-                    )
-                elif node_name in ("synthesize", "escalate"):
-                    if not meta_emitted:
-                        # 兜底：理论上 judge 一定先于 synthesize
-                        yield ("meta", {
-                            "intent": "refund_query",
-                            "entities": entities,
-                            "contexts": [],
-                            "scores": [],
-                            "order_no": effective_order_no,
-                            "v3_engine": "langgraph",
-                        })
-                        meta_emitted = True
-                    chunk = state_update.get("final_answer", "")
-                    if chunk:
-                        yield ("token", chunk)
-        # 修复：refund_v3 主 LangGraph 流完成后补 yield done
-        # 根因：_stream_llm/_stream_simple 末尾自动 yield done，但 LangGraph 路径不走它们
-        # 影响：chat.py StopIteration → break → 缺 SSE done + write-through + latency 埋点
-        yield ("done", {"answer": ""})
-    except Exception as e:
-        # LangGraph 挂了 → fallback 到 V2（保险丝）
-        logger.exception(
-            f"LangGraph refund 图执行失败，fallback 到 V2: order={effective_order_no} err={e}"
-        )
-        try:
-            yield from handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block)
-        except Exception as v2_err:
-            # V2 fallback 也挂了 → 转人工兜底（M14 V3 新增）
-            logger.exception(
-                f"handle_refund_v3 V2 fallback 也失败，触发转人工: "
-                f"order={effective_order_no} v3_err={e} v2_err={v2_err}"
-            )
-            yield from _yield_handoff(
-                reason=EscalationReason.AGENT_UNAVAILABLE,
-                user_id=user_id,
-                history=history,
-                intent_result=intent_result,
-                failure_context={
-                    "failed_stage": "v3_v2_both_failed",
-                    "v3_error_class": type(e).__name__,
-                    "v3_error_msg": str(e)[:200],
-                    "v2_error_class": type(v2_err).__name__,
-                    "v2_error_msg": str(v2_err)[:200],
-                    "retry_count": 1,
-                },
-            )
-            return
+    yield from flow.run()

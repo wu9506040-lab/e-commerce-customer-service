@@ -144,19 +144,47 @@ class TestRefundFailFast:
     """refund.yaml 缺失 → 任一文件 import 阶段即 ConfigError（fail-fast）。"""
 
     def test_missing_refund_yaml_raises_at_refund_graph_import(self, monkeypatch, tmp_path):
-        """BUSINESS_RULES_DIR 指向无 refund.yaml 的目录 → import refund_graph 触发 ConfigError。"""
+        """BUSINESS_RULES_DIR 指向无 refund.yaml 的目录 → import refund_graph 触发 ConfigError。
+
+        M14 V3 变更：refund_graph 现在还在 import 期加载 decide.yaml（用于 decide_node 配置）。
+        隔离目录需要同时含 decide.yaml（让 decide 通过）+ 缺 refund.yaml（让 refund 失败）。
+
+        关键：importlib.reload 失败会留下**半初始化**的模块（_RULES/CONFIDENCE_THRESHOLD 等
+        已绑定到 stub decide.yaml 的值），污染下游测试。必须在 finally 里恢复原模块状态。
+        """
         from app.core import config
         from app.services.config_loader import ConfigError, reset_config_loader
 
-        # 隔离：创建只有 guard.yaml 的目录（不放 refund.yaml）
+        # 隔离：创建有 guard.yaml + decide.yaml 但缺 refund.yaml 的目录
         empty_dir = tmp_path / "empty_rules"
         empty_dir.mkdir()
         (empty_dir / "guard.yaml").write_text("MIN_LEN: 2\n", encoding="utf-8")
+        # 完整 stub decide.yaml（避免 KeyError: 'MAX_LLM_RETRIES' 让 reload 在更早的行就挂掉）
+        (empty_dir / "decide.yaml").write_text(
+            "CONFIDENCE_THRESHOLD: 0.5\n"
+            "MAX_LLM_RETRIES: 3\n"
+            "STATUS_ZH_MAP: {}\n"
+            "HARD_RULES: []\n"
+            "IMAGE_URLS_OVERRIDE: {}\n",
+            encoding="utf-8",
+        )
         monkeypatch.setattr(config.settings, "BUSINESS_RULES_DIR", str(empty_dir))
         reset_config_loader()
 
-        # import refund_graph 应失败（找不到 refund.yaml）
-        with pytest.raises(ConfigError, match="业务规则不存在: refund"):
-            import importlib
-            import app.services.refund_graph
-            importlib.reload(app.services.refund_graph)
+        # 备份原模块 globals（reload 失败会污染它们）
+        import app.services.refund_graph as rg
+        saved_globals = {
+            k: v for k, v in rg.__dict__.items()
+            if not k.startswith("__") and k.isupper()
+        }
+
+        try:
+            # import refund_graph 应失败（找不到 refund.yaml）
+            with pytest.raises(ConfigError, match="业务规则不存在: refund"):
+                import importlib
+                importlib.reload(rg)
+        finally:
+            # 恢复原模块 globals + 清理 singleton（让下游测试重新从真实 dir 加载）
+            for k, v in saved_globals.items():
+                setattr(rg, k, v)
+            reset_config_loader()

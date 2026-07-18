@@ -1,0 +1,96 @@
+# decide 节点业务规则（M14 V3 · 真实工作流重构）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("decide")
+# 启动期一次加载；改完需重启服务（roadmap §3.5）
+#
+# 用途：decide 节点三层决策（硬规则前置 → LLM 语义决策 → 校验兜底）的可配置阈值。
+#
+# 字段分类：
+#   1. 置信度阈值：confidence_threshold（< 此值自动 escalate P2）
+#   2. 重试上限：max_llm_retries（连续 LLM 异常次数达上限自动 escalate P2）
+#   3. 状态中文映射：status_zh_map（P1-3：Resolver 层统一生成，前端直接展示）
+#   4. 硬规则配置：hard_rules（4 条 · Resolver action / history_commitment → decide_result）
+#   5. 升级默认分类：escalate_categories（4 类别 + 默认 priority）
+
+# === 1. 置信度兜底 ===
+# LLM 返回 confidence 低于此阈值 → 自动降级 escalate P2（防 LLM 装懂）
+CONFIDENCE_THRESHOLD: 0.7
+
+# === 2. LLM 异常重试上限 ===
+# 连续失败次数（decide_retry_count 累计）达到上限 → 自动 escalate P2 "AI 多次异常"
+# 注意：仅统计 LLM 异常（format / validate / exception），用户对话轮数走 dialog_turn_count 独立计数
+MAX_LLM_RETRIES: 3
+
+# === 3. 状态中文映射（P1-3：Resolver 层生成，前端 / prompt 都用同一份）===
+# 与原 refund_graph._STATUS_ZH 对齐（迁移到 YAML 后由 Resolver 注入每条订单）
+STATUS_ZH_MAP:
+  pending: "待支付"
+  paid: "已支付"
+  shipped: "运输中"
+  delivered: "已签收"
+  completed: "已完成"
+  refunded: "已退款"
+
+# === 4. 硬规则配置（P0-2 修订：0 单降级为 synthesize，不打爆人工坐席）===
+# 命中硬规则 → 跳过 LLM，直接返回 decide_result
+# rule_id 形如 "show_picker" / "ask_login_or_list" / "not_found" / "history_commitment"
+HARD_RULES:
+  # 硬规则 1：Resolver 决策 show_picker（N 单需用户点选）→ 复用决策为 need_confirm_order
+  - id: "show_picker"
+    decision: "need_confirm_order"
+    priority: null
+    category: null
+    confidence: 1.0
+    policy_needed: false
+    reply_key_points:
+      - "请确认要退款的订单"
+
+  # 硬规则 2：0 单场景 → synthesize 引导用户（不打爆人工坐席）
+  - id: "ask_login_or_list"
+    decision: "synthesize"
+    priority: null
+    category: null
+    confidence: 1.0
+    policy_needed: false
+    reply_key_points:
+      - "暂无订单，请确认下单账号"
+      - "可前往订单页面查看历史订单记录"
+
+  # 硬规则 3：订单不存在 / 越权 → escalate P2 复杂场景
+  - id: "not_found"
+    decision: "escalate"
+    priority: "P2"
+    category: "复杂场景"
+    confidence: 1.0
+    policy_needed: false
+
+  # 硬规则 4：历史承诺匹配（之前 assistant 已说"已为您转接人工"等）→ escalate P1 履约
+  - id: "history_commitment"
+    decision: "escalate"
+    priority: "P1"
+    category: "用户要求"
+    confidence: 1.0
+    policy_needed: false
+
+# === 5. 升级默认分类（P1-1 高风险关键词命中后映射到 priority/category）===
+# detect_p0_escalate 命中后写入 HandoffPayload
+ESCALATE_CATEGORIES:
+  complaint:
+    priority: "P0"
+    label: "投诉"
+  compensation:
+    priority: "P0"
+    label: "补偿诉求"
+  quality:
+    priority: "P0"
+    label: "质量问题"
+  user_requested:
+    priority: "P0"
+    label: "用户要求"
+
+# === 6. 凭证上传兜底（P1-2：state.image_urls 非空 + LLM 要凭证 → 强制 escalate P1）===
+# 真实场景：用户已经上传了图片凭证，但 LLM 仍问"请提供凭证"
+IMAGE_URLS_OVERRIDE:
+  enabled: true
+  priority: "P1"
+  category: "质量问题"
