@@ -5124,3 +5124,107 @@ M14: 在 chat/orchestrator.py 周围补 4 层基础设施
 
 - `feedback_claude_md_gitignored.md` — CLAUDE.md 不入 git
 
+---
+
+# §44 — M14 业务闭环构造数据验证脚本（求职包装）
+
+> commit `b688bee`（2026-07-18）· 4 files · 1572 行新增
+
+## What（做了什么）
+
+为 M14 业务闭环写了 4 个构造数据验证脚本，给简历"主动查询"加数据背书：
+
+| 脚本 | 职责 |
+|------|------|
+| `scripts/m14_validation/mock_data.py` | 10 user × 0-5 订单 = 26 订单；customer_profile 业务数据结构 |
+| `scripts/m14_validation/query_pool.py` | 100 business scenarios：resolver 40 / refund 30 / tool 20 / edge 10 |
+| `scripts/m14_validation/run_validation.py` | 主入口：临时启 4 灰度开关 → 跑 100 scenarios → 计算 4 核心指标 |
+| `scripts/m14_validation/README.md` | 用法 + 异常中断恢复 + 简历同步建议 |
+
+输出（脚本跑后产生）：
+- `data/m14_validation/raw.json`（100 条结果）
+- `data/m14_validation/failed_cases.json`
+- `data/m14_validation/m14_validation_report.md`（含简历可直接复制的 bullet）
+
+## Why（为什么）
+
+按用户最近的"求职包装"策略（见 `project_m14_done.md` 上下文）：
+- M14 代码已闭环（5 灰度开关默认 False → dead branch）但**没有真实流量数据**
+- HR 看简历"实现用户上下文感知 Agent"会问"线上跑过吗？多少用户？"
+- 用构造数据验证：把 M14 4 actions + RefundFlow 4 分支 + Tool 调用跑一遍
+- 跑出来的数字（覆盖率 / 完成率 / 成功率 / Hallucination Free Rate）直接写进简历
+- 不用"线上化幻觉"——明说"基于构造订单数据完成端到端验证"
+
+## Tech（技术栈）
+
+- **直接调**：`OrderContextResolver.resolve()` + `RefundFlow.run()` + `OrderTool.*`（不调 chat API）
+- **why not chat API**：SSE / 鉴权 / heartbeat 太重；4 actions 决策不依赖 chat 入口
+- **临时启灰度**：`settings.ENABLE_ORDER_RESOLVER=True` + `ENABLE_BUSINESS_FLOW=True`（pydantic v2 允许单例字段直接赋值）
+- **try/finally 恢复**：避免污染后续脚本
+- **RefundFlow 节省 LLM token**：收到 `synthesize` / `escalate` stage 立即 break（不调 LLM 生成 final_answer）
+- **mock 数据隔离**：user_id 10001-10010 与真实用户无冲突，hard delete by user_id 清理
+- **不调 ENABLE_CONTEXT_STORE**：避免 conversation_contexts 表依赖（本次只验证 Resolver + BusinessFlow）
+
+## Flow（输入 → 输出）
+
+```
+mock_data.generate_customer_profiles()       # 10 个 customer_profile
+        ↓
+insert_mock_orders_to_db()                    # 26 个 Order 插入 MySQL
+        ↓
+query_pool.generate_100_scenarios()          # 100 个 Scenario
+        ↓
+[with _enable_m14_features():]                # 临时启 4 开关
+   for s in 100 scenarios:
+     r = _run_scenario(s)                     # 分派 resolver/refund/tool/edge
+        ↓
+_compute_metrics(results)                    # 4 核心指标
+        ↓
+_collect_failed_cases(results)                # failed_cases.json
+        ↓
+_generate_markdown_report(...)                # m14_validation_report.md
+        ↓
+cleanup_mock_data()                           # 26 个 Order hard delete
+```
+
+## Problem & Fix（问题 → 解决）
+
+| # | 问题 | 解决 |
+|---|------|------|
+| 1 | query_pool 模块级 `from mock_data import ...` → 触发 settings 校验 → DATABASE_URL 未设 raise | 改：query_pool 不依赖 mock_data，复制常量 + 定义本地 OrderStatus enum |
+| 2 | RefundFlow 30 场景会调 LLM synthesize → 15000 token 浪费 | 改：收到 `synthesize` / `escalate` stage 立即 break，节省 ~99% token |
+| 3 | mock 数据怕污染 dev DB | 改：user_id 10001-10010 隔离 + try/finally 自动 cleanup + `--cleanup-only` 异常恢复 |
+| 4 | scripts/ 现有目录已有大量 `eval_*.py` / `verify_*.py` | 决策：放 `scripts/m14_validation/` 子目录，不与现有脚本冲突 |
+| 5 | `OrderStatus.SHIPPED.value` 在 mock_data 是 enum，query_pool 复制后是 string | 改：query_pool 用 `class _OrderStatus(str, Enum)` 兼容两种用法 |
+| 6 | `Settings` 单例在 import 时加载 .env → 跑脚本前必须 load_dotenv | 沿用 `eval_agent_fc.py` 模式：`_load_env()` 在 main() 入口调用，不在 import 期 |
+
+## Architecture Role（在系统中的位置）
+
+- **不属于 M14 4 层基础设施**：验证脚本是外部工具（scripts/），不动 `app/`
+- **属于求职包装工具集**：和 `eval_agent_fc.py` / `eval_hitk.py` / `verify_refund_state_machine.py` 同类
+- **是简历 → 项目的反向链接**：简历数字从此报告产出；报告每次跑更新数字
+
+## 简历同步模板（报告 §5 自动生成）
+
+```text
+■ Agent 编排: 100 business scenarios 验证 4 actions 决策分布，覆盖率 XX%
+■ 业务状态机: RefundFlow 30 场景流程完成率 XX%
+■ 工程落地: Tool 调用成功率 XX%（X/X）
+■ Agent 评测: Hallucination Free Rate XX%（X/100）
+```
+
+## 已知限制
+
+- **依赖 Docker**：MySQL / Redis / Qdrant 必须 up（当前 daemon 未起，**待用户重启 Docker 后跑**）
+- **不调 LLM**：synthesize 阶段不验证 final_answer 内容（仅验证 flow_stage 推送正确性）
+- **mock 数据规模**：10 user × 26 订单，与真实业务量级（数千 user）有差距
+- **不验证 ENABLE_CONTEXT_STORE**：conversation_contexts 表依赖未跑（避免 schema 改动）
+
+## 关联记忆
+
+- `project_m14_done.md` — M14 4 层基础设施 + 5 灰度开关
+- `feedback_script_load_dotenv_import.md` — load_dotenv 必须在 main() 入口（不在 import 期）
+- `feedback_test_factory_singleton.md` — `get_order_context_resolver()` 工厂单例注意事项（本脚本不涉及，pytest 才需要 reset）
+- `feedback_resume_no_ai_flavor.md` — 简历数据按业务倒推，不堆砌（"覆盖 4 actions 分布"而不是"覆盖 X% 场景"）
+- `feedback_docker_restart_vs_rebuild.md` — 改 Python 代码必须 `--build`；本脚本不需（不动 backend 镜像）
+
