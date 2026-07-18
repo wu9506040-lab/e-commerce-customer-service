@@ -37,6 +37,12 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # V3 LangGraph 开关（控制 synthesizer._handle_refund 走 V2 还是 V3）
       USE_LANGGRAPH_REFUND: ${USE_LANGGRAPH_REFUND:-false}
+      # M14 V3：退款流程 Resolver 自动解析（0/1/N 决策，取代"请提供订单号"）
+      ENABLE_ORDER_RESOLVER: ${ENABLE_ORDER_RESOLVER:-false}
+      # M14 V3：BusinessFlow 抽象 - RefundFlow 包装 V3 + flow_stage meta 推送
+      ENABLE_BUSINESS_FLOW: ${ENABLE_BUSINESS_FLOW:-false}
+      # M14 V3：转人工兜底 - RefundFlow/handle_refund_v3 双异常 fallback
+      ENABLE_ESCALATION_HANDOFF: ${ENABLE_ESCALATION_HANDOFF:-false}
       # C2 Agent FC 灰度开关（2026-07-16 C4 验证开启；false 走 V1.2 fallback）
       ENABLE_AGENT_FC: ${ENABLE_AGENT_FC:-false}
       MAX_AGENT_TURNS: ${MAX_AGENT_TURNS:-5}
