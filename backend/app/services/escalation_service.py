@@ -68,6 +68,10 @@ class HandoffPayload:
     - current_entities: 当前意图的实体（order_no / sku）
     - agent_failure_context: 仅 AGENT_UNAVAILABLE 时填（failed_stage, error_class, retry_count）
     - summary_text: 一句话摘要（拼装，不调 LLM）
+    - priority: P0/P1/P2 优先级（M14 V3+ P0 关键词命中后写入）
+    - category: 中文分类（投诉 / 质量问题 / 补偿诉求 / 用户要求 / 复杂场景）
+    - matched_keyword: 命中的关键词（给人工看是哪句话触发的）
+    - detected_category: 类别 key（complaint / compensation / quality / user_requested / None）
     """
 
     handoff_id: str
@@ -82,6 +86,11 @@ class HandoffPayload:
     current_entities: Optional[dict] = None
     agent_failure_context: Optional[dict] = None
     summary_text: str = ""
+    # M14 V3+: P0 关键词命中后写入（向后兼容：未传时默认 None）
+    priority: Optional[str] = None
+    category: Optional[str] = None
+    matched_keyword: Optional[str] = None
+    detected_category: Optional[str] = None
 
     def to_dict(self) -> dict:
         """转 dict（SSE JSON 序列化友好）"""
@@ -110,11 +119,110 @@ def detect_handoff_keyword(query: str) -> bool:
     命中 → chat.py 走 escalation 路径，跳过 IntentService.classify 与 LLM 调用。
     设计点：放在 chat.py 入口层而不是 guard.py，避免污染 guard 的 3 层防御定位
     （guard 是 LLM token 防滥用，转人工是路由决策，两件事正交）。
+
+    注意：P0 关键词（投诉/赔付/质量等）由 detect_p0_escalate 处理，不在此处拦截
+    （避免重复检测）。
     """
     if not query or not isinstance(query, str):
         return False
     q = query.strip()
     return any(kw in q for kw in _HANDOFF_KEYWORDS)
+
+
+# =============================================================
+# P0 高风险关键词检测（M14 V3+ · 真实话术驱动）
+# =============================================================
+# 数据源：data/m14_validation/data/real_corpus.json 中 RC005/012/015/033/051-056/069/077/095/097 等
+# 18 条真实话术里抽取的关键词命中词（覆盖电商客服"投诉/赔付/质量/转人工"4 大高风险场景）
+#
+# 优先级排序（P0-2 修订）：
+#   COMPLAINT/COMPENSATION > QUALITY/USER_REQUESTED
+#   含义：同时含"投诉"和"质量" → complaint 优先（语义上投诉 > 质量问题）
+#         同时含"三倍赔偿"和"转人工" → compensation 优先（金额诉求更紧急）
+ESCALATE_P0_KEYWORDS: dict[str, tuple[str, ...]] = {
+    # 投诉类（最高优先级：P0 投诉 = 公开市场监督风险）
+    # 顺序：specific 数字/机构在前（"12315"/"315" 等更 actionable），通用词在后
+    "complaint": (
+        "12315", "12305", "315", "工商局", "市监", "投诉", "曝光",
+    ),
+    # 赔付类（P0 赔付 = 金额诉求 / 法规诉求）
+    "compensation": (
+        "三倍赔偿", "退一赔三", "假一赔十",
+    ),
+    # 质量类（P0 质量 = 商品质量缺陷，需要凭证流程）
+    "quality": (
+        "质量问题", "破损", "坏点", "开胶", "假货", "二手商品",
+    ),
+    # 主动要人工类（P0 = 用户明确要求升级）
+    "user_requested": (
+        "转人工", "转主管", "机器人", "起诉", "律师",
+    ),
+}
+
+# 4 类别默认优先级与中文标签（与 config/business_rules/decide.yaml ESCALATE_CATEGORIES 对齐）
+_P0_CATEGORY_PRIORITY: dict[str, str] = {
+    "complaint": "P0",
+    "compensation": "P0",
+    "quality": "P0",
+    "user_requested": "P0",
+}
+_P0_CATEGORY_LABEL: dict[str, str] = {
+    "complaint": "投诉",
+    "compensation": "补偿诉求",
+    "quality": "质量问题",
+    "user_requested": "用户要求",
+}
+
+
+def detect_p0_escalate(query: str) -> Optional[tuple[str, str]]:
+    """检测用户 query 是否含 P0 高风险关键词。
+
+    命中 → 返回 (category, matched_keyword)；
+    不命中 → 返回 None。
+
+    优先级规则：COMPLAINT/COMPENSATION > QUALITY/USER_REQUESTED。
+    即 query 同时含"投诉"和"质量"时，命中 complaint（投诉更紧急）。
+
+    命中后由 chat.py 上层调用 EscalationService.handoff() 写入 priority/category 等字段，
+    本函数只做"识别"一件事，便于单测和审计追溯。
+
+    设计点（与 detect_handoff_keyword 的区别）：
+    - detect_handoff_keyword 只匹配原 9 词"转人工"类（向后兼容，保留路由作用）
+    - detect_p0_escalate 扩到 4 类 23 词（含投诉/赔付/质量等高风险场景）
+    - 两个函数共存：chat.py 先调 detect_p0_escalate（更精准 + 4 类优先级），未命中再调 detect_handoff_keyword（兜底）
+
+    Args:
+        query: 用户输入原文（已 strip 后的字符串）
+
+    Returns:
+        (category_key, matched_keyword) 元组 或 None
+        例：detect_p0_escalate("我要投诉 12315") → ("complaint", "12315")
+    """
+    if not query or not isinstance(query, str):
+        return None
+    q = query.strip()
+    if not q:
+        return None
+    # 按优先级遍历：COMPLAINT → COMPENSATION → QUALITY → USER_REQUESTED
+    for category in ("complaint", "compensation", "quality", "user_requested"):
+        for kw in ESCALATE_P0_KEYWORDS[category]:
+            if kw in q:
+                return (category, kw)
+    return None
+
+
+def get_p0_category_info(category: str) -> tuple[str, str]:
+    """根据 P0 category key 取 (priority, label)。
+
+    Args:
+        category: category key（complaint / compensation / quality / user_requested）
+
+    Returns:
+        (priority, label) 元组；未知 category 返回 ("P0", category)
+    """
+    priority = _P0_CATEGORY_PRIORITY.get(category, "P0")
+    label = _P0_CATEGORY_LABEL.get(category, category)
+    return (priority, label)
 
 
 # =============================================================
@@ -134,6 +242,10 @@ class EscalationService:
         intent_result: Optional[dict] = None,
         failure_context: Optional[dict] = None,
         recent_orders: Optional[list[dict]] = None,
+        priority: Optional[str] = None,
+        category: Optional[str] = None,
+        matched_keyword: Optional[str] = None,
+        detected_category: Optional[str] = None,
     ) -> HandoffPayload:
         """生成 handoff payload
 
@@ -144,6 +256,10 @@ class EscalationService:
             intent_result: 当前意图识别结果（intent, entities, ...）
             failure_context: Agent 异常上下文（failed_stage, error_class, retry_count）
             recent_orders: 已查好的最近订单列表（如已有则复用，避免重复查 DB）
+            priority: M14 V3+ P0 关键词命中后写入（P0/P1/P2）
+            category: 中文分类（投诉 / 质量问题 / 补偿诉求 / 用户要求 / 复杂场景）
+            matched_keyword: 命中的关键词（人工坐席看是哪句话触发的）
+            detected_category: 类别 key（complaint / compensation / quality / user_requested）
 
         Returns:
             HandoffPayload
@@ -205,6 +321,10 @@ class EscalationService:
             current_entities=current_entities,
             agent_failure_context=failure_context,
             summary_text=summary_text,
+            priority=priority,
+            category=category,
+            matched_keyword=matched_keyword,
+            detected_category=detected_category,
         )
 
     # ---------- 私有 ----------

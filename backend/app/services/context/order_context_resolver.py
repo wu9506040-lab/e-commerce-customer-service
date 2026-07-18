@@ -103,6 +103,26 @@ ORDER_NO_PATTERN: _re.Pattern = _re.compile(
     _re.IGNORECASE,
 )
 
+# === 状态中文映射（M14 V3 · P1-3：Resolver 层统一生成，前端 / prompt 都用同一份）===
+# 与 config/business_rules/decide.yaml STATUS_ZH_MAP 对齐（单一真相源）
+_DECIDE_RULES = get_config_loader().load("decide")
+STATUS_ZH_MAP: dict[str, str] = dict(_DECIDE_RULES.get("STATUS_ZH_MAP", {}))
+
+
+def _inject_status_zh(orders: list) -> list:
+    """给每条订单 dict 注入 status_zh 字段（前端 / prompt 共用）。
+
+    Args:
+        orders: 订单列表（每项是 dict，至少含 status 字段）
+
+    Returns:
+        注入 status_zh 后的订单列表（同对象引用修改，不创建新 list）
+    """
+    for order in orders:
+        status = order.get("status", "")
+        order["status_zh"] = STATUS_ZH_MAP.get(status, status)
+    return orders
+
 
 # =============================================================
 # Resolver
@@ -170,11 +190,15 @@ class OrderContextResolver:
                     reason="order_not_found_or_not_owned",
                     effective_order_no=provided_order_no,
                 )
+            # 注入 status_zh（P1-3：单订单也注入，前端 / decide node 用）
+            candidate = _inject_status_zh([order]) if order else []
             return OrderResolverResult(
                 action=OrderResolverAction.DIRECT_ANSWER,
                 intent=intent,
                 reason="user_provided_order_no",
                 effective_order_no=provided_order_no,
+                candidate_orders=candidate,
+                total_orders=1,
             )
 
         # 3. ctx 已携带 current_order_no → DIRECT_ANSWER（用户从 OrderCard 跳入）
@@ -187,11 +211,15 @@ class OrderContextResolver:
                     f"order_no={ctx.current_order_no}, user_id={user_id}"
                 )
             else:
+                # 注入 status_zh
+                candidate = _inject_status_zh([order])
                 return OrderResolverResult(
                     action=OrderResolverAction.DIRECT_ANSWER,
                     intent=intent,
                     reason="context_order_no_hit",
                     effective_order_no=ctx.current_order_no,
+                    candidate_orders=candidate,
+                    total_orders=1,
                 )
 
         # 4. 列最近订单（0/1/N）
@@ -225,6 +253,8 @@ class OrderContextResolver:
         if total == 1:
             # 唯一 1 个订单 → 自动用（避免让用户从 1 个订单里"选"）
             only_order = recent_orders[0]
+            # 注入 status_zh（P1-3：单一来源，前端 / decide node 都用）
+            _inject_status_zh(displayed)
             return OrderResolverResult(
                 action=OrderResolverAction.DIRECT_ANSWER,
                 intent=intent,
@@ -235,6 +265,8 @@ class OrderContextResolver:
             )
 
         # N >= 2 → SHOW_PICKER（让用户选）
+        # 注入 status_zh（前端 OrderCard list 渲染用）
+        _inject_status_zh(displayed)
         return OrderResolverResult(
             action=OrderResolverAction.SHOW_PICKER,
             intent=intent,

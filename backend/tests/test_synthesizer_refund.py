@@ -108,10 +108,13 @@ class TestRefundDispatch:
         mock_order_svc.list_user_orders.return_value = [make_order()]
 
         # 但 LangGraph 内部的 fetch_order 走的是 OrderTool（不同的 import path）
+        # M14 V3: judge 已移到 RefundFlow.run()，OrderTool 在 refund_flow.py 调
         with patch("app.services.refund_graph.OrderTool") as mock_tool, \
+             patch("app.services.business_flow.refund_flow.OrderTool") as mock_rf_tool, \
              patch("app.services.refund_graph.PolicyService") as mock_policy, \
              patch("app.services.refund_graph.get_llm_provider") as mock_provider:
             mock_tool.get_order_by_no.return_value = make_order(days_ago=3)
+            mock_rf_tool.get_order_by_no.return_value = make_order(days_ago=3)
             mock_policy.search_policy.return_value = [{"text": "7天无理由"}]
             mock_provider.return_value.chat.return_value = {"reply": "可以退"}
 
@@ -123,8 +126,8 @@ class TestRefundDispatch:
                 history=None,
             ))
 
-            # V3 路径：应该调 LangGraph 内部的 OrderTool（不是 refund_handler.OrderService）
-            assert mock_tool.get_order_by_no.called
+            # V3 路径：应该调 RefundFlow 内部的 OrderTool（M14 V3：judge 移到 run()）
+            assert mock_rf_tool.get_order_by_no.called
             assert mock_provider.return_value.chat.called
 
 
@@ -205,11 +208,15 @@ class TestHandleRefundV3:
         assert not any("订单号" in ev[1] for ev in token_events)
 
     @patch("app.services.refund_graph.get_llm_provider")
+    @patch("app.services.business_flow.refund_flow.OrderTool")
     @patch("app.services.refund_graph.OrderTool")
     @patch("app.services.chat.refund_handler.OrderService")
-    def test_path1_refundable_with_policy(self, mock_order_svc, mock_tool, mock_provider):
-        """路径 1：可退 + 查政策 → synthesize"""
+    def test_path1_refundable_with_policy(self, mock_order_svc, mock_tool, mock_rf_tool, mock_provider):
+        """路径 1：可退 + 查政策 → synthesize（M14 V3：judge 移到 RefundFlow.run()）"""
         mock_order_svc.list_user_orders.return_value = [make_order()]  # 兜底 order_no
+        # V3: OrderTool.get_order_by_no 在 RefundFlow.run() 里调用（judge 移到 run()）
+        mock_rf_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
+        # V2 兼容 mock path（refund_graph 保留 unused import）
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
         mock_provider.return_value.chat.return_value = {"reply": "符合 7 天无理由"}
 
@@ -229,14 +236,18 @@ class TestHandleRefundV3:
         assert len(token_events) >= 1, "至少应有一个 token 事件"
 
         # meta 应包含 v3_engine=langgraph
-        meta = meta_events[0][1]
-        assert meta.get("v3_engine") == "langgraph"
+        assert any(m[1].get("v3_engine") == "langgraph" for m in meta_events)
 
-        # meta 应包含 judge 的判断结果
-        assert "refundable" in meta
-        assert meta["refundable"] is True
+        # meta 应包含 decide 节点的判断结果（M14 V3：judge 移到 decide 节点）
+        decide_meta = next(
+            (m[1] for m in meta_events if m[1].get("flow_stage") == "decide"),
+            None,
+        )
+        assert decide_meta is not None, "应该有 decide 节点的 meta"
+        assert "refundable" in decide_meta
+        assert decide_meta["refundable"] is True
         # delivered 订单按签收日算：create_time + 2 天偏移，days_ago=3 → 实际 1 天
-        assert meta["days_since_order"] == 1
+        assert decide_meta["days_since_order"] == 1
 
         # token 应包含 LLM 最终答案
         assert any("符合" in ev[1] for ev in token_events)
@@ -353,7 +364,7 @@ class TestSSEProtocol:
         ))
 
         meta_events = [ev for ev in events if ev[0] == "meta"]
-        assert len(meta_events) == 1
+        assert len(meta_events) >= 1
 
         meta = meta_events[0][1]
         # 必含字段
