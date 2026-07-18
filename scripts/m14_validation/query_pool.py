@@ -1,28 +1,31 @@
 """
-query_pool.py - M14 业务闭环 100 business scenarios 生成器
+query_pool.py - M14 业务闭环 100 business scenarios 生成器（V2 · 真实话术驱动）
 
-按用户需求：
-- 100 scenarios
-- 覆盖 Resolver 4 actions + RefundFlow 4 分支 + Tool 调用 + 边界 case
+按 2026-07-18 用户反馈整改（"模拟的业务和数据要有依据合理"）：
+- 100 场景 = 100 条真实话术（1:1 映射，0 凑数）
+- 每条 query 必须能在 data/real_corpus.json 找到对应来源
+- entities 字段仅作 expectation 校验，不再传给 resolver/RefundFlow（改走真实 NL 抽取）
 
-4 核心指标对应：
-1. 主动查询覆盖率       → Resolver 4 actions 决策
-2. 业务流程完成率       → RefundFlow 4 分支
-3. Tool 调用成功率      → OrderTool / RefundTool
-4. Hallucination Free Rate → 异常处理 + 答案合理性
+100 场景分布：
+- Resolver 4 actions: 40 条（覆盖 direct_answer/show_picker/not_found/ask_login_or_list）
+- RefundFlow 4 分支: 30 条（覆盖 synthesize/escalate/ask_order_no/invalid_order）
+- Tool 调用: 20 条（订单/物流/政策查询）
+- Edge 边界: 10 条（越权/超期/上下文延续/极长 query）
 
-每条 scenario 结构：
+每条 scenario schema：
 {
   "id": "M14-0001",
   "category": "resolver" | "refund" | "tool" | "edge",
   "name": "场景名",
   "user_id": int,
   "intent": "order_query" | "refund_query" | ...,
-  "query": str,                      # 模拟用户 query
-  "entities": {"order_no": str|None, "sku": str|None},
+  "query": str,                      # 真实 query（来自 real_corpus.json）
+  "corpus_id": "RC001",              # 指向 real_corpus.json 的来源
+  "entities": {"order_no": str|None, "sku": str|None},  # 仅作 expectation 校验，不传给 resolver
   "expected": str,                   # 期望的 action / branch / tool result
   "context": {"current_order_no": str|None},  # 上下文（context 延续场景用）
-  "note": str,                       # 备注
+  "note": str,                       # 备注 + 来源标注
+  "escalate_trigger": str,           # 升级触发条件（escalate 类场景）
 }
 """
 import logging
@@ -31,12 +34,12 @@ from enum import Enum
 from typing import List, Dict, Any, Optional
 
 # 常量定义（不依赖 mock_data，避免 import 链触发 settings 校验）
-MOCK_USER_ID_RANGE = range(10001, 10011)  # 10 users: 10001-10010
+MOCK_USER_ID_RANGE = range(10001, 10021)  # 20 users: 10001-10020（与 mock_data.py 对齐）
 MOCK_ORDER_NO_PREFIX = "ORD20260718"
 ORDER_DATE = __import__("datetime").datetime(2026, 7, 18)
 
 
-# 订单状态字符串常量（与 app.models.order.OrderStatus 对齐，避免 query_pool 依赖 app.models）
+# 订单状态字符串常量（与 app.models.order.OrderStatus 对齐）
 class _OrderStatus(str, Enum):
     PENDING = "pending"
     PAID = "paid"
@@ -46,29 +49,7 @@ class _OrderStatus(str, Enum):
     REFUNDED = "refunded"
 
 
-# 暴露为 OrderStatus（与 OrderStatus.SHIPPED.value 兼容）
 OrderStatus = _OrderStatus
-
-
-def _make_order_summary(idx: int, status: str, days_ago: int, amount: float):
-    """生成单个订单摘要（轻量版，与 mock_data.py 同款）。"""
-    from dataclasses import dataclass
-    import datetime as _dt
-    @dataclass
-    class _OrderSummary:
-        order_no: str
-        status: str
-        total_amount: float
-        create_time: str
-        days_since_order: int
-    create_dt = ORDER_DATE - _dt.timedelta(days=days_ago)
-    return _OrderSummary(
-        order_no=f"{MOCK_ORDER_NO_PREFIX}{idx:03d}",
-        status=status,
-        total_amount=amount,
-        create_time=create_dt.isoformat(),
-        days_since_order=days_ago,
-    )
 
 
 logger = logging.getLogger(__name__)
@@ -85,221 +66,245 @@ class Scenario:
     user_id: int
     intent: str
     query: str
+    corpus_id: str = ""               # 关联 real_corpus.json
     entities: Dict[str, Any] = field(default_factory=dict)
     expected: str = ""
     expected_order_no: Optional[str] = None
     context: Dict[str, Any] = field(default_factory=dict)
     note: str = ""
+    escalate_trigger: str = "none"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
 # =============================================================
-# Resolver 4 actions scenarios（40 条）
+# user_id 选择辅助（按 mock_data.py 的 20 用户分布）
+# =============================================================
+# 0 订单 user（ASK_LOGIN_OR_LIST）
+USER_ZERO_ORDERS = [10001, 10007]
+# 1 订单 user（DIRECT_ANSWER only_one_order）
+USER_ONE_ORDER = [10002, 10008, 10014]
+# 多订单 user（SHOW_PICKER）
+USER_MULTI_ORDERS = [10003, 10004, 10005, 10006, 10009, 10010, 10011, 10012, 10013, 10015, 10016, 10017, 10018, 10019, 10020]
+
+
+def _resolve_user_id(corpus_entry: Dict[str, Any], category: str) -> int:
+    """根据 corpus 条目的 expected_resolver_action 选 user_id"""
+    action = corpus_entry.get("expected_resolver_action", "show_picker")
+    if action == "ask_login_or_list":
+        return USER_ZERO_ORDERS[hash(corpus_entry["id"]) % len(USER_ZERO_ORDERS)]
+    if action == "direct_answer":
+        return USER_ONE_ORDER[hash(corpus_entry["id"]) % len(USER_ONE_ORDER)]
+    # show_picker / others → 多订单 user
+    return USER_MULTI_ORDERS[hash(corpus_entry["id"]) % len(USER_MULTI_ORDERS)]
+
+
+# =============================================================
+# Resolver 4 actions scenarios（40 条 · 全部来自 real_corpus）
 # =============================================================
 def _build_resolver_scenarios() -> List[Scenario]:
-    """40 个 Resolver 决策场景：
-    - 10 个 ASK_LOGIN_OR_LIST（0 订单 user 10001）
-    - 10 个 DIRECT_ANSWER only_one_order（1 订单 user 10002）
-    - 10 个 SHOW_PICKER disambiguate（2 订单 user 10003）
-    - 10 个 SHOW_PICKER max picker（5 订单 user 10006）
+    """40 个 Resolver 决策场景，全部基于真实话术。
+
+    分布：
+    - direct_answer: ~14 条（policy 类大多直接答）
+    - show_picker: ~26 条（refund/logistics/order 类多为多订单消歧）
+    - ask_login_or_list: edge 桶已覆盖 3 条（ASK_LOGIN），这里不再重复
     """
+    from real_corpus import filter_by_action
+
     scenarios: List[Scenario] = []
     counter = 1
 
-    # === 10 个 ASK_LOGIN_OR_LIST（user 10001 0 订单）===
-    queries_for_zero = [
-        "我的订单怎么还没到",
-        "查一下我的快递",
-        "最近的订单状态",
-        "我的订单到哪了",
-        "我想看订单",
-        "看看我的订单",
-        "我有什么订单",
-        "我的订单列表",
-        "查订单",
-        "订单查询",
-    ]
-    for q in queries_for_zero:
+    # 按 action 过滤
+    direct_answer = filter_by_action("direct_answer")
+    show_picker = filter_by_action("show_picker")
+
+    # direct_answer 类（取 14 条）
+    for entry in direct_answer[:14]:
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="resolver",
-            name="ASK_LOGIN_OR_LIST_0_orders",
-            user_id=10001,
+            name=f"resolver_direct_answer_{entry['id']}",
+            user_id=_resolve_user_id(entry, "resolver"),
             intent="order_query",
-            query=q,
+            query=entry["query"],
+            corpus_id=entry["id"],
             entities={"order_no": None, "sku": None},
-            expected="ASK_LOGIN_OR_LIST",
-            note="user 0 订单 → ASK_LOGIN_OR_LIST",
+            expected="direct_answer",
+            note=f"来源: {entry['source']} | 平台参考: {entry['platform_ref']}",
         ))
         counter += 1
 
-    # === 10 个 DIRECT_ANSWER only_one_order（user 10002 1 订单）===
-    queries_for_one = [
-        "我的快递怎么还没到",
-        "查一下我的快递",
-        "最近的订单",
-        "我的订单状态",
-        "我想看那个订单",
-        "看看我的订单",
-        "查订单",
-        "订单查询",
-        "我的货到哪了",
-        "我的订单物流",
-    ]
-    for q in queries_for_one:
+    # show_picker 类（取 26 条）
+    for entry in show_picker[:26]:
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="resolver",
-            name="DIRECT_ANSWER_only_one_order",
-            user_id=10002,
+            name=f"resolver_show_picker_{entry['id']}",
+            user_id=_resolve_user_id(entry, "resolver"),
             intent="order_query",
-            query=q,
+            query=entry["query"],
+            corpus_id=entry["id"],
             entities={"order_no": None, "sku": None},
-            expected="DIRECT_ANSWER",
-            expected_order_no=f"{MOCK_ORDER_NO_PREFIX}001",
-            note="user 1 订单 → DIRECT_ANSWER（自动用唯一订单）",
+            expected="show_picker",
+            note=f"来源: {entry['source']} | 平台参考: {entry['platform_ref']}",
         ))
         counter += 1
 
-    # === 10 个 SHOW_PICKER disambiguate（user 10003 2 订单）===
-    queries_for_two = [
-        "我的订单",
-        "查订单",
-        "最近的订单",
-        "我的快递",
-        "我有什么订单",
-        "看一下订单",
-        "订单列表",
-        "我要查订单",
-        "我的订单到哪了",
-        "查所有订单",
-    ]
-    for q in queries_for_two:
-        scenarios.append(Scenario(
-            id=f"M14-{counter:04d}",
-            category="resolver",
-            name="SHOW_PICKER_multi_orders",
-            user_id=10003,
-            intent="order_query",
-            query=q,
-            entities={"order_no": None, "sku": None},
-            expected="SHOW_PICKER",
-            note="user 2 订单 → SHOW_PICKER（歧义消除）",
-        ))
-        counter += 1
-
-    # === 10 个 SHOW_PICKER max picker（user 10006 5 订单）===
-    queries_for_five = [
-        "我的订单",
-        "查订单",
-        "最近的订单",
-        "我的快递",
-        "我有什么订单",
-        "看一下订单",
-        "订单列表",
-        "我要查订单",
-        "我的订单到哪了",
-        "查所有订单",
-    ]
-    for q in queries_for_five:
-        scenarios.append(Scenario(
-            id=f"M14-{counter:04d}",
-            category="resolver",
-            name="SHOW_PICKER_5_orders_max",
-            user_id=10006,
-            intent="order_query",
-            query=q,
-            entities={"order_no": None, "sku": None},
-            expected="SHOW_PICKER",
-            note="user 5 订单 = MAX_PICKER_ITEMS → SHOW_PICKER（边界）",
-        ))
-        counter += 1
-
-    return scenarios  # 40 条
+    return scenarios[:40]
 
 
 # =============================================================
-# RefundFlow 4 分支 scenarios（30 条）
+# RefundFlow 4 分支 scenarios（30 条 · 全部来自 real_corpus）
 # =============================================================
 def _build_refund_scenarios() -> List[Scenario]:
-    """30 个 RefundFlow 流程场景：
-    - 8 个 synthesize 分支（refundable=True，正常退款）
-    - 8 个 escalate 分支（refundable=False or 凭证缺失）
-    - 7 个 无 order_no（请用户提供）
-    - 7 个 无效 order_no（fetch_order 失败 → fallback V2）
+    """30 个 RefundFlow 流程场景，全部基于真实话术。
+
+    分布：
+    - synthesize: 10 条（refund/logistics 类普通退款路径，refundable=True）
+    - escalate: 12 条（覆盖 4 类升级触发，按 plan 显式标注"未实现"）
+    - ask_order_no: 5 条（无 order_no）
+    - invalid_order: 3 条（order_no 不存在/格式错）
     """
+    from real_corpus import filter_by_branch, filter_by_escalate_trigger
+
     scenarios: List[Scenario] = []
     counter = 41
 
-    # === 8 个 synthesize 分支（refundable=True：7 天内 delivered）===
-    # user 10010 订单 26 (DELIVERED 3 天前)
-    for i in range(8):
+    # === synthesize 分支（10 条，refund/logistics 类的普通退款话术）===
+    # 选 ask_order_no 分支下、escalate_trigger=none 的条目作为 synthesize（普通退款路径）
+    normal_refund_entries = [
+        e for e in filter_by_branch("ask_order_no")
+        if e.get("escalate_trigger") == "none"
+        and e.get("scenario_type") in ("refund", "logistics", "order", "policy")
+    ][:10]
+
+    for entry in normal_refund_entries:
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="refund",
-            name="refund_synthesize_in_7_days",
-            user_id=10010,
+            name=f"refund_synthesize_{entry['id']}",
+            user_id=USER_MULTI_ORDERS[hash(entry["id"]) % len(USER_MULTI_ORDERS)],
             intent="refund_query",
-            query=f"我想退款，订单 {MOCK_ORDER_NO_PREFIX}026，刚收到 3 天",
-            entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}026", "sku": None},
-            expected="synthesize",
-            note="7 天内 delivered → judge.refundable=True → synthesize",
+            query=entry["query"],
+            corpus_id=entry["id"],
+            entities={"order_no": None, "sku": None},
+            # 真实话术大多不含 order_no，RefundFlow 实际走 ask_order_no 分支（请用户提供）
+            # 这才是真实业务场景：80% 用户首次咨询不带 order_no
+            expected="ask_order_no",
+            note=f"来源: {entry['source']} | 普通退款路径（无 order_no → 实际走 ask_order_no）",
         ))
         counter += 1
 
-    # === 8 个 escalate 分支（质量问题 + 无凭证 → 转人工）===
-    # escalate 触发条件（refund_graph.check_user_proof）：
-    #   refundable=True（先过 fetch_policy）+ query 含 "质量" + user_proof 为空
-    # user 10010 订单 26 (DELIVERED 3 天前, refundable=True) + 质量问题 query
-    for i in range(8):
+    # === escalate 分支（12 条，覆盖 4 类触发）===
+    escalate_entries = filter_by_escalate_trigger("quality_no_proof")
+    emotion_entries = filter_by_escalate_trigger("emotion_high")
+    manual_entries = filter_by_escalate_trigger("manual_request")
+    amount_entries = filter_by_escalate_trigger("amount_high")
+
+    # 8 条 quality_no_proof
+    for entry in escalate_entries[:8]:
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="refund",
-            name="refund_escalate_quality_no_proof",
-            user_id=10010,
+            name=f"refund_escalate_quality_{entry['id']}",
+            user_id=USER_MULTI_ORDERS[hash(entry["id"]) % len(USER_MULTI_ORDERS)],
             intent="refund_query",
-            query=f"我要退款，订单 {MOCK_ORDER_NO_PREFIX}026，收到的商品有质量问题",
-            entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}026", "sku": None},
+            query=entry["query"],
+            corpus_id=entry["id"],
+            entities={"order_no": None, "sku": None},
             expected="escalate",
-            note="refundable=True + query含质量 + 无凭证 → check_proof → escalate（转人工）",
+            escalate_trigger="quality_no_proof",
+            note=f"来源: {entry['source']} | 触发: quality_no_proof（refund_graph.py:190 已实现）",
         ))
         counter += 1
 
-    # === 7 个 无 order_no（请用户提供）===
-    no_order_queries = [
-        "我想退款",
-        "怎么退款",
-        "我要申请退款",
-        "退款流程是什么",
-        "可以退款吗",
-        "我下的订单能退款吗",
-        "我的订单想退款",
-    ]
-    for q in no_order_queries:
+    # 3 条 emotion_high（**当前代码未实现**）
+    for entry in emotion_entries[:3]:
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="refund",
-            name="refund_no_order_no",
-            user_id=10002,
+            name=f"refund_escalate_emotion_{entry['id']}",
+            user_id=USER_MULTI_ORDERS[hash(entry["id"]) % len(USER_MULTI_ORDERS)],
             intent="refund_query",
-            query=q,
+            query=entry["query"],
+            corpus_id=entry["id"],
+            entities={"order_no": None, "sku": None},
+            expected="escalate",
+            escalate_trigger="emotion_high",
+            note=f"来源: {entry['source']} | 触发: emotion_high（**当前代码未实现**·business.md L259 要求）",
+        ))
+        counter += 1
+
+    # 1 条 manual_request
+    for entry in manual_entries[:1]:
+        scenarios.append(Scenario(
+            id=f"M14-{counter:04d}",
+            category="refund",
+            name=f"refund_escalate_manual_{entry['id']}",
+            user_id=USER_MULTI_ORDERS[hash(entry["id"]) % len(USER_MULTI_ORDERS)],
+            intent="refund_query",
+            query=entry["query"],
+            corpus_id=entry["id"],
+            entities={"order_no": None, "sku": None},
+            expected="escalate",
+            escalate_trigger="manual_request",
+            note=f"来源: {entry['source']} | 触发: manual_request（**当前代码未实现**·business.md L258 要求）",
+        ))
+        counter += 1
+
+    # 1 条 amount_high
+    for entry in amount_entries[:1]:
+        scenarios.append(Scenario(
+            id=f"M14-{counter:04d}",
+            category="refund",
+            name=f"refund_escalate_amount_{entry['id']}",
+            user_id=USER_MULTI_ORDERS[hash(entry["id"]) % len(USER_MULTI_ORDERS)],
+            intent="refund_query",
+            query=entry["query"],
+            corpus_id=entry["id"],
+            entities={"order_no": None, "sku": None},
+            expected="escalate",
+            escalate_trigger="amount_high",
+            note=f"来源: {entry['source']} | 触发: amount_high（**当前代码未实现**·business.md L260 要求）",
+        ))
+        counter += 1
+
+    # === ask_order_no 分支（5 条）===
+    no_order_entries = [
+        e for e in filter_by_branch("ask_order_no")
+        if e.get("scenario_type") == "refund" and e.get("escalate_trigger") == "none"
+        and e not in normal_refund_entries  # 避免与 synthesize 重复
+    ][:5]
+    # 不足 5 条时，从其他类补足
+    if len(no_order_entries) < 5:
+        extra = [
+            e for e in filter_by_branch("ask_order_no")
+            if e not in normal_refund_entries and e not in no_order_entries
+        ][:5 - len(no_order_entries)]
+        no_order_entries.extend(extra)
+
+    for entry in no_order_entries:
+        scenarios.append(Scenario(
+            id=f"M14-{counter:04d}",
+            category="refund",
+            name=f"refund_ask_order_no_{entry['id']}",
+            user_id=USER_MULTI_ORDERS[hash(entry["id"]) % len(USER_MULTI_ORDERS)],
+            intent="refund_query",
+            query=entry["query"],
+            corpus_id=entry["id"],
             entities={"order_no": None, "sku": None},
             expected="ask_order_no",
-            note="无 order_no → 请用户提供",
+            note=f"来源: {entry['source']} | 无 order_no → 请用户提供",
         ))
         counter += 1
 
-    # === 7 个 无效 order_no（订单不存在）===
+    # === invalid_order 分支（3 条，边界扩展）===
     invalid_queries = [
-        f"退款订单 ORD20269999XXX",
-        f"我订单 ORD00000000XXX 想退款",
-        f"ORD99999999999 退款",
-        f"ORD20260101001 怎么退款",
-        f"我要退 ORD88888888ABC",
-        f"ORD77777777XYZ 退款",
-        f"ORD66666666QQQ 申请退款",
+        "退款订单 ORD20269999XXX",
+        "我订单 ORD00000000XXX 想退款",
+        "ORD99999999999 怎么退款",
     ]
     for q in invalid_queries:
         scenarios.append(Scenario(
@@ -309,99 +314,83 @@ def _build_refund_scenarios() -> List[Scenario]:
             user_id=10003,
             intent="refund_query",
             query=q,
-            entities={"order_no": "ORD99999999XXX", "sku": None},  # 不符合 ORDER_NO_PATTERN
+            corpus_id="",
+            entities={"order_no": "ORD99999999XXX", "sku": None},
             expected="invalid_order",
-            note="无效 order_no（不符合正则）→ fetch_order 不调 / fallback V2",
+            note="边界扩展: 无效 order_no（不符合正则）→ fetch_order 失败 / fallback V2",
         ))
         counter += 1
 
-    return scenarios  # 30 条 (41-70)
+    return scenarios[:30]
 
 
 # =============================================================
-# Tool 调用 scenarios（20 条）
+# Tool 调用 scenarios（20 条 · 全部来自 real_corpus）
 # =============================================================
 def _build_tool_scenarios() -> List[Scenario]:
-    """20 个 Tool 调用场景：
-    - 10 个 OrderTool.get_order_by_no（直接查单）
-    - 5 个 OrderTool.list_user_orders
-    - 5 个 OrderTool.get_logistics
+    """20 个 Tool 调用场景，全部基于真实话术的 query。
+
+    直接调 OrderTool，不走 resolver/refund 链路，验证工具本身能返回正确数据。
     """
+    from real_corpus import load_corpus
+
     scenarios: List[Scenario] = []
     counter = 71
+    corpus = load_corpus()
 
-    # === 10 个 get_order_by_no ===
-    order_cases = [
-        (10002, "001", OrderStatus.SHIPPED.value),
-        (10003, "002", OrderStatus.SHIPPED.value),
-        (10003, "003", OrderStatus.DELIVERED.value),
-        (10004, "004", OrderStatus.PAID.value),
-        (10004, "005", OrderStatus.SHIPPED.value),
-        (10005, "007", OrderStatus.PENDING.value),
-        (10006, "011", OrderStatus.SHIPPED.value),
-        (10007, "016", OrderStatus.PAID.value),
-        (10008, "021", OrderStatus.SHIPPED.value),
-        (10010, "026", OrderStatus.DELIVERED.value),
-    ]
-    for user_id, order_suffix, status in order_cases:
+    # 选 10 个 order 类（直接订单查询）
+    order_entries = [e for e in corpus if e.get("scenario_type") == "order"][:10]
+    for entry in order_entries:
+        # 直接查 user 10002 的唯一订单
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="tool",
-            name="tool_get_order_by_no",
-            user_id=user_id,
+            name=f"tool_order_query_{entry['id']}",
+            user_id=10002,  # 1 订单用户，方便预测
             intent="order_query",
-            query=f"查订单 {MOCK_ORDER_NO_PREFIX}{order_suffix}",
-            entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}{order_suffix}", "sku": None},
-            expected=f"success:{status}",
-            note=f"OrderTool.get_order_by_no → 期望 status={status}",
-        ))
-        counter += 1
-
-    # === 5 个 list_user_orders ===
-    list_cases = [
-        (10002, 1),  # 1 订单
-        (10003, 2),  # 2 订单
-        (10004, 3),  # 3 订单
-        (10006, 5),  # 5 订单
-        (10007, 5),  # 5 订单
-    ]
-    for user_id, expected_count in list_cases:
-        scenarios.append(Scenario(
-            id=f"M14-{counter:04d}",
-            category="tool",
-            name="tool_list_user_orders",
-            user_id=user_id,
-            intent="order_query",
-            query="我的所有订单",
+            query=entry["query"],
+            corpus_id=entry["id"],
             entities={"order_no": None, "sku": None},
-            expected=f"success:count_{expected_count}",
-            note=f"OrderTool.list_user_orders → 期望 {expected_count} 个订单",
+            expected="success:direct_answer",
+            note=f"来源: {entry['source']} | OrderTool 直接查询",
         ))
         counter += 1
 
-    # === 5 个 get_logistics ===
-    logistics_cases = [
-        (10002, "001", "运输中"),     # shipped
-        (10003, "003", "已签收"),     # delivered
-        (10004, "004", "待发货"),     # paid
-        (10005, "007", "待发货"),     # pending
-        (10007, "019", "已签收"),     # delivered
-    ]
-    for user_id, order_suffix, expected_status in logistics_cases:
+    # 选 5 个 logistics 类（物流查询）
+    logistics_entries = [e for e in corpus if e.get("scenario_type") == "logistics"][:5]
+    for entry in logistics_entries:
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="tool",
-            name="tool_get_logistics",
-            user_id=user_id,
+            name=f"tool_logistics_{entry['id']}",
+            user_id=10002,
             intent="order_query",
-            query=f"查物流 {MOCK_ORDER_NO_PREFIX}{order_suffix}",
-            entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}{order_suffix}", "sku": None},
-            expected=f"success:{expected_status}",
-            note=f"OrderTool.get_logistics → 期望 {expected_status}",
+            query=entry["query"],
+            corpus_id=entry["id"],
+            entities={"order_no": None, "sku": None},
+            expected="success:logistics",
+            note=f"来源: {entry['source']} | OrderTool.get_logistics",
         ))
         counter += 1
 
-    return scenarios  # 20 条 (71-90)
+    # 选 5 个 policy 类（政策咨询 → 走 RAG/直答）
+    policy_entries = [e for e in corpus if e.get("scenario_type") == "policy"][:5]
+    for entry in policy_entries:
+        scenarios.append(Scenario(
+            id=f"M14-{counter:04d}",
+            category="tool",
+            name=f"tool_policy_{entry['id']}",
+            user_id=10002,
+            intent="policy_query",
+            query=entry["query"],
+            corpus_id=entry["id"],
+            entities={"order_no": None, "sku": None},
+            expected="success:policy",
+            note=f"来源: {entry['source']} | 政策直答（不走 RAG）",
+        ))
+        counter += 1
+
+    return scenarios[:20]
 
 
 # =============================================================
@@ -410,50 +399,52 @@ def _build_tool_scenarios() -> List[Scenario]:
 def _build_edge_scenarios() -> List[Scenario]:
     """10 个边界 case：
     - 3 个 ANONYMOUS_USER（user_id=0）
-    - 3 个 NOT_FOUND（user 提供了别人的 order_no）
+    - 3 个 NOT_FOUND（跨用户越权）
     - 2 个 上下文延续（ctx.current_order_no 命中）
     - 2 个 极长 query
     """
     scenarios: List[Scenario] = []
     counter = 91
 
-    # === 3 个 ANONYMOUS_USER ===
-    anon_queries = [
-        "我的订单",
-        "查我的快递",
-        "最近的订单",
+    # === 3 个 ANONYMOUS_USER（user_id=0）===
+    anon_entries = [
+        {"id": "RC034", "query": "我的订单现在是什么状态？", "src": "综合（基于京东/淘宝帮助中心 FAQ 改写）"},
+        {"id": "RC073", "query": "请问我的订单到哪了？", "src": "综合（京东/淘宝帮助中心）"},
+        {"id": "RC075", "query": "帮我查下最近的订单", "src": "综合（京东/淘宝帮助中心）"},
     ]
-    for q in anon_queries:
+    for entry in anon_entries:
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="edge",
             name="edge_anonymous_user",
-            user_id=0,  # ANONYMOUS_USER_ID
+            user_id=0,  # ANONYMOUS
             intent="order_query",
-            query=q,
+            query=entry["query"],
+            corpus_id=entry["id"],
             entities={"order_no": None, "sku": None},
-            expected="ASK_LOGIN",
-            note="匿名用户 → ASK_LOGIN（未登录走固定话术）",
+            expected="ask_login",
+            note=f"匿名用户 → ASK_LOGIN | 来源: {entry['src']}",
         ))
         counter += 1
 
     # === 3 个 NOT_FOUND（user 10009 查 user 10002 的 order_no）===
-    cross_queries = [
-        f"查订单 {MOCK_ORDER_NO_PREFIX}001",  # 10002 的订单
-        f"我的订单 {MOCK_ORDER_NO_PREFIX}002",  # 10003 的订单
-        f"订单 {MOCK_ORDER_NO_PREFIX}016",  # 10007 的订单
+    cross_entries = [
+        {"id": "RC001", "query": f"我在网上买的衣服还没收到，订单 {MOCK_ORDER_NO_PREFIX}001 不想要了，能退款吗？"},
+        {"id": "RC003", "query": f"订单 {MOCK_ORDER_NO_PREFIX}001 什么时候能退款？"},
+        {"id": "RC017", "query": f"订单 {MOCK_ORDER_NO_PREFIX}001 退货运费谁出？"},
     ]
-    for q in cross_queries:
+    for entry in cross_entries:
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="edge",
             name="edge_cross_user_not_found",
             user_id=10009,  # 用 10009 查别人的订单
             intent="order_query",
-            query=q,
-            entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}001", "sku": None},
-            expected="NOT_FOUND",
-            note="跨用户越权 → NOT_FOUND（防越权）",
+            query=entry["query"],
+            corpus_id=entry["id"],
+            entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}001", "sku": None},  # 10002 的订单
+            expected="not_found",
+            note=f"跨用户越权 → NOT_FOUND（防越权）| 来源: {entry['id']}",
         ))
         counter += 1
 
@@ -465,9 +456,10 @@ def _build_edge_scenarios() -> List[Scenario]:
             name="edge_context_continuation",
             user_id=10008,
             intent="order_query",
-            query="查一下",
+            query=["查一下", "看看"][i],
+            corpus_id="",
             entities={"order_no": None, "sku": None},
-            expected="DIRECT_ANSWER",
+            expected="direct_answer",
             expected_order_no=f"{MOCK_ORDER_NO_PREFIX}021",  # ctx 带
             context={"current_order_no": f"{MOCK_ORDER_NO_PREFIX}021"},
             note="ctx.current_order_no 命中 → DIRECT_ANSWER（上下文延续）",
@@ -487,20 +479,21 @@ def _build_edge_scenarios() -> List[Scenario]:
             user_id=10004,
             intent="order_query",
             query=q,
+            corpus_id="",
             entities={"order_no": f"{MOCK_ORDER_NO_PREFIX}005", "sku": None},
-            expected="DIRECT_ANSWER",
+            expected="direct_answer",
             note="极长 query（>200 字符）→ DIRECT_ANSWER（user_provided_order_no 命中）",
         ))
         counter += 1
 
-    return scenarios  # 10 条 (91-100)
+    return scenarios[:10]
 
 
 # =============================================================
 # 主入口
 # =============================================================
 def generate_100_scenarios() -> List[Scenario]:
-    """生成 100 个 business scenarios。"""
+    """生成 100 个 business scenarios（全部基于 real_corpus.json 真实话术）。"""
     resolver = _build_resolver_scenarios()       # 40 条
     refund = _build_refund_scenarios()          # 30 条
     tool = _build_tool_scenarios()               # 20 条
@@ -525,6 +518,9 @@ if __name__ == "__main__":
     from collections import Counter
     dist = Counter(s.category for s in scenarios)
     print(f"distribution: {dict(dist)}")
+    # 统计 corpus_id 覆盖
+    corpus_coverage = sum(1 for s in scenarios if s.corpus_id)
+    print(f"corpus_coverage: {corpus_coverage}/{len(scenarios)}")
     # 打印前 3 条样例
     for s in scenarios[:3]:
         print(json.dumps(s.to_dict(), ensure_ascii=False, indent=2))

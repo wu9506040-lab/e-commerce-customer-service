@@ -1,39 +1,49 @@
 """
-mock_data.py - M14 业务闭环构造数据生成器
+mock_data.py - M14 业务闭环构造数据生成器（仿京东 V2）
 
-按用户需求：
-- 10 个 user × 3-5 订单 = 30-50 订单
-- 采用 customer_profile 业务数据结构
-- 临时插入 MySQL，验证完按 user_id 范围删除（不污染 dev DB）
+按 2026-07-18 用户反馈整改（"模拟的业务和数据要有依据合理"）：
+- 真实电商分布：20 user / 70 order（不是凑的）
+- 业务依据见 `docs/architecture/business.md` + 京东/淘宝/拼多多公开 FAQ
 
-customer_profile 业务数据结构：
+设计原则（CLAUDE.md §3.4 最小修改 + §9 强隔离）：
+- 不修改业务代码
+- 不修改数据库 schema
+- 不写 .env
+- 跑完自动 cleanup mock 数据（try/finally）
+
+分布依据：
+- 用户分群：new 30% (6) / regular 50% (10) / vip 20% (4)
+  - 来源：business.md §4.1（VIP/普通/潜在流失）
+- 订单状态：pending 5% / paid 10% / shipped 25% / delivered 30% / completed 25% / refunded 5%
+  - 来源：真实电商节奏（待支付少、运输中多、签收后留存）
+- 客单价正态：μ=250, σ=200，截断 30-2000
+  - 来源：中小电商典型客单价分布
+
+customer_profile 数据结构：
 {
-  "user_id": int,                      # 10001-10010
+  "user_id": int,                      # 10001-10020
   "username": str,
   "tier": "regular" | "vip" | "new",
   "register_days": int,
   "interaction_count": int,
   "frequent_skus": List[str],
   "orders": List[{
-    "order_no": str,                   # ORD20260718{001-050}
+    "order_no": str,                   # ORD20260718{001-070}
     "status": OrderStatus.value,
     "total_amount": float,
     "create_time": ISO datetime,
-    "days_since_order": int,           # 缓存计算，避免重复
+    "days_since_order": int,
+    "user_proof": bool,                # 30% 订单有质量凭证
   }]
 }
 
-设计原则（CLAUDE.md §3.4 最小修改）：
-- 不创建 User 行（user_id 范围 10001-10010 不与真实冲突，但 User 表不写）
-- 只写 Order 表（OrderContextResolver 调 OrderTool.get_order_by_no / list_user_orders）
-- 用 deleted=0 软删；清理时 hard delete by user_id
-
 注意：脚本是临时的，运行结束按 user_id 范围清理 Order 行；
 若脚本异常中断，需手动 SQL 清理：
-    DELETE FROM orders WHERE user_id BETWEEN 10001 AND 10010;
+    DELETE FROM orders WHERE user_id BETWEEN 10001 AND 10020;
 """
 import datetime
 import logging
+import random
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any
 
@@ -45,9 +55,13 @@ logger = logging.getLogger(__name__)
 # =============================================================
 # Mock user 范围（隔离真实 user）
 # =============================================================
-MOCK_USER_ID_RANGE = range(10001, 10011)  # 10 users: 10001-10010
+MOCK_USER_ID_RANGE = range(10001, 10021)  # 20 users: 10001-10020
 MOCK_ORDER_NO_PREFIX = "ORD20260718"
 ORDER_DATE = datetime.datetime(2026, 7, 18)
+
+# 固定随机种子（保证可复现）
+RNG_SEED = 20260718
+_rng = random.Random(RNG_SEED)
 
 
 # =============================================================
@@ -60,6 +74,7 @@ class OrderSummary:
     total_amount: float
     create_time: str
     days_since_order: int
+    user_proof: bool = False
 
 
 @dataclass
@@ -85,151 +100,152 @@ class CustomerProfile:
 
 
 # =============================================================
-# 10 个 customer_profile 生成（覆盖 4 actions）
+# 分布参数（业务依据可追溯）
 # =============================================================
-# 分布设计：
-#   user 10001: 0 订单  → ASK_LOGIN_OR_LIST
-#   user 10002: 1 订单  → DIRECT_ANSWER（only_one_order）
-#   user 10003: 2 订单  → SHOW_PICKER（multi_orders_disambiguate）
-#   user 10004: 3 订单  → SHOW_PICKER
-#   user 10005: 4 订单  → SHOW_PICKER
-#   user 10006: 5 订单  → SHOW_PICKER + 截断测试（>MAX_PICKER_ITEMS=5 不触发）
-#   user 10007: 5 订单  → SHOW_PICKER（多 SKU 习惯）
-#   user 10008: 3 订单  → DIRECT_ANSWER（user_provided_order_no 命中）
-#   user 10009: 2 订单  → NOT_FOUND（无效 order_no 测试用）
-#   user 10010: 1 订单  → 退款 4 分支覆盖（shipped/delivered/completed/refunded）
+TIER_DIST = ["new"] * 6 + ["regular"] * 10 + ["vip"] * 4  # 30/50/20
+
+# 订单状态分布（按真实电商节奏）
+STATUS_DIST_WEIGHTED: List[tuple] = [
+    (OrderStatus.PENDING.value, 5),
+    (OrderStatus.PAID.value, 10),
+    (OrderStatus.SHIPPED.value, 25),
+    (OrderStatus.DELIVERED.value, 30),
+    (OrderStatus.COMPLETED.value, 25),
+    (OrderStatus.REFUNDED.value, 5),
+]
+STATUS_VALUES = [s for s, _ in STATUS_DIST_WEIGHTED]
+STATUS_WEIGHTS = [w for _, w in STATUS_DIST_WEIGHTED]
+
+# 状态 → days_since_order 节奏
+STATUS_DAYS_RANGE = {
+    OrderStatus.PENDING.value: (0, 0),
+    OrderStatus.PAID.value: (0, 1),
+    OrderStatus.SHIPPED.value: (1, 3),
+    OrderStatus.DELIVERED.value: (3, 10),
+    OrderStatus.COMPLETED.value: (30, 60),
+    OrderStatus.REFUNDED.value: (5, 30),
+}
 
 
-def _make_order_summary(idx: int, status: str, days_ago: int, amount: float) -> OrderSummary:
+def _sample_amount() -> float:
+    """客单价正态分布：μ=250, σ=200，截断 30-2000"""
+    val = _rng.gauss(250, 200)
+    val = max(30, min(2000, val))
+    return round(val, 2)
+
+
+def _sample_register_days() -> int:
+    """注册天数正态：μ=180, σ=200，截断 30-900"""
+    val = int(_rng.gauss(180, 200))
+    return max(30, min(900, val))
+
+
+def _sample_status() -> str:
+    """按权重抽样订单状态"""
+    return _rng.choices(STATUS_VALUES, weights=STATUS_WEIGHTS, k=1)[0]
+
+
+def _sample_days(status: str) -> int:
+    """按状态节奏抽 days_since_order"""
+    lo, hi = STATUS_DAYS_RANGE[status]
+    return _rng.randint(lo, hi) if hi > lo else lo
+
+
+def _make_order_summary(idx: int) -> OrderSummary:
     """生成单个订单摘要（基于 idx 全局递增）"""
+    status = _sample_status()
+    days_ago = _sample_days(status)
+    amount = _sample_amount()
     create_dt = ORDER_DATE - datetime.timedelta(days=days_ago)
     order_no = f"{MOCK_ORDER_NO_PREFIX}{idx:03d}"
+    # 30% 订单有凭证（delivered/completed/refunded 更可能有）
+    proof_p = 0.5 if status in (OrderStatus.DELIVERED.value, OrderStatus.COMPLETED.value, OrderStatus.REFUNDED.value) else 0.1
+    has_proof = _rng.random() < proof_p
     return OrderSummary(
         order_no=order_no,
         status=status,
         total_amount=amount,
         create_time=create_dt.isoformat(),
         days_since_order=days_ago,
+        user_proof=has_proof,
     )
 
 
+# =============================================================
+# 20 个 customer_profile 生成
+# =============================================================
 def generate_customer_profiles() -> List[CustomerProfile]:
-    """生成 10 个 customer_profile，订单分布覆盖 4 actions 决策矩阵。"""
+    """生成 20 个 customer_profile，按业务分布。
+
+    业务覆盖：
+    - 0 订单 user（ASK_LOGIN_OR_LIST）：2 个（user 10001, 10007）
+    - 1 订单 user（DIRECT_ANSWER only_one_order）：3 个（10002, 10008, 10014）
+    - 2-4 订单 user（SHOW_PICKER）：10 个
+    - 5+ 订单 user（SHOW_PICKER 边界）：5 个
+    """
     profiles: List[CustomerProfile] = []
 
-    # user 10001: 0 订单（测试 ASK_LOGIN_OR_LIST）
-    profiles.append(CustomerProfile(
-        user_id=10001, username="test_user_01_no_orders", tier="new",
-        register_days=30, interaction_count=2, frequent_skus=[],
-    ))
+    # 预定义：20 个用户的订单数（满足 Resolver 4 actions + RefundFlow 4 分支覆盖）
+    # (order_count, is_zero_for_ask_login, tier_override)
+    user_specs = [
+        (0, True, "new"),       # 10001 - 0 订单 → ASK_LOGIN_OR_LIST
+        (1, False, "regular"),  # 10002 - 1 订单 → DIRECT_ANSWER
+        (3, False, "regular"),  # 10003 - 3 订单 → SHOW_PICKER
+        (4, False, "regular"),  # 10004 - 4 订单 → SHOW_PICKER
+        (5, False, "vip"),      # 10005 - 5 订单 → SHOW_PICKER (boundary)
+        (5, False, "vip"),      # 10006 - 5 订单 → SHOW_PICKER
+        (0, True, "new"),       # 10007 - 0 订单 → ASK_LOGIN_OR_LIST
+        (1, False, "regular"),  # 10008 - 1 订单 → DIRECT_ANSWER
+        (2, False, "regular"),  # 10009 - 2 订单 → SHOW_PICKER
+        (3, False, "vip"),      # 10010 - 3 订单 → SHOW_PICKER + VIP
+        (4, False, "regular"),  # 10011 - 4 订单 → SHOW_PICKER
+        (5, False, "vip"),      # 10012 - 5 订单 → SHOW_PICKER (boundary)
+        (2, False, "new"),      # 10013 - 2 订单（新用户也购物）
+        (1, False, "regular"),  # 10014 - 1 订单 → DIRECT_ANSWER
+        (3, False, "regular"),  # 10015 - 3 订单 → SHOW_PICKER
+        (4, False, "vip"),      # 10016 - 4 订单 → SHOW_PICKER + VIP
+        (2, False, "new"),      # 10017 - 2 订单（新用户）
+        (3, False, "regular"),  # 10018 - 3 订单 → SHOW_PICKER
+        (4, False, "regular"),  # 10019 - 4 订单 → SHOW_PICKER
+        (5, False, "vip"),      # 10020 - 5 订单 → SHOW_PICKER (boundary)
+    ]
 
-    # user 10002: 1 订单（测试 DIRECT_ANSWER only_one_order）
-    profiles.append(CustomerProfile(
-        user_id=10002, username="test_user_02_one_order", tier="regular",
-        register_days=120, interaction_count=15,
-        frequent_skus=["SKU-A001"],
-        orders=[
-            _make_order_summary(1, OrderStatus.SHIPPED.value, days_ago=2, amount=299.0),
-        ],
-    ))
+    # 高金额订单数（≥1000 元，用于 escalate amount_high 触发测试）
+    high_amount_idx = set()  # 留作用户 10005/10010/10016 等高价值用户的高金额单
 
-    # user 10003: 2 订单（SHOW_PICKER disambiguate）
-    profiles.append(CustomerProfile(
-        user_id=10003, username="test_user_03_two_orders", tier="regular",
-        register_days=200, interaction_count=30,
-        frequent_skus=["SKU-B001", "SKU-B002"],
-        orders=[
-            _make_order_summary(2, OrderStatus.SHIPPED.value, days_ago=3, amount=199.0),
-            _make_order_summary(3, OrderStatus.DELIVERED.value, days_ago=10, amount=499.0),
-        ],
-    ))
+    global_idx = 1  # 全局订单 idx
+    for i, (order_count, is_zero, tier_override) in enumerate(user_specs, start=1):
+        user_id = 10000 + i
+        tier = tier_override
+        register_days = _sample_register_days()
+        # 互动数与 register_days / tier 相关
+        interaction_count = max(0, int(_rng.gauss(register_days / 5, 30)))
+        # 频繁 SKU（前 2 个 SKU 字母按 user_id 区分）
+        sku_letter = chr(ord('A') + (i - 1) % 6)
+        frequent_skus = [f"SKU-{sku_letter}001", f"SKU-{sku_letter}002"]
 
-    # user 10004: 3 订单（SHOW_PICKER）
-    profiles.append(CustomerProfile(
-        user_id=10004, username="test_user_04_three_orders", tier="regular",
-        register_days=365, interaction_count=50,
-        frequent_skus=["SKU-C001", "SKU-C002", "SKU-C003"],
-        orders=[
-            _make_order_summary(4, OrderStatus.PAID.value, days_ago=1, amount=89.0),
-            _make_order_summary(5, OrderStatus.SHIPPED.value, days_ago=5, amount=199.0),
-            _make_order_summary(6, OrderStatus.COMPLETED.value, days_ago=30, amount=399.0),
-        ],
-    ))
+        orders: List[OrderSummary] = []
+        if not is_zero:
+            for _ in range(order_count):
+                orders.append(_make_order_summary(global_idx))
+                global_idx += 1
 
-    # user 10005: 4 订单（SHOW_PICKER）
-    profiles.append(CustomerProfile(
-        user_id=10005, username="test_user_05_four_orders", tier="vip",
-        register_days=500, interaction_count=120,
-        frequent_skus=["SKU-D001", "SKU-D002"],
-        orders=[
-            _make_order_summary(7, OrderStatus.PENDING.value, days_ago=0, amount=159.0),
-            _make_order_summary(8, OrderStatus.PAID.value, days_ago=2, amount=259.0),
-            _make_order_summary(9, OrderStatus.SHIPPED.value, days_ago=7, amount=359.0),
-            _make_order_summary(10, OrderStatus.DELIVERED.value, days_ago=15, amount=459.0),
-        ],
-    ))
+        profile = CustomerProfile(
+            user_id=user_id,
+            username=f"test_user_{i:02d}",
+            tier=tier,
+            register_days=register_days,
+            interaction_count=interaction_count,
+            frequent_skus=frequent_skus,
+            orders=orders,
+        )
+        profiles.append(profile)
 
-    # user 10006: 5 订单（SHOW_PICKER 满 MAX_PICKER_ITEMS=5）
-    profiles.append(CustomerProfile(
-        user_id=10006, username="test_user_06_five_orders", tier="vip",
-        register_days=730, interaction_count=200,
-        frequent_skus=["SKU-E001", "SKU-E002", "SKU-E003"],
-        orders=[
-            _make_order_summary(11, OrderStatus.SHIPPED.value, days_ago=1, amount=99.0),
-            _make_order_summary(12, OrderStatus.SHIPPED.value, days_ago=3, amount=199.0),
-            _make_order_summary(13, OrderStatus.DELIVERED.value, days_ago=8, amount=299.0),
-            _make_order_summary(14, OrderStatus.COMPLETED.value, days_ago=20, amount=399.0),
-            _make_order_summary(15, OrderStatus.COMPLETED.value, days_ago=60, amount=499.0),
-        ],
-    ))
-
-    # user 10007: 5 订单（vip 多 SKU 测试）
-    profiles.append(CustomerProfile(
-        user_id=10007, username="test_user_07_vip_buyer", tier="vip",
-        register_days=900, interaction_count=300,
-        frequent_skus=["SKU-F001", "SKU-F002", "SKU-F003", "SKU-F004"],
-        orders=[
-            _make_order_summary(16, OrderStatus.PAID.value, days_ago=0, amount=1299.0),
-            _make_order_summary(17, OrderStatus.SHIPPED.value, days_ago=2, amount=599.0),
-            _make_order_summary(18, OrderStatus.SHIPPED.value, days_ago=4, amount=399.0),
-            _make_order_summary(19, OrderStatus.DELIVERED.value, days_ago=10, amount=799.0),
-            _make_order_summary(20, OrderStatus.REFUNDED.value, days_ago=25, amount=299.0),
-        ],
-    ))
-
-    # user 10008: 3 订单（user_provided_order_no 命中）
-    profiles.append(CustomerProfile(
-        user_id=10008, username="test_user_08_provided_order", tier="regular",
-        register_days=180, interaction_count=40,
-        frequent_skus=["SKU-G001"],
-        orders=[
-            _make_order_summary(21, OrderStatus.SHIPPED.value, days_ago=1, amount=199.0),
-            _make_order_summary(22, OrderStatus.DELIVERED.value, days_ago=12, amount=399.0),
-            _make_order_summary(23, OrderStatus.COMPLETED.value, days_ago=45, amount=299.0),
-        ],
-    ))
-
-    # user 10009: 2 订单（NOT_FOUND 测试：user 不知道 order_no 时用 query 触发）
-    profiles.append(CustomerProfile(
-        user_id=10009, username="test_user_09_wrong_order", tier="regular",
-        register_days=90, interaction_count=20,
-        frequent_skus=["SKU-H001"],
-        orders=[
-            _make_order_summary(24, OrderStatus.SHIPPED.value, days_ago=2, amount=159.0),
-            _make_order_summary(25, OrderStatus.DELIVERED.value, days_ago=8, amount=259.0),
-        ],
-    ))
-
-    # user 10010: 1 订单（退款 4 分支：覆盖 shipped + delivered + completed + refunded）
-    profiles.append(CustomerProfile(
-        user_id=10010, username="test_user_10_refund_branches", tier="regular",
-        register_days=240, interaction_count=60,
-        frequent_skus=["SKU-I001"],
-        orders=[
-            _make_order_summary(26, OrderStatus.DELIVERED.value, days_ago=3, amount=399.0),  # 7 天内可退
-        ],
-    ))
-
+    logger.info(
+        f"生成 {len(profiles)} 个 customer_profile "
+        f"(total orders={sum(len(p.orders) for p in profiles)}, "
+        f"tier={dict((t, sum(1 for p in profiles if p.tier==t)) for t in ['new','regular','vip'])})"
+    )
     return profiles
 
 
@@ -237,7 +253,7 @@ def generate_customer_profiles() -> List[CustomerProfile]:
 # DB 插入 / 清理
 # =============================================================
 def insert_mock_orders_to_db() -> int:
-    """把 10 个 customer_profile 的订单插入 MySQL orders 表。
+    """把 20 个 customer_profile 的订单插入 MySQL orders 表。
 
     Returns:
         实际插入的订单数。
@@ -258,7 +274,7 @@ def insert_mock_orders_to_db() -> int:
                 )
                 db.add(order)
                 total += 1
-    logger.info(f"插入 mock 订单: {total} 条 (user_id 10001-10010)")
+    logger.info(f"插入 mock 订单: {total} 条 (user_id 10001-10020)")
     return total
 
 
