@@ -5400,3 +5400,180 @@ cleanup_mock_data()  # try/finally 自动清理 70 单
 - `project_c4_live_v1_done.md` — Agent 评测 hal_free 1.000 真基线（修 SSE 双层 data 解析 bug 后）
 - `project_m14_done.md` — M14 4 层基础设施 + 5 灰度开关
 
+---
+
+## §46 · M14 V3 转人工兜底（2026-07-18 · EscalationService + handoff payload + 3 触发点 + 前端 HandoffCard）
+
+### What（做了什么）
+
+新增 1 个服务模块 + 4 处接入 + 1 个前端组件 + 1 个 Playwright case + 16 个单测：
+
+| # | 文件 | 操作 | 改动量 |
+|---|------|------|--------|
+| 1 | `backend/app/services/escalation_service.py` | **新增** | 215 行：`HandoffPayload` dataclass + `EscalationService` + `detect_handoff_keyword` + 工厂单例 |
+| 2 | `backend/app/services/business_flow/refund_flow.py` | 改 | +60 行：V3 exception → V2 fallback → V2 exception → `_yield_handoff(reason=AGENT_UNAVAILABLE)` |
+| 3 | `backend/app/services/chat/refund_handler.py` | 改 | +60 行：同款双重兜底（`_yield_handoff` helper） |
+| 4 | `backend/app/api/chat.py` | 改 | +35 行：guard 检查后、`IntentService.classify` 前检测"转人工"关键词 → handoff |
+| 5 | `backend/app/core/config.py` | 改 | +5 行：灰度开关 `ENABLE_ESCALATION_HANDOFF`（默认 False）|
+| 6 | `frontend/src/components/HandoffCard.vue` | **新增** | 290 行：橙红色 alert 卡片（按 reason 区分颜色）+ 工单号 + 用户名片 + 折叠订单/对话/失败上下文 |
+| 7 | `frontend/src/types.ts` | 改 | +40 行：`HandoffPayload` 类型 + `Message.handoff` + `StreamEvent.meta.handoff` |
+| 8 | `frontend/src/components/MessageCard.vue` | 改 | +5 行：捕获 `message.handoff` → 渲染 `HandoffCard`（优先级最高） |
+| 9 | `frontend/src/views/ChatPage.vue` | 改 | +2 行：SSE meta → `assistantMsg.handoff` 透传 |
+| 10 | `scripts/verify_demo_public.py` | 改 | +30 行：step9 转人工演示（用户说"转人工" → 验证 H[A-F0-9]{8} 工单号 + handoff-card class） |
+| 11 | `tests/escalation/test_handoff.py` | **新增** | 16 个单测：关键词检测 / payload 生成 / 灰度开关 / RefundFlow V3+V2 双失败触发 |
+
+### Why（为什么）
+
+**业务诉求（用户原话）**：再说个兜底，比如顾客问了多轮问题，突然 Agent 挂了，或者回答不上来，应该把顾客的上下文、信息名片打包给人工，能让人工快速处理。
+
+**Demo 第一性分析（架构师 + 业务经理视角）**：
+1. Demo 失败 = 0，成功 = 全部价值。LLM 偶发异常没兜底 → 500 翻车 → 整个 demo 价值归零
+2. 真实业务流：客服答不上来转人工，AI 不该假装能答
+3. 工程化成熟度 signal：展示"AI 知道自己不行 + 工程化兜底"远比"功能多"有说服力
+
+**MVP 边界克制（不做的事）**：
+- ❌ 工单持久化表（MVP 不需要；payload 推到前端即可，面试讲设计）
+- ❌ LLM 生成摘要（直接塞最近 5 条原文，<1s 延迟）
+- ❌ 低 confidence 自动检测（需 LLM 加字段，工程量大，边际收益低）
+- ❌ 人工坐席工作台（完全 out of scope）
+
+### Tech（技术栈）
+
+| 组件 | 选型 | 理由 |
+|------|------|------|
+| 触发检测 | `detect_handoff_keyword()` 字符串包含匹配 | 9 个关键词硬编码（轻量、零延迟、可单测） |
+| Payload 容器 | `@dataclass HandoffPayload` + `to_dict()` | 与 SSE JSON 协议对齐；不引入 Pydantic（与 orchestrator 风格一致） |
+| 工单号 | `f"H{uuid.uuid4().hex[:8].upper()}"` | 短可读（9 字符）；人工坐席凭此接入 |
+| 摘要生成 | 字符串拼装（不调 LLM） | 申请退款/订单 ORD001/最后说:…等结构化片段 |
+| 灰度开关 | `settings.ENABLE_ESCALATION_HANDOFF` | 与 M14 5 开关对齐；False 时降级为"系统繁忙"文本 |
+| 视觉权重 | 橙红色 alert（区别于 OrderCard 京东红） | 转人工是"重要事件"，需独立视觉权重 |
+| 失败上下文 | `agent_failure_context: {failed_stage, v3_error_class, v2_error_class}` | debug 用；agent_unavailable 时折叠展开 |
+
+### Flow（输入 → 输出）
+
+**3 个触发点**：
+
+```
+触发点 A：Agent 异常
+RefundFlow.run() / handle_refund_v3()
+  └─ V3 LangGraph.stream() exception (RuntimeError "LangGraph 挂了")
+       └─ try: V2 fallback → V2 成功 → 走 V2 答案（不触发 handoff）
+            except: V2 也失败 (ValueError "V2 也挂了")
+                 └─ _yield_handoff(reason=AGENT_UNAVAILABLE)
+                      ├─ yield meta.handoff={handoff_id, v3_err, v2_err, ...}
+                      ├─ yield token "系统繁忙已升级人工（工单号 H7A3F9C2E）"
+                      └─ yield done
+
+触发点 B：用户说"转人工"
+api/chat.py:chat()
+  └─ guard check (allowed=True)
+       └─ detect_handoff_keyword("我要转人工") → True
+            └─ EscalationService.handoff(reason=USER_REQUESTED)
+                 ├─ yield meta.intent="handoff" + meta.handoff={...}
+                 ├─ yield token "已为您转接人工客服（工单号 HXXX）"
+                 └─ yield done
+            (跳过 IntentService.classify + LLM 调用)
+
+触发点 C：业务规则（未来扩展位）
+LangGraph escalate 节点 (质量问题无凭证) → EscalationService.handoff(reason=BUSINESS_RULE)
+（M14 V3 MVP 未接入，预留接口）
+```
+
+**SSE meta.handoff payload 结构**：
+
+```json
+{
+  "handoff_id": "H7A3F9C2E",
+  "reason": "agent_unavailable",
+  "reason_label": "系统繁忙，已为您升级人工客服",
+  "created_at": "2026-07-18T10:30:00.123456+00:00",
+  "user_id": 42,
+  "user_card": {"user_id": 42, "total_orders": 3, "recent_order_count": 3},
+  "recent_orders": [{"order_no": "ORD20260718001", "status": "delivered", "total_amount": 299.0, ...}],
+  "recent_messages": [{"role": "user", "content": "我的衣服有问题能退吗"}, ...],
+  "current_intent": "refund_query",
+  "current_entities": {"order_no": "ORD20260718001", "sku": null, "keywords": []},
+  "agent_failure_context": {
+    "failed_stage": "v3_v2_both_failed",
+    "v3_error_class": "RuntimeError",
+    "v3_error_msg": "LangGraph 挂了",
+    "v2_error_class": "ValueError",
+    "v2_error_msg": "V2 也挂了",
+    "retry_count": 1
+  },
+  "summary_text": "申请退款，订单 ORD20260718001，最后说: 我的衣服有问题..."
+}
+```
+
+### Problem & Fix（问题 → 解决）
+
+| # | 问题 | 根因 | 解决 |
+|---|------|------|------|
+| 1 | `OrderTool.list_user_orders` 在 DB 失败时返 None（不抛异常） | OrderTool 内部 `safe_session` warning 后返 None | 在 `EscalationService.handoff()` 加 `if recent_orders is None: recent_orders = []` 兜底 |
+| 2 | 4 个 `@patch` 装饰器栈参数顺序错位 | `@patch.object` 是第一个 patch（位置参数首位），但函数签名只接收 3 个 mock | 重命名参数顺序与装饰器栈对齐（从下到上：mock_v3 / mock_v2 / _mock_extract）|
+| 3 | `refund_flow._yield_handoff` 与 `refund_handler._yield_handoff` 重复实现 | 两个模块独立兜底路径需要同样 helper | 先 inline 重复（5 行差异），M14 V4 可下沉到 escalation_service.py |
+| 4 | 前端 `Message.handoff` 字段透传丢失 | ChatPage SSE meta → assistantMsg 拷贝字段时漏 handoff | 加 `handoff: meta?.handoff ?? null` 一行 |
+| 5 | TypeScript `StreamEvent` union 缺 handoff 分支 | M14 V3 协议扩展没同步 | `types.ts` 加 `handoff?: HandoffPayload` |
+
+### Architecture Role（在系统中的位置）
+
+```
+           api/chat.py (HTTP 层)
+                ↓ detect_handoff_keyword → EscalationService.handoff(USER_REQUESTED)
+                ↓ IntentService.classify → orchestrator → RefundFlow / handle_refund_v3
+                                                                ↓
+                                                                ├─ LangGraph V3 stream (正常路径)
+                                                                │     ├─ success → meta.flow_stage + token
+                                                                │     └─ exception → try V2 fallback
+                                                                │                       ├─ success → V2 answer
+                                                                │                       └─ exception → EscalationService.handoff(AGENT_UNAVAILABLE)
+                                                                └─ SSE meta.handoff = {handoff_id, user_card, recent_orders, recent_messages, summary_text}
+                                                                              ↓
+                                                                              HandoffCard.vue (橙红色 alert)
+                                                                              ├─ 工单号 HXXX
+                                                                              ├─ reason label (按 reason 切色)
+                                                                              ├─ 用户名片
+                                                                              ├─ 最近订单 (折叠)
+                                                                              ├─ 最近对话 (折叠)
+                                                                              └─ 失败上下文 (仅 agent_unavailable, 折叠默认展开)
+```
+
+**职责边界**：
+- `escalation_service.py`：纯打包服务（不调 LLM / 不写 DB / 不发通知）
+- `api/chat.py`：入口层关键词检测（路由决策，与 guard 的 3 层防御正交）
+- `business_flow/refund_flow.py` + `chat/refund_handler.py`：业务流层异常兜底（V3 + V2 双失败）
+- `HandoffCard.vue`：展示层（与 OrderCard 同级；按 reason 切色区分重要度）
+
+### Tests
+
+| 测试 | 数量 | 通过 |
+|------|------|------|
+| `tests/escalation/test_handoff.py` | 16 | 16/16 |
+| `tests/business_flow/test_refund_flow.py` | 12 | 12/12 |
+| `tests/context/test_resolver.py` | 19 | 19/19 |
+| `backend/tests/test_synthesizer_refund.py` | 10 | 10/10 |
+| **小计** | **57** | **57/57** |
+| 全量回归 | 486 | 486/486（1 deselected pre-existing Docker MySQL 依赖）|
+
+### 已知限制
+
+- **M14 V3 MVP 不持久化工单**：payload 推到前端 + audit log + Redis session 即可；工单表 backlog
+- **不调 LLM 生成摘要**：塞最近 5 条原文；如对话 > 10 轮会过长
+- **business_rule 触发点未接入**：LangGraph escalate 节点（质量问题无凭证）已存在但未走 EscalationService；backlog
+- **关键词黑名单硬编码**：9 个中文短语；长尾 case（如"找真人"）未覆盖；backlog 移到 `config/business_rules/handoff_keywords.yaml`
+- **降级文本固定**：`settings.ENABLE_ESCALATION_HANDOFF=False` 时返"系统繁忙"，不区分 user_requested / agent_unavailable
+- **前端无 retry**：HandoffCard 渲染后用户无法"撤回转人工"；backlog 加 cancel 按钮
+
+### 简历同步
+
+| 文件 | 改动 |
+|------|------|
+| `docs/_private/resume_zhongwei.html` | 退款流程 bullet 加"M14 V3：转人工兜底（V3+V2 双异常自动升级，context 打包给人工）" |
+| `docs/_private/resume_snippet.md` | 项目描述 bullet #4 同步 |
+
+### 关联记忆
+
+- `feedback_resume_baseline.md` — 简历只列可实测数字
+- `feedback_resume_no_ai_flavor.md` — 简历数字按业务倒推
+- `project_m14_done.md` — M14 4 层基础设施 + 5 灰度开关
+

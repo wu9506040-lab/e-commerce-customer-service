@@ -15,7 +15,7 @@
     6.  聊天 RAG 命中知识库
     7.  LangGraph 退款状态机
     8.  订单生命周期 pending → refunded
-    9.  个人信息页
+    9.  M14 V3 转人工兜底（用户说"转人工" → HandoffCard 渲染）
     10. 控制台 JS 错误统计
 
 用法：
@@ -258,6 +258,36 @@ async def step8_order_lifecycle(page: Page) -> bool:
                        f"订单存在={has_orders}, 状态词={has_status}")
 
 
+async def step9_handoff(page: Page) -> bool:
+    """9. M14 V3 转人工兜底：用户说"转人工" → 弹出 HandoffCard（M14 V3 新增）"""
+    print(f"\n[{step9_handoff.__name__}] 转人工兜底演示")
+    try:
+        await page.goto(f"{BASE}/chat", wait_until="domcontentloaded", timeout=15000)
+        await page.wait_for_selector("input[type='text'], textarea", timeout=10000)
+        await page.fill("input[type='text'], textarea", "我要转人工")
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(4000)
+        await settle_screenshot(page, "demo-09-handoff")
+        content = await page.content()
+        # 验证 HandoffCard 渲染：工单号 + 触发原因 + 用户名片
+        # 工单号格式：H + 8 hex（H[A-F0-9]{8}）
+        import re
+        handoff_id_match = re.search(r"H[A-F0-9]{8}", content)
+        reason_markers = ["转人工" in content, "工单号" in content, "升级" in content or "客服" in content]
+        # CSS class 标记（HandoffCard 根元素 class="handoff-card"）
+        handoff_class = "handoff-card" in content
+        ok = handoff_id_match is not None and sum(reason_markers) >= 2 and handoff_class
+        return _print_step(
+            "9. 转人工兜底 HandoffCard",
+            ok,
+            f"工单号={handoff_id_match.group(0) if handoff_id_match else 'NONE'}, "
+            f"原因词命中={sum(reason_markers)}/{len(reason_markers)}, "
+            f"handoff-card class={handoff_class}",
+        )
+    except Exception as e:
+        return _print_step("9. 转人工兜底", False, str(e)[:120])
+
+
 async def main():
     print("=" * 70)
     print(f"  智能客服公网部署演示流程实测")
@@ -287,6 +317,7 @@ async def main():
         await step6_chat_rag(page)
         await step7_refund_langgraph(page)
         await step8_order_lifecycle(page)
+        await step9_handoff(page)  # M14 V3：转人工兜底
 
         await browser.close()
 
