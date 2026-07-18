@@ -220,8 +220,13 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
   let capturedMeta: StreamEvent | null = null;
   // 新会话预生成 UUID：让后端复用作 session_id，
   // 保证流中途断开时 resumeChat 能拿到 sid（不再受限于 done 事件）
+  // 兼容旧浏览器/headless 环境：crypto.randomUUID 在 Chrome 92+ 才稳定
   const startSessionId =
-    currentSessionId.value ?? crypto.randomUUID().replace(/-/g, '');
+    currentSessionId.value ??
+    (crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(
+      /-/g,
+      '',
+    );
   const isFirstUserMessage = !currentSessionId.value; // 新会话才设标题
 
   // Sprint P2 / SSE Resume：本回合 stream_id + 最后 seq（catch 时用于续传）
