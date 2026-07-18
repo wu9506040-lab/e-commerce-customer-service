@@ -1,14 +1,16 @@
 """tests/business_flow/test_refund_flow.py
 
-M14 Stage 3：RefundFlow 单测
+M14 Stage 3 + 2026-07-18 改造：RefundFlow 单测
 
 覆盖：
 1. ENABLE_BUSINESS_FLOW=False → factory.create() 返 None（短路）
 2. ENABLE_BUSINESS_FLOW=True + refund_query → RefundFlow 实例
 3. ENABLE_BUSINESS_FLOW=True + 非 refund_query → None（YAGNI：仅 1 个 Flow）
 4. RefundFlow.run()：匿名用户短路（meta.flow_stage=fetch_order + NO_LOGIN_PROMPT）
-5. RefundFlow.run()：无 order_no 短路（meta.flow_stage=fetch_order + 请提供订单号）
-6. RefundFlow.run()：有 order_no 走 LangGraph → yield meta.flow_stage + token
+5. RefundFlow.run()：无 order_no + 0 订单 → ASK_LOGIN_OR_LIST（2026-07-18 改造后）
+6. RefundFlow.run()：无 order_no + 1 订单 → DIRECT_ANSWER 自动用 + 走 LangGraph
+7. RefundFlow.run()：无 order_no + N 订单 → SHOW_PICKER + meta.card
+8. RefundFlow.run()：有 order_no 走 LangGraph → yield meta.flow_stage + token
 """
 import os
 import sys
@@ -16,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 # 让 `from app.services...` 能跑
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 sys.path.insert(0, str(BACKEND))
 
@@ -99,22 +101,19 @@ class TestRefundFlowShortcuts:
         assert len(token_events) > 0, "匿名用户应至少 yield 一个 token（NO_LOGIN_PROMPT 切片）"
 
     @patch("app.services.business_flow.refund_flow._extract_order_no_from_history", return_value=None)
-    def test_no_order_no_short_circuits(self, _mock_extract):
-        """无 order_no + 有 user_id → 请提供订单号（防串单 M9.5）"""
-        flow = RefundFlow(
-            query="我要退款",
-            user_id=1,
-            intent_result={"intent": "refund_query", "entities": {}},  # 无 order_no
-        )
-        events = list(flow.run())
-        # 第一个事件：meta fetch_order stage
-        assert events[0][0] == "meta"
-        assert events[0][1]["flow_stage"] == "fetch_order"
-        # 后续 token 包含"请提供" + "订单号"（实际文本"请提供要查询退款的订单号"）
-        token_events = [e for e in events if e[0] == "token"]
-        full_text = "".join(e[1] for e in token_events)
-        assert "请提供" in full_text
-        assert "订单号" in full_text
+    def test_no_order_no_short_circuits_legacy_check_replaced(self, _mock_extract):
+        """2026-07-18 改造：原"无 order_no → 请提供订单号"已被 Resolver 自动解析取代。
+
+        旧逻辑（防串单 M9.5）：直接要用户提供订单号 → 删
+        新逻辑（真实业务场景）：走 Resolver 0/1/N 决策
+          - 0 单 → ASK_LOGIN_OR_LIST（"您当前没有订单"）
+          - 1 单 → DIRECT_ANSWER + 走 LangGraph
+          - N 单 → SHOW_PICKER + meta.card
+
+        本测试已被 test_no_order_no_zero_orders / test_no_order_no_one_order /
+        test_no_order_no_n_orders 取代。保留为空壳以提醒迁移完成。
+        """
+        pass  # 原 test_no_order_no_short_circuits 已被拆分到 TestRefundFlowAutoResolve
 
 
 # =============================================================
@@ -195,8 +194,148 @@ class TestRefundFlowLangGraph:
 
 
 # =============================================================
-# 5. create_business_flow 入口便捷函数
+# 4.5 RefundFlow 自动解析（2026-07-18 改造 · 真实业务场景）
 # =============================================================
+class TestRefundFlowAutoResolve:
+    """RefundFlow 接入 OrderContextResolver 后，无 order_no 不再问用户要订单号。
+
+    真实业务场景：顾客说"我的衣服有问题能退吗"，CS 用系统查顾客订单而非问订单号。
+    Resolver 决策：
+      - 0 单 → ASK_LOGIN_OR_LIST
+      - 1 单 → DIRECT_ANSWER（自动用，绕过询问）
+      - N 单 → SHOW_PICKER（yield meta.card，前端 OrderCard list 渲染）
+
+    所有测试 patch ENABLE_ORDER_RESOLVER=True（否则 Resolver 默认 disabled 返 DIRECT_ANSWER，
+    effective_order_no 为空，会 fallback 到 LangGraph 触发 DB 连接）。
+    """
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    @patch("app.services.business_flow.refund_flow._extract_order_no_from_history", return_value=None)
+    def test_no_order_no_zero_orders_yields_no_order_message(self, _mock_extract, mock_tool):
+        """无 order_no + 用户 0 单 → ASK_LOGIN_OR_LIST + '您当前没有订单'"""
+        mock_tool.list_user_orders.return_value = []
+        mock_tool.get_order_by_no.return_value = None
+
+        flow = RefundFlow(
+            query="我要退款",
+            user_id=1,
+            intent_result={"intent": "refund_query", "entities": {}},
+        )
+        events = list(flow.run())
+
+        # 第一个 meta 应含 resolver_action=ask_login_or_list
+        meta_events = [e[1] for e in events if e[0] == "meta"]
+        assert len(meta_events) >= 1
+        assert any(m.get("resolver_action") == "ask_login_or_list" for m in meta_events)
+
+        # token 含"没有订单"
+        token_events = [e for e in events if e[0] == "token"]
+        full_text = "".join(e[1] for e in token_events)
+        assert "没有订单" in full_text
+        # 关键：不再包含"请提供"
+        assert "请提供" not in full_text
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    @patch("app.services.business_flow.refund_flow.refund_graph_app")
+    @patch("app.services.business_flow.refund_flow._extract_order_no_from_history", return_value=None)
+    def test_no_order_no_one_order_uses_direct_answer(self, _mock_extract, mock_app, mock_tool):
+        """无 order_no + 用户 1 单 → DIRECT_ANSWER + 走 LangGraph（不询问）"""
+        mock_tool.list_user_orders.return_value = [
+            {"order_no": "ORD20260718001", "status": "delivered", "total_amount": 299.0, "create_time": "2026-07-15T10:00:00"}
+        ]
+        mock_tool.get_order_by_no.return_value = None
+        # mock LangGraph 走通
+        mock_app.stream.return_value = [
+            {"judge": {"refundable": True, "reason": "已签收 3 天", "days_since_order": 3}},
+            {"synthesize": {"final_answer": "您的订单可以退款"}},
+        ]
+
+        flow = RefundFlow(
+            query="我想退件衣服",
+            user_id=10002,
+            intent_result={"intent": "refund_query", "entities": {}},  # 无 order_no
+        )
+        events = list(flow.run())
+
+        # 验证 LangGraph 被调（说明 effective_order_no 被 Resolver 自动填上）
+        mock_app.stream.assert_called_once()
+        call_kwargs = mock_app.stream.call_args[0][0]
+        assert call_kwargs["order_no"] == "ORD20260718001"
+        assert call_kwargs["user_id"] == 10002
+
+        # 验证流中有 judge/synthesize meta（LangGraph 路径被走通）
+        meta_stages = [e[1].get("flow_stage") for e in events if e[0] == "meta"]
+        assert "judge" in meta_stages
+        assert "synthesize" in meta_stages
+
+        # 关键：不再 yield "请提供" token
+        token_events = [e for e in events if e[0] == "token"]
+        full_text = "".join(e[1] for e in token_events)
+        assert "请提供" not in full_text
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    @patch("app.services.business_flow.refund_flow._extract_order_no_from_history", return_value=None)
+    def test_no_order_no_n_orders_yields_picker_card(self, _mock_extract, mock_tool):
+        """无 order_no + 用户 N 单 → SHOW_PICKER + meta.card.type='order_list'"""
+        mock_tool.list_user_orders.return_value = [
+            {"order_no": "ORD20260718001", "status": "delivered", "total_amount": 299.0, "create_time": "2026-07-15T10:00:00"},
+            {"order_no": "ORD20260718002", "status": "shipped", "total_amount": 199.0, "create_time": "2026-07-16T10:00:00"},
+            {"order_no": "ORD20260718003", "status": "completed", "total_amount": 399.0, "create_time": "2026-07-10T10:00:00"},
+        ]
+        mock_tool.get_order_by_no.return_value = None
+
+        flow = RefundFlow(
+            query="我想退件衣服",
+            user_id=10006,  # USER_MULTI_ORDERS
+            intent_result={"intent": "refund_query", "entities": {}},
+        )
+        events = list(flow.run())
+
+        # 第一个 meta 应含 resolver_action=show_picker + card.type=order_list
+        meta_events = [e[1] for e in events if e[0] == "meta"]
+        picker_metas = [m for m in meta_events if m.get("resolver_action") == "show_picker"]
+        assert len(picker_metas) == 1
+        assert picker_metas[0]["card"]["type"] == "order_list"
+        assert picker_metas[0]["total_orders"] == 3
+
+        # token 应含"请选择"
+        token_events = [e for e in events if e[0] == "token"]
+        full_text = "".join(e[1] for e in token_events)
+        assert "选择" in full_text
+        # 不再有"请提供"
+        assert "请提供" not in full_text
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    @patch("app.services.business_flow.refund_flow._extract_order_no_from_history", return_value=None)
+    def test_user_provided_order_no_skips_resolver(self, _mock_extract, mock_tool):
+        """有 order_no（用户提供）→ 跳过 Resolver，直接走 LangGraph（兼容旧路径）"""
+        mock_tool.list_user_orders.return_value = []  # 即便 0 订单，用户已提供有效 order_no
+        mock_tool.get_order_by_no.return_value = {
+            "order_no": "ORD20260718999",
+            "status": "delivered",
+            "total_amount": 199.0,
+            "create_time": "2026-07-15T10:00:00",
+        }
+        # 此场景 Resolver 不会被调，因为 entities.order_no 已提供
+        # LangGraph 应走通
+        with patch("app.services.business_flow.refund_flow.refund_graph_app") as mock_app:
+            mock_app.stream.return_value = [
+                {"judge": {"refundable": True, "reason": "已签收 3 天", "days_since_order": 3}},
+                {"synthesize": {"final_answer": "OK"}},
+            ]
+
+            flow = RefundFlow(
+                query="ORD20260718999 啥情况",
+                user_id=10002,
+                intent_result={"intent": "refund_query", "entities": {"order_no": "ORD20260718999"}},
+            )
+            events = list(flow.run())
+            mock_app.stream.assert_called_once()
+            assert mock_app.stream.call_args[0][0]["order_no"] == "ORD20260718999"
 class TestCreateBusinessFlow:
     def test_disabled_returns_none_via_helper(self):
         """create_business_flow() 走工厂路径"""

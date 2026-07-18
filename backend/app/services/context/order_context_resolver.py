@@ -139,8 +139,9 @@ class OrderContextResolver:
                 reason="resolver_disabled",
             )
 
-        # 非 order_query 意图不参与决策（refund_query / product_query / policy_query）
-        if intent != "order_query":
+        # 支持 order_query + refund_query（0/1/N 决策 intent-agnostic，与意图无关）
+        # product_query / policy_query 仍走 DIRECT_ANSWER（不需要订单解析）
+        if intent not in {"order_query", "refund_query"}:
             return OrderResolverResult(
                 action=OrderResolverAction.DIRECT_ANSWER,
                 intent=intent,

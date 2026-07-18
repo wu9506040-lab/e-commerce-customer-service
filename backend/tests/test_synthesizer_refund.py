@@ -23,6 +23,8 @@ import pytest
 os.environ.setdefault("JWT_SECRET", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
 os.environ.setdefault("DATABASE_URL", "mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=utf8mb4")
 
+from app.core.config import settings  # noqa: E402
+
 
 # ============ 辅助：构造测试数据 ============
 
@@ -69,11 +71,13 @@ class TestRefundDispatch:
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.PolicyService")
     @patch("app.services.refund_graph.OrderTool")
-    @patch("app.services.chat.refund_handler.OrderService")
-    def test_default_uses_v2(self, mock_order_svc, mock_tool, mock_policy, mock_provider, mock_v12):
-        """默认 USE_LANGGRAPH_REFUND=False → 走 V2"""
-        # V2 用的 service
-        mock_order_svc.list_user_orders.return_value = [make_order()]
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    def test_default_uses_v2(self, mock_resolver_tool, mock_tool, mock_policy, mock_provider, mock_v12):
+        """默认 USE_LANGGRAPH_REFUND=False → 走 V2（V2 也走 Resolver 拿 order_no）"""
+        # V2 通过 Resolver → OrderTool.list_user_orders 拿 order_no
+        mock_resolver_tool.list_user_orders.return_value = [make_order()]
+        mock_resolver_tool.get_order_by_no.return_value = make_order()
 
         # V2 不直接调 LangGraph 的 tool/policy/qwen，但 V1.2 fallback 可能调 v12
         mock_v12.return_value = iter([])
@@ -85,9 +89,10 @@ class TestRefundDispatch:
             history=None,
         ))
 
-        # 默认情况下 refund_query 不会调 refund_graph_app
-        # 通过 mock OrderService.list_user_orders 是否被调用判断（V2 兜底 order_no 用它）
-        assert mock_order_svc.list_user_orders.called
+        # V2 路径：应调 Resolver 的 OrderTool.list_user_orders（不再调 OrderService）
+        assert mock_resolver_tool.list_user_orders.called
+        # refund_graph_app 不会被调（V2 不走 LangGraph）
+        assert not mock_tool.get_order_by_no.called
 
     @patch("app.services.chat.refund_handler.OrderService")
     @patch("app.services.chat.orchestrator.settings")
@@ -143,10 +148,12 @@ class TestHandleRefundV3:
         assert any(ev[0] == "token" and "登录" in ev[1] for ev in events)
         assert not mock_order_svc.called  # 不查订单
 
-    @patch("app.services.chat.refund_handler.OrderService")
-    def test_no_orders(self, mock_order_svc):
-        """没订单：返回「请提供订单号」模板"""
-        mock_order_svc.list_user_orders.return_value = []
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    def test_no_orders(self, mock_tool):
+        """2026-07-18 改造：没订单 → 走 Resolver ASK_LOGIN_OR_LIST（不再问订单号）"""
+        mock_tool.list_user_orders.return_value = []  # 0 单
+        mock_tool.get_order_by_no.return_value = None
 
         from app.services.chat.refund_handler import handle_refund_v3
         events = collect_events(handle_refund_v3(
@@ -155,8 +162,47 @@ class TestHandleRefundV3:
             intent_result=make_intent_result(),
         ))
 
-        assert any(ev[0] == "meta" for ev in events)
-        assert any(ev[0] == "token" and "订单号" in ev[1] for ev in events)
+        meta_events = [ev for ev in events if ev[0] == "meta"]
+        token_events = [ev for ev in events if ev[0] == "token"]
+
+        # Resolver 决策被推送（resolver_action=ask_login_or_list）
+        assert any(m[1].get("resolver_action") == "ask_login_or_list" for m in meta_events)
+        # 提示 token 含「没有订单」
+        assert any("没有订单" in ev[1] for ev in token_events)
+        # 关键：不再 yield 旧版「订单号」prompt
+        assert not any("订单号" in ev[1] for ev in token_events)
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    @patch("app.services.refund_graph.get_llm_provider")
+    @patch("app.services.refund_graph.OrderTool")
+    def test_one_order_direct_answer(self, mock_lg_tool, mock_provider, mock_tool):
+        """2026-07-18 改造：唯一 1 单 → Resolver DIRECT_ANSWER + 走 LangGraph（不询问）"""
+        # Resolver 用 mock_tool.list_user_orders 查 1 单 → DIRECT_ANSWER
+        mock_tool.list_user_orders.return_value = [
+            make_order(order_no="ORD20260718001", days_ago=3)
+        ]
+        # LangGraph fetch_order 用 mock_lg_tool.get_order_by_no 拿订单详情
+        mock_lg_tool.get_order_by_no.return_value = make_order(
+            order_no="ORD20260718001", days_ago=3
+        )
+        mock_provider.return_value.chat.return_value = {"reply": "可以退"}
+
+        from app.services.chat.refund_handler import handle_refund_v3
+        events = collect_events(handle_refund_v3(
+            query="我想退件衣服",
+            user_id=10002,
+            intent_result=make_intent_result(),  # 无 order_no
+        ))
+
+        # 验证 LangGraph 被调（effective_order_no 被 Resolver 自动填上）
+        meta_events = [ev for ev in events if ev[0] == "meta"]
+        # v3_engine=langgraph 表明走通 LangGraph
+        assert any(m[1].get("v3_engine") == "langgraph" for m in meta_events)
+
+        # 关键：不再 yield「订单号」prompt
+        token_events = [ev for ev in events if ev[0] == "token"]
+        assert not any("订单号" in ev[1] for ev in token_events)
 
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.OrderTool")

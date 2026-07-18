@@ -79,18 +79,67 @@ class TestResolverDisabled:
 
 
 # =============================================================
-# 2. 非 order_query 意图不参与决策
+# 2. 非订单意图不参与决策
 # =============================================================
 class TestNonOrderIntent:
     @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
-    def test_refund_query_skips(self):
+    def test_product_and_policy_query_skip(self):
+        """product_query / policy_query 仍走 DIRECT_ANSWER（不需要订单解析）"""
         r = OrderContextResolver()
-        for intent in ("refund_query", "product_query", "policy_query"):
+        for intent in ("product_query", "policy_query"):
             result = r.resolve(
                 user_id=1, intent=intent, entities={}, ctx=_make_ctx(),
             )
             assert result.action == OrderResolverAction.DIRECT_ANSWER
             assert result.reason == "non_order_intent"
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    def test_refund_query_supported(self, mock_tool):
+        """2026-07-18 改造：refund_query 也参与 0/1/N 决策（与 order_query 对齐）"""
+        # 0 订单 → ASK_LOGIN_OR_LIST
+        mock_tool.list_user_orders.return_value = []
+        r = OrderContextResolver()
+        result = r.resolve(
+            user_id=1, intent="refund_query", entities={}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.ASK_LOGIN_OR_LIST
+        assert result.reason == "zero_orders"
+        assert result.total_orders == 0
+
+        # 1 订单 → DIRECT_ANSWER（自动用）
+        mock_tool.list_user_orders.return_value = [_make_order("ORD20260101AAA")]
+        result = r.resolve(
+            user_id=1, intent="refund_query", entities={}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.DIRECT_ANSWER
+        assert result.reason == "only_one_order"
+        assert result.effective_order_no == "ORD20260101AAA"
+
+        # N 订单 → SHOW_PICKER
+        mock_tool.list_user_orders.return_value = [
+            _make_order("ORD20260101AAA"),
+            _make_order("ORD20260201BBB"),
+            _make_order("ORD20260301CCC"),
+        ]
+        result = r.resolve(
+            user_id=1, intent="refund_query", entities={}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.SHOW_PICKER
+        assert result.reason == "multiple_orders_disambiguate"
+        assert result.total_orders == 3
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    def test_refund_query_anonymous_ask_login(self, mock_tool):
+        """refund_query + 匿名用户 → ASK_LOGIN"""
+        r = OrderContextResolver()
+        result = r.resolve(
+            user_id=ANONYMOUS_USER_ID, intent="refund_query",
+            entities={}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.ASK_LOGIN
+        assert result.reason == "anonymous_user"
 
 
 # =============================================================
