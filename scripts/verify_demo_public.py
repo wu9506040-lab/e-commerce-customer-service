@@ -211,7 +211,7 @@ async def step6_chat_rag(page: Page) -> bool:
         # RAG 测试 query
         await page.fill("input[type='text'], textarea", "退货政策是什么？")
         await page.keyboard.press("Enter")
-        await page.wait_for_timeout(8000)  # 等 SSE 流式回答
+        await page.wait_for_timeout(15000)  # 公网 ECS 调 Qwen API 较慢，RAG 回答需要 12s+
         await settle_screenshot(page, "demo-06-chat-rag")
         content = await page.content()
         # 验证：RAG 回答里出现知识库特征词
@@ -232,11 +232,11 @@ async def step7_refund_langgraph(page: Page) -> bool:
         await page.wait_for_selector("input[type='text'], textarea", timeout=10000)
         await page.fill("input[type='text'], textarea", "我想退款")
         await page.keyboard.press("Enter")
-        await page.wait_for_timeout(6000)
+        await page.wait_for_timeout(12000)
         # LangGraph 应该问订单号
         await page.fill("input[type='text'], textarea", "ORD20260101001")
         await page.keyboard.press("Enter")
-        await page.wait_for_timeout(8000)
+        await page.wait_for_timeout(12000)
         await settle_screenshot(page, "demo-07-refund-langgraph")
         content = await page.content()
         # LangGraph 路径特征：状态词、订单号、time/days 关键词

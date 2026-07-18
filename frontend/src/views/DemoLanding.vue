@@ -17,7 +17,7 @@ const loading = ref(true);
 
 const isLoggedIn = computed(() => isAuthed.value === true);
 
-// 4 类意图卡片（京东红强调）
+// 4 类意图卡片（京东红强调）+ M14 V3：退款主动查询 + 转人工兜底
 const capabilities = [
   {
     intent: '订单查询',
@@ -26,13 +26,18 @@ const capabilities = [
   },
   {
     intent: '退款咨询',
-    desc: '智能判断可退性 + 流程引导',
-    examples: ['ORD20260622003 能退吗', '怎么申请退货', '退款多久到账'],
+    desc: 'M14 V3：自动解析最近订单 · 不再问订单号',
+    examples: ['我的衣服有问题能退吗', '我想退件商品', '前天买的想退款'],
   },
   {
     intent: '商品咨询',
     desc: '价格 / 库存 / 规格 + 跨 SKU 推荐',
-    examples: ['ZP1 现在多少钱', 'BP1 续航怎么样', '千元机推荐'],
+    examples: ['Z1 旗舰手机多少钱', 'E1 耳机续航怎么样', '千元机推荐'],
+  },
+  {
+    intent: '转人工兜底',
+    desc: 'M14 V3：Agent 异常 / 用户主动升级 · 工单 + 名片打包',
+    examples: ['我要转人工', '找真人客服', '这 AI 答不了'],
   },
   {
     intent: '政策问答',
@@ -220,9 +225,9 @@ function goShop(cat?: string) {
           <div class="highlight-desc">可退/质量问题/超期/已退 4 路径分支 + V2 fallback</div>
         </div>
         <div class="highlight-box">
-          <div class="highlight-num">5 服务</div>
-          <div class="highlight-label">Docker Compose 部署</div>
-          <div class="highlight-desc">API + Frontend + MySQL + Redis + Qdrant 一键起停</div>
+          <div class="highlight-num">M14 <small>V3</small></div>
+          <div class="highlight-label">主动查询 + 转人工兜底</div>
+          <div class="highlight-desc">Resolver 4 决策自动解析最近订单 · 异常/用户升级触发 HandoffCard</div>
         </div>
       </div>
     </section>
