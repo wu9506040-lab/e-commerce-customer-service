@@ -23,7 +23,17 @@ logger = logging.getLogger(__name__)
 ORDER_NO_RE = re.compile(r"ORD\d{8}[A-Z0-9]{3,6}", re.IGNORECASE)
 
 # 金额正则（"199元" / "¥299" / "199.00 元"）
-AMOUNT_RE = re.compile(r"[¥￥]?\s*(\d+(?:\.\d+)?)\s*元?")
+#   严格语义：金额必须有 ¥/￥ 前缀 OR 元 后缀 才识别，避免错把 order_no 数字当金额。
+#   V10-D 同步：与 backend/app/services/validation/hallucination_guard.py 保持一致。
+AMOUNT_RE = re.compile(
+    r"(?:[¥￥]\s*(\d+(?:\.\d+)?))|(?:(\d+(?:\.\d+)?)\s*元)"
+)
+
+# 金额上下文：紧邻"小时/时/天/日/分钟/分/秒/个/件/月/分"等时间/单位词，
+# 应判为时间/数量而非金额（V10 修复：误判"72小时"为 fake_amount）。
+AMOUNT_CONTEXT_RE = re.compile(
+    r"(小时|时(?!元)|天(?!无)|日|分钟|分(?!期)|秒|个|件|月)"
+)
 
 # 中文状态 → enum 值映射
 STATUS_CN_TO_EN = {
@@ -59,13 +69,36 @@ class HallucinationReport:
 # =============================================================
 # 校验函数
 # =============================================================
+def _extract_amounts_with_context(text: str) -> List[str]:
+    """提取金额（取两个 capture group 中的非空值），并剔除紧邻时间/单位词的项。
+
+    V10 修复：旧正则 `[¥￥]?\\s*(\\d+)\\s*元?` 无上下文约束，把"72小时"误判为金额，
+    进一步误标为 fake_amount。增强：紧邻"小时/天/分/..."则跳过。
+    """
+    raw: List[str] = []
+    for m in AMOUNT_RE.finditer(text):
+        g = m.group(1) or m.group(2)
+        if g:
+            raw.append(g)
+
+    filtered: List[str] = []
+    for amt, span in zip(raw, AMOUNT_RE.finditer(text)):
+        start, end = span.span()
+        # 看后面 4 个字符（含匹配自身）是否紧邻时间/单位词
+        tail = text[end:end + 3]
+        if AMOUNT_CONTEXT_RE.search(tail):
+            continue
+        filtered.append(amt)
+    return list(set(filtered))
+
+
 def extract_entities(text: str) -> Dict[str, List[str]]:
     """从文本中抽取实体（订单号/金额/状态）。"""
     if not text:
         return {"order_nos": [], "amounts": [], "statuses": []}
     return {
         "order_nos": list(set(ORDER_NO_RE.findall(text))),
-        "amounts": list(set(AMOUNT_RE.findall(text))),
+        "amounts": _extract_amounts_with_context(text),
         "statuses": list(set(STATUS_CN_PATTERN.findall(text))),
     }
 

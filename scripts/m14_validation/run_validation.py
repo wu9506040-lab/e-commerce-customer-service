@@ -299,6 +299,51 @@ def _run_refund_scenario(scenario) -> Dict[str, Any]:
                 "exception": None,
             }
 
+        # === V10-A 同步：policy_query + order_no entity 归属校验 ===
+        # 与 chat.py:319-369 完全对齐：policy_query 走 Resolver 旁路，
+        # 必须显式校验订单归属才能防越权；不校验则 RefundFlow 拿到陌生 order_no
+        # 会跑出错误分支（V9 baseline M14-0096 fail case · expected=not_found 实际=direct_answer）。
+        # 与 chat.py 不同：run_validation 不是异步上下文，直接调同步 OrderTool。
+        if intent_result.get("intent") == "policy_query":
+            _pre_entities = (intent_result.get("entities") or {})
+            _pre_order_no = _pre_entities.get("order_no")
+            if _pre_order_no:
+                try:
+                    from app.tools.order_tool import OrderTool
+                    _owned = OrderTool.get_order_by_no(scenario.user_id, _pre_order_no)
+                except Exception:
+                    _owned = "ERROR"
+                if _owned is None:
+                    not_found_msg = (
+                        f"抱歉，未找到订单 {_pre_order_no}，请确认订单号是否正确。"
+                    )
+                    return {
+                        "id": scenario.id,
+                        "category": scenario.category,
+                        "name": scenario.name,
+                        "corpus_id": scenario.corpus_id,
+                        "user_id": scenario.user_id,
+                        "query": scenario.query,
+                        "expected": scenario.expected,
+                        "actual": "not_found",
+                        "flow_stages": ["policy_query_ownership_check_v10a"],
+                        "completed": True,
+                        "refundable": None,
+                        "escalate_to_human": False,
+                        "final_answer": not_found_msg,
+                        "final_answer_len": len(not_found_msg),
+                        "token_count": 0,
+                        "extracted_entities": intent_result.get("entities"),
+                        "hallucination": {
+                            "has_hallucination": False,
+                            "hallucination_details": [],
+                            "extracted_entities": {},
+                        },
+                        "coverage": None,
+                        "success": scenario.expected == "not_found",
+                        "exception": None,
+                    }
+
         # === RefundFlow 跑完整（不 break）以收集 final_answer ===
         flow = RefundFlow(
             query=scenario.query,
