@@ -7,6 +7,7 @@
 // 3. 错误统一抛 Error，调用方 try/catch
 // =============================================================
 import type {
+  AdminAnalyticsResponse,
   Conversation,
   CreateOrderPayload,
   MessagesPage,
@@ -238,6 +239,20 @@ export async function refundOrder(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload ?? {}),
   });
+}
+
+// =============================================================
+// Admin analytics（P4-2）
+// =============================================================
+export async function getAdminAnalytics(
+  startDate: string,
+  endDate: string,
+): Promise<AdminAnalyticsResponse> {
+  const params = new URLSearchParams({
+    start_date: startDate,
+    end_date: endDate,
+  });
+  return http(`/admin/analytics?${params}`);
 }
 
 // =============================================================

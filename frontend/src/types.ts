@@ -204,6 +204,52 @@ export interface RegisterPayload {
 }
 
 // =============================================================
+// P4-2：admin 运营聚合面板
+// =============================================================
+export interface DailyActivityPoint {
+  date: string;
+  conversations: number;
+  active_users: number;
+  messages: number;
+}
+
+export interface AdminLatencySummary {
+  samples: number;
+  p50_ms: number;
+  p95_ms: number;
+}
+
+export interface AdminHandoffSummary {
+  total: number;
+  by_priority: Record<string, number>;
+  by_category: Record<string, number>;
+  coverage_complete: boolean;
+  data_source: string;
+}
+
+export interface AdminHitAtKSummary {
+  window_size: number;
+  total_samples: number;
+  hit_at_1: number;
+  hit_at_3: number;
+  hit_at_5: number;
+  hit_at_10: number;
+}
+
+export interface AdminAnalyticsResponse {
+  start_date: string;
+  end_date: string;
+  generated_at: string;
+  cache_hit: boolean;
+  cache_ttl_seconds: number;
+  daily_activity: DailyActivityPoint[];
+  latency: AdminLatencySummary;
+  handoffs: AdminHandoffSummary;
+  hit_at_k: AdminHitAtKSummary;
+  limitations: string[];
+}
+
+// =============================================================
 /** /chat SSE 流式事件（自定义 JSON 协议） */
 export type StreamEvent =
   | {

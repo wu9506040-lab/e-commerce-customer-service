@@ -22,6 +22,7 @@ import {
 } from 'vue-router';
 
 import { getMe, isAuthed } from '../api';
+import type { User } from '../types';
 
 const routes: RouteRecordRaw[] = [
   // 默认重定向
@@ -78,6 +79,14 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '智能客服', requiresAuth: true },
   },
 
+  // 运营数据驾驶舱（仅 admin）
+  {
+    path: '/admin/analytics',
+    name: 'admin-analytics',
+    component: () => import('../views/AdminAnalytics.vue'),
+    meta: { title: '运营数据驾驶舱', requiresAuth: true, requiresAdmin: true },
+  },
+
   // 个人中心（需登录）
   {
     path: '/profile',
@@ -103,12 +112,19 @@ export const router = createRouter({
 // =============================================================
 router.beforeEach(async (to: RouteLocationNormalized) => {
   // 首次加载时探测登录态（httpOnly Cookie 不可被 document.cookie 读取，必须调 API）
+  let resolvedUser: User | null = null;
   if (isAuthed.value === null) {
-    await getMe();
+    resolvedUser = await getMe();
   }
 
   if (to.meta.requiresAuth && !isAuthed.value) {
     return { name: 'login', query: { redirect: to.fullPath } };
+  }
+  if (to.meta.requiresAdmin) {
+    resolvedUser = resolvedUser ?? await getMe();
+    if (!resolvedUser || resolvedUser.role !== 'admin') {
+      return { name: 'shop' };
+    }
   }
   // guestOnly 已移除（M13）：/login 不再重定向已登录用户，允许"切换账号"
   if (to.meta.guestOnly && isAuthed.value) {
