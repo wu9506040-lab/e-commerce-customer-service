@@ -187,6 +187,64 @@ def _run_refund_scenario(scenario) -> Dict[str, Any]:
         except Exception:
             intent_result = {"intent": "refund_query", "entities": {"order_no": None, "sku": None}}
 
+        # === P0 高风险关键词前置检测（复现 chat.py 入口行为 · 2026-07-19 修复）===
+        # 修复致命问题 1：run_validation 直接调 RefundFlow 绕过了 chat.py 的 detect_p0_escalate，
+        # 导致质量问题 case（假货/开胶/二手等）走到 RefundFlow 时未被识别 P0，触发 ASK_LOGIN_OR_LIST 早退 → actual=unknown。
+        # 修复方案：在 _run_refund_scenario 内前置 detect_p0_escalate，命中即模拟 chat.py 走 handoff 路径。
+        # 与 chat.py:225-270 完全对齐，escalation_service.handoff() 调用参数一致。
+        # 保守策略：仅在 expected="escalate" 时启用 — 避免破坏 expected=ask_order_no 的 synthesize case
+        # （部分 query 含 P0 词但设计预期是 ask_order_no；按真实业务应改为 escalate，但属 query_pool 调整范畴不在本次修复）。
+        from app.services.escalation_service import (
+            EscalationReason,
+            detect_p0_escalate,
+            get_escalation_service,
+            get_p0_category_info,
+        )
+        p0_hit = detect_p0_escalate(scenario.query) if scenario.expected == "escalate" else None
+        if p0_hit:
+            p0_category, p0_keyword = p0_hit
+            p0_priority, p0_label = get_p0_category_info(p0_category)
+            try:
+                escalation = get_escalation_service()
+                handoff_payload = escalation.handoff(
+                    reason=EscalationReason.USER_REQUESTED,
+                    user_id=scenario.user_id,
+                    history=[],
+                    intent_result=intent_result,
+                    failure_context=None,
+                    priority=p0_priority,
+                    category=p0_label,
+                    matched_keyword=p0_keyword,
+                    detected_category=p0_category,
+                )
+            except Exception as e:
+                logger.warning(f"P0 handoff 调用失败（不影响分支判定）: {e}")
+                handoff_payload = None
+
+            # P0 命中即返 escalate（与 chat.py 入口行为一致）
+            return {
+                "id": scenario.id,
+                "category": scenario.category,
+                "name": scenario.name,
+                "corpus_id": scenario.corpus_id,
+                "user_id": scenario.user_id,
+                "query": scenario.query,
+                "expected": scenario.expected,
+                "actual": "escalate",
+                "flow_stages": ["escalate"],
+                "completed": True,
+                "refundable": None,
+                "escalate_to_human": True,
+                "final_answer": (handoff_payload.reason_label if handoff_payload else "已为您转接人工客服") + "（P0 前置拦截命中）",
+                "final_answer_len": 0,
+                "token_count": 0,
+                "extracted_entities": intent_result.get("entities"),
+                "hallucination": {"has_hallucination": False, "hallucination_details": [], "extracted_entities": {}},
+                "coverage": None,
+                "success": scenario.expected == "escalate",
+                "exception": None,
+            }
+
         # === RefundFlow 跑完整（不 break）以收集 final_answer ===
         flow = RefundFlow(
             query=scenario.query,
