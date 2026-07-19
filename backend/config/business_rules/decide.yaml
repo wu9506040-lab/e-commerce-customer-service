@@ -124,3 +124,9 @@ FABRICATION_BLOCK_FAKE_ORDER_NO: true
 
 # 反幻觉 #9 开关：禁止 LLM 编造订单状态（如【事实陈述】"运输中" 时不得说"已签收"）
 FABRICATION_BLOCK_FAKE_STATUS: true
+
+# V10-D 后置校验：synthesize 节点 chat() 调用后，对 final_answer 做正则反幻觉
+#   修 M14-0045 fake_amount（替换为真实 total_amount）
+#   修 M14-0070 fake_order_no（剥离或替换为真实 order_no）
+#   关闭 → 退回 V9 行为（仅 prompt 层防御）
+POST_SYNTHESIZE_HALLUCINATION_CHECK: true
