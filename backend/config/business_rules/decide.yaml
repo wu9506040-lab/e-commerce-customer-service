@@ -102,3 +102,25 @@ IMAGE_URLS_OVERRIDE:
 #   (2) 减少 LLM 自由发挥导致的政策偏离（5 防 → 反幻觉）
 # 关闭此开关 → 行为退回 V2（不强制引用）
 POLICY_QUOTE_REQUIRED: true
+
+# === 8. 防伪规则（P2-3 · M14-0068 业务层加固）===
+# 历史背景：
+#   - V2 baseline 实测 1/100 真幻觉（伪单号 ORD20269999XXX）
+#   - V3 实测 0/100 真幻觉（refund_query 无 order_no 时改走 invalid_order → synthesize，未触发伪答）
+#   - V6 baseline 新增 M14-0070（synthesize 阶段输出 ORD99999999999）— 由 #8 prompt 硬约束消除
+#   - V7 baseline 新增 M14-0046（synthesize 阶段输出 fake_status="已签收"）— 由 #9 prompt 硬约束消除
+# 治本：本节固化反幻觉规则文档，让"禁止 fabricate"成为业务层一阶规则，而非隐式于 prompt
+# 设计原则（CLAUDE.md §9.4.2 配置分离）：
+#   - 反幻觉规则在 prompt 体现为 #7/#8/#9 三条硬约束
+#   - 关闭 ANTI_FABRICATION_ENABLED → prompt 不注入 #7/#8/#9（退回 V2 行为）
+#   - 单独控制字段：FABRICATION_BLOCK_FAKE_AMOUNT / FABRICATION_BLOCK_FAKE_ORDER_NO / FABRICATION_BLOCK_FAKE_STATUS
+ANTI_FABRICATION_ENABLED: true
+
+# 反幻觉 #7 开关：禁止 LLM 编造金额（如 "约 50 元"）
+FABRICATION_BLOCK_FAKE_AMOUNT: true
+
+# 反幻觉 #8 开关：禁止 LLM 输出【事实陈述】外的订单号（即便用户输入虚假单号）
+FABRICATION_BLOCK_FAKE_ORDER_NO: true
+
+# 反幻觉 #9 开关：禁止 LLM 编造订单状态（如【事实陈述】"运输中" 时不得说"已签收"）
+FABRICATION_BLOCK_FAKE_STATUS: true
