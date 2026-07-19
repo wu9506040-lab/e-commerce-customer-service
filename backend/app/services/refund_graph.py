@@ -126,6 +126,13 @@ _HARD_RULES_BY_ID: dict[str, dict[str, Any]] = {r["id"]: r for r in _RULES["HARD
 _IMAGE_URLS_OVERRIDE: dict[str, Any] = _RULES["IMAGE_URLS_OVERRIDE"]
 POLICY_QUOTE_REQUIRED: bool = bool(_RULES.get("POLICY_QUOTE_REQUIRED", False))
 
+# P2-3 M14-0068 防伪规则业务层加固（2026-07-19）：
+# 反幻觉硬约束 #7/#8/#9 由 YAML 配置驱动，可单独关闭任一字段
+ANTI_FABRICATION_ENABLED: bool = bool(_RULES.get("ANTI_FABRICATION_ENABLED", True))
+FABRICATION_BLOCK_FAKE_AMOUNT: bool = bool(_RULES.get("FABRICATION_BLOCK_FAKE_AMOUNT", True))
+FABRICATION_BLOCK_FAKE_ORDER_NO: bool = bool(_RULES.get("FABRICATION_BLOCK_FAKE_ORDER_NO", True))
+FABRICATION_BLOCK_FAKE_STATUS: bool = bool(_RULES.get("FABRICATION_BLOCK_FAKE_STATUS", True))
+
 # 决策枚举（LLM 输出和硬规则共用）
 VALID_DECISIONS = ("synthesize", "need_more_info", "need_confirm_order", "escalate")
 
@@ -640,15 +647,49 @@ def synthesize_answer(state: RefundState) -> RefundState:
     #     - M14-0070: invalid_order 阶段输出"ORD99999999999"（用户输入的虚假单号）
     #   治本：在 synthesize prompt 强约束"金额/订单号必须从【事实陈述】取值，禁止编造"
     #   适用条件：order_info 有 order_no/total_amount 才注入（避免空事实时硬约束无意义）
+    #   P2-3 业务层加固：FABRICATION_BLOCK_FAKE_AMOUNT / FABRICATION_BLOCK_FAKE_ORDER_NO 开关控制
     amount_order_rule = ""
-    if order_info.get("total_amount") is not None and target_order_no and target_order_no != "未知":
-        amount_order_rule = (
-            f"7. 引用金额时只能使用【事实陈述】中订单金额 ¥{order_amount}，"
-            "禁止编造金额（如「约 50 元」「大概 100 元」类近似表述），"
-            "禁止输出与【事实陈述】不一致的数字\n"
-            f"8. 引用订单号只能使用【事实陈述】中订单号 {target_order_no}，"
-            "禁止输出【事实陈述】外的订单号（即便用户输入了不存在的单号），"
-            "禁止省略或改写订单号\n\n"
+    if (
+        ANTI_FABRICATION_ENABLED
+        and FABRICATION_BLOCK_FAKE_AMOUNT
+        and FABRICATION_BLOCK_FAKE_ORDER_NO
+        and order_info.get("total_amount") is not None
+        and target_order_no
+        and target_order_no != "未知"
+    ):
+        rules = []
+        if FABRICATION_BLOCK_FAKE_AMOUNT:
+            rules.append(
+                f"7. 引用金额时只能使用【事实陈述】中订单金额 ¥{order_amount}，"
+                "禁止编造金额（如「约 50 元」「大概 100 元」类近似表述），"
+                "禁止输出与【事实陈述】不一致的数字"
+            )
+        if FABRICATION_BLOCK_FAKE_ORDER_NO:
+            rules.append(
+                f"8. 引用订单号只能使用【事实陈述】中订单号 {target_order_no}，"
+                "禁止输出【事实陈述】外的订单号（即便用户输入了不存在的单号），"
+                "禁止省略或改写订单号"
+            )
+        amount_order_rule = "\n".join(rules) + "\n\n"
+
+    # P2-3 反幻觉 #9（commit ref · M14-0046 fake_status 真实话术根因）：
+    #   V7 baseline 新增 M14-0046 失败：synthesize 阶段输出"已签收"，
+    #   与【事实陈述】订单状态 shipped（运输中）不符。
+    #   根因：#7+#8 约束金额/订单号，但未约束状态字段；LLM 在不确定时倾向"编造已知状态"。
+    #   治本：在 synthesize prompt 强约束"状态必须从【事实陈述】取值，禁止编造状态"
+    #   适用条件：state.status_zh 已知（避免空事实时硬约束无意义）
+    #   P2-3 业务层加固：FABRICATION_BLOCK_FAKE_STATUS 开关控制
+    status_rule = ""
+    if (
+        ANTI_FABRICATION_ENABLED
+        and FABRICATION_BLOCK_FAKE_STATUS
+        and order_status
+        and order_status != "未知"
+    ):
+        status_rule = (
+            f"9. 引用订单状态时只能使用【事实陈述】中订单状态「{order_status}」，"
+            "禁止编造状态（如【事实陈述】为「运输中」时不得说「已签收」），"
+            "禁止输出与【事实陈述】不一致的状态描述\n\n"
         )
 
     prompt = (
@@ -661,6 +702,7 @@ def synthesize_answer(state: RefundState) -> RefundState:
         "5. 用户问【能不能退/能退款吗】时，必须在第一句明确回答【可以退】或【不能退 + 原因】\n"
         f"{policy_quote_rule}"
         f"{amount_order_rule}"
+        f"{status_rule}"
         "【决策指令】\n"
         f"{decision_instruction}\n\n"
         "【关键回复点】\n"

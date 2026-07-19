@@ -33,6 +33,10 @@ from app.services.refund_graph import (  # noqa: E402
     _should_fetch_policy,
     synthesize_answer,
     POLICY_QUOTE_REQUIRED,
+    ANTI_FABRICATION_ENABLED,
+    FABRICATION_BLOCK_FAKE_AMOUNT,
+    FABRICATION_BLOCK_FAKE_ORDER_NO,
+    FABRICATION_BLOCK_FAKE_STATUS,
 )
 
 
@@ -739,3 +743,207 @@ class TestAmountOrderHardRule:
             "#7 必须含「约 X 元」类近似表述的反例关键词 + 禁止编造"
         assert "不一致的数字" in prompt, \
             "#7 必须含「禁止输出与事实陈述不一致的数字」"
+
+
+# =============================================================
+# 9. P2-3 #9 fake_status 硬约束 + M14-0068 防伪规则业务层加固
+# =============================================================
+class TestStatusHardRuleAndAntiFabricationConfig:
+    """P2-3（commit ref · M14-0046 fake_status + M14-0068 防伪规则业务层加固）：
+
+    V7 baseline 新增 M14-0046 失败：synthesize 阶段 LLM 输出"已签收"，
+    与【事实陈述】订单状态 shipped（运输中）不符。
+
+    治本：
+      - refund_graph.py:synthesize_answer 加 #9 fake_status 硬约束
+      - decide.yaml 加 §8 ANTI_FABRICATION_ENABLED + 3 个细粒度开关
+      - 关闭任一开关 → 对应 #7/#8/#9 段不注入 prompt（业务层可配）
+
+    设计原则（CLAUDE.md §9.4.2 配置分离）：
+      - 反幻觉规则文档化到 decide.yaml，让"禁止 fabricate"成为业务层一阶规则
+      - 单测验证 #9 prompt 注入 + YAML 开关驱动
+    """
+
+    def _make_state(self, *, target_amount=322.21, target_order_no="ORD20260718001",
+                    target_status="运输中", with_policy_docs=True,
+                    missing_amount=False, missing_order_no=False, missing_status=False):
+        order_info = {}
+        if not missing_amount:
+            order_info["total_amount"] = target_amount
+        if not missing_order_no:
+            order_info["order_no"] = target_order_no
+        if not missing_status:
+            order_info["status"] = "shipped" if target_status == "运输中" else "delivered"
+        else:
+            order_info["status"] = ""  # 关键：状态空才让 function 解析不到 fallback
+
+        state = {
+            "resolver_result": {"action": "direct_answer", "total_orders": 1},
+            "decide_result": {
+                "decision": "synthesize",
+                "confidence": 0.95,
+                "target_order_no": None if missing_order_no else target_order_no,
+                "reason": "签收 1 天在 7 天时效内",
+                "escalate": {"enabled": False},
+                "need_info": {"enabled": False},
+                "reply_key_points": ["确认在 7 天时效内", "引导用户申请退款"],
+                "policy_needed": with_policy_docs,
+            },
+            "orders": [{
+                "order_no": target_order_no,
+                "sku_name": "智能手表",
+                "status_zh": target_status,
+                "amount": target_amount,
+            }],
+            "order_info": order_info,
+            "refundable": True,
+            "reason": "签收 1 天在 7 天时效内",
+            "days_since_order": 1,
+            "status_zh": None if missing_status else target_status,
+            "query": "我昨天收到的智能手表能退吗",
+            "history": [],
+            "context_block": "",
+            "image_urls": [],
+            "policy_docs": ([
+                {"text": "收货后 7 天内可申请无理由退款，需保持商品完好"},
+            ] if with_policy_docs else []),
+        }
+        return state
+
+    def test_yaml_anti_fabrication_flags_loaded(self):
+        """decide.yaml §8 反幻觉 4 个开关必须被加载为顶层常量"""
+        from app.services import refund_graph as rg_module
+        for flag in (
+            "ANTI_FABRICATION_ENABLED",
+            "FABRICATION_BLOCK_FAKE_AMOUNT",
+            "FABRICATION_BLOCK_FAKE_ORDER_NO",
+            "FABRICATION_BLOCK_FAKE_STATUS",
+        ):
+            assert hasattr(rg_module, flag), \
+                f"{flag} 顶层常量必须存在（decide.yaml §8 ANTI_FABRICATION 配置驱动）"
+            assert isinstance(getattr(rg_module, flag), bool), \
+                f"{flag} 必须为 bool 类型"
+        # 默认全 True（M14-0068 防伪规则业务层加固）
+        assert rg_module.ANTI_FABRICATION_ENABLED is True
+        assert rg_module.FABRICATION_BLOCK_FAKE_AMOUNT is True
+        assert rg_module.FABRICATION_BLOCK_FAKE_ORDER_NO is True
+        assert rg_module.FABRICATION_BLOCK_FAKE_STATUS is True
+
+    def test_synthesize_prompt_includes_status_rule(self):
+        """#9 硬约束：prompt 必须含「禁止编造状态」+ 实际状态值"""
+        assert ANTI_FABRICATION_ENABLED is True
+        assert FABRICATION_BLOCK_FAKE_STATUS is True
+
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "您的订单在运输中，预计明天送达。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            synthesize_answer(self._make_state(target_status="运输中"))
+
+        prompt = captured["prompt"]
+        assert "9." in prompt, "prompt 必须有 #9 硬约束条目"
+        assert "禁止编造状态" in prompt, "#9 必须禁止 LLM 编造状态"
+        assert "运输中" in prompt, "#9 必须含实际订单状态值（让 LLM 看到唯一可信状态）"
+
+    def test_synthesize_prompt_v7_hallucination_status_rejected(self):
+        """M14-0046 反例：LLM 即使被 prompt 编造状态（"已签收"），硬约束 #9 也应明确禁止
+
+        V7 真实话术：query="宝贝出现磨损要求退款"，actual=shipped，
+        LLM 输出"已签收" → fake_status 幻觉。
+        """
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "您的订单已签收，可以申请退款。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            synthesize_answer(self._make_state(target_status="运输中"))
+
+        prompt = captured["prompt"]
+        # 反幻觉关键句必须存在
+        assert "已签收" not in prompt or "禁止" in prompt, \
+            "#9 prompt 不能单纯提到'已签收'作为反例，需明确禁止"
+        assert "不一致的状态" in prompt, \
+            "#9 必须含「禁止输出与事实陈述不一致的状态描述」"
+
+    def test_synthesize_prompt_skips_status_rule_when_status_empty(self):
+        """state.status_zh 为空 → #9 不注入（避免空事实硬约束无意义）"""
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "无法识别状态，请补充订单号。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            synthesize_answer(self._make_state(missing_status=True))
+
+        prompt = captured["prompt"]
+        # 关键反例：status_zh 空时不应有 #9 行（因为没有"事实陈述"可约束）
+        # #7+#8 也缺（target_order_no 和 amount 都空），但 #6 应保留（policy_docs 非空）
+        assert "禁止编造状态" not in prompt, \
+            "status_zh 空时不应注入 #9 fake_status 硬约束"
+
+    def test_yaml_flag_can_disable_status_rule(self):
+        """FABRICATION_BLOCK_FAKE_STATUS=False → #9 行不出现"""
+        from app.services import refund_graph as rg_module
+
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "您的订单已签收，可以申请退款。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            original = rg_module.FABRICATION_BLOCK_FAKE_STATUS
+            try:
+                rg_module.FABRICATION_BLOCK_FAKE_STATUS = False
+                synthesize_answer(self._make_state(target_status="运输中"))
+            finally:
+                rg_module.FABRICATION_BLOCK_FAKE_STATUS = original
+
+        prompt = captured["prompt"]
+        # 关闭 FABRICATION_BLOCK_FAKE_STATUS 后 #9 行不出现
+        assert "禁止编造状态" not in prompt, \
+            "FABRICATION_BLOCK_FAKE_STATUS=False 时不应注入 #9 硬约束"
+        # 仍应保留老硬约束 1~6 + #7+#8
+        assert "1." in prompt and "8." in prompt
+        assert "禁止编造金额" in prompt  # #7 仍存在
+        assert "禁止输出【事实陈述】外的订单号" in prompt  # #8 仍存在
+
+    def test_yaml_flag_can_disable_anti_fabrication_globally(self):
+        """ANTI_FABRICATION_ENABLED=False → #7/#8/#9 全部不注入"""
+        from app.services import refund_graph as rg_module
+
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "您的订单可以申请退款。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            original = rg_module.ANTI_FABRICATION_ENABLED
+            try:
+                rg_module.ANTI_FABRICATION_ENABLED = False
+                synthesize_answer(self._make_state())
+            finally:
+                rg_module.ANTI_FABRICATION_ENABLED = original
+
+        prompt = captured["prompt"]
+        # 全局关闭反幻觉 → #7/#8/#9 全部不出现
+        assert "禁止编造金额" not in prompt, \
+            "ANTI_FABRICATION_ENABLED=False 时 #7 不应注入"
+        assert "禁止输出【事实陈述】外的订单号" not in prompt, \
+            "ANTI_FABRICATION_ENABLED=False 时 #8 不应注入"
+        assert "禁止编造状态" not in prompt, \
+            "ANTI_FABRICATION_ENABLED=False 时 #9 不应注入"
+        # 老硬约束 1~5 仍保留
+        assert "1." in prompt and "5." in prompt
