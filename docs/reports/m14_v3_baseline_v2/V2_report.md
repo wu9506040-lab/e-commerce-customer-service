@@ -4,28 +4,28 @@
 > V2 报告改用公开话术合集（道客巴巴/帮客服/搜狐/京东/淘宝/拼多多 帮助中心）作为真实测试场景，
 > 4 旧伪指标替换为 5 真指标（决策准确率/分支准确率/工具准确率/真幻觉率/政策覆盖率）。
 
-> 验证时间: 2026-07-19 20:01:18  
-> 验证耗时: 59.0s  
+> 验证时间: 2026-07-19 20:37:20  
+> 验证耗时: 57.2s  
 > 总 scenario: 100  
-> 失败 case: 9  
+> 失败 case: 3  
 > 数据源: `scripts/m14_validation/data/real_corpus.json`（100 条真实话术）
 
 ## 1. 5 真指标（V2）
 
 | 指标 | 值 | 公式 | 含义 |
 |------|----|----|------|
-| **Resolver 决策准确率** | **86.0%** | 43/50 | 真实 action == 期望 action |
+| **Resolver 决策准确率** | **96.0%** | 48/50 | 真实 action == 期望 action |
 | **RefundFlow 分支准确率** | **96.7%** | 29/30 | 真实分支 == 期望分支 |
 | **Tool 调用准确率** | **100.0%** | 20/20 | Tool 返回成功 |
-| **真幻觉率** ⬇️ | **1.0%** | 1/100 | Agent 胡编实体 case / 总 case |
+| **真幻觉率** ⬇️ | **0.0%** | 0/100 | Agent 胡编实体 case / 总 case |
 | **政策覆盖率** ⬆️ | **25.0%** | 4.0/16 | ref 关键词在 Agent 输出中出现率 |
 
 ## 2. Resolver 4 Actions 分布
 
 | Action | 触发次数 | 占比 |
 |--------|---------|------|
-| DIRECT_ANSWER | 23 | 46.0% |
-| SHOW_PICKER | 21 | 42.0% |
+| DIRECT_ANSWER | 18 | 36.0% |
+| SHOW_PICKER | 26 | 52.0% |
 | ASK_LOGIN_OR_LIST | 0 | 0.0% |
 | NOT_FOUND | 3 | 6.0% |
 | ASK_LOGIN | 3 | 6.0% |
@@ -41,21 +41,14 @@
 
 ## 4. 真幻觉校验明细
 
-| Case | 类型 | 抽取实体 | 详情 |
-|------|------|---------|------|
-| M14-0068 () | fake_order_no | ORD20269999XXX | 合法选项: ['ORD20260718002', 'ORD20260718003', 'ORD20260718004'] |
+✅ 无幻觉 case
 
-## 5. 失败 Case 概览（9 条）
+
+## 5. 失败 Case 概览（3 条）
 
 | ID | Corpus | Expected | Actual | 失败原因 |
 |----|--------|----------|--------|---------|
-| M14-0027 | RC013 | show_picker | direct_answer | 预期 show_picker，实际 direct_answer |
-| M14-0031 | RC017 | show_picker | direct_answer | 预期 show_picker，实际 direct_answer |
-| M14-0032 | RC018 | show_picker | direct_answer | 预期 show_picker，实际 direct_answer |
-| M14-0033 | RC019 | show_picker | direct_answer | 预期 show_picker，实际 direct_answer |
-| M14-0034 | RC020 | show_picker | direct_answer | 预期 show_picker，实际 direct_answer |
 | M14-0062 | RC054 | escalate | unknown | 预期 escalate，实际 unknown |
-| M14-0068 |  | invalid_order | invalid_order | 幻觉: fake_order_no |
 | M14-0096 | RC017 | not_found | direct_answer | 预期 not_found，实际 direct_answer |
 | M14-0099 |  | direct_answer | not_found | 预期 direct_answer，实际 not_found |
 
@@ -73,7 +66,7 @@
 > 您好，您的快递已于昨日寄出，我们已为您发起快递拦截，待快递反馈拦截结果后，我们会为您处理售后，预计24小时可给您反馈拦截结果，请您耐心等待~...
 
 **Agent 实际输出**（final_answer，长度=19）：
-> 您有 5 个订单，请选择要退款的订单：...
+> 您有 4 个订单，请选择要退款的订单：...
 
 **校验结果**：
 - 决策: 期望 `ask_order_no` → 实际 `ask_order_no` ✅

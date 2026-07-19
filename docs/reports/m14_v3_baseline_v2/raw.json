@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-07-19T20:01:18",
-  "duration_sec": 59.0,
+  "timestamp": "2026-07-19T20:37:20",
+  "duration_sec": 57.2,
   "metrics": {
     "resolver_accuracy": {
-      "value": 0.86,
-      "numerator": 43,
+      "value": 0.96,
+      "numerator": 48,
       "denominator": 50,
       "definition": "Resolver 真实 action == 期望 action 的 case 数 / Resolver 总数（含 edge）"
     },
@@ -21,8 +21,8 @@
       "definition": "Tool 调用返回成功的数 / Tool 调用总数"
     },
     "hallucination_rate": {
-      "value": 0.01,
-      "numerator": 1,
+      "value": 0.0,
+      "numerator": 0,
       "denominator": 100,
       "definition": "Agent 输出中胡编实体（订单号/金额/状态）的 case 数 / 有 final_answer 的总 case 数",
       "note": "替换旧 hallucination_free = '脚本没崩' 伪指标"
@@ -39,16 +39,16 @@
     {
       "id": "M14-0001",
       "category": "resolver",
-      "name": "resolver_direct_answer_RC036",
-      "corpus_id": "RC036",
-      "user_id": 10002,
-      "query": "我的订单号是多少？",
+      "name": "resolver_direct_answer_RC013",
+      "corpus_id": "RC013",
+      "user_id": 10014,
+      "query": "您能帮忙改成七天无理由退货吗？",
       "expected": "direct_answer",
       "actual": "direct_answer",
-      "reason": "only_one_order",
-      "effective_order_no": "ORD20260718001",
-      "total_orders": 1,
-      "candidate_orders_count": 1,
+      "reason": "non_order_intent",
+      "effective_order_no": null,
+      "total_orders": 0,
+      "candidate_orders_count": 0,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -60,16 +60,16 @@
     {
       "id": "M14-0002",
       "category": "resolver",
-      "name": "resolver_direct_answer_RC037",
-      "corpus_id": "RC037",
+      "name": "resolver_direct_answer_RC017",
+      "corpus_id": "RC017",
       "user_id": 10002,
-      "query": "这个订单买了什么？",
+      "query": "我退货运费谁出？怎么退给我？",
       "expected": "direct_answer",
       "actual": "direct_answer",
-      "reason": "only_one_order",
-      "effective_order_no": "ORD20260718001",
-      "total_orders": 1,
-      "candidate_orders_count": 1,
+      "reason": "non_order_intent",
+      "effective_order_no": null,
+      "total_orders": 0,
+      "candidate_orders_count": 0,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -81,10 +81,10 @@
     {
       "id": "M14-0003",
       "category": "resolver",
-      "name": "resolver_direct_answer_RC040",
-      "corpus_id": "RC040",
+      "name": "resolver_direct_answer_RC018",
+      "corpus_id": "RC018",
       "user_id": 10014,
-      "query": "什么情况下可以7天无理由退货？",
+      "query": "退货要自己出邮费吗？",
       "expected": "direct_answer",
       "actual": "direct_answer",
       "reason": "non_order_intent",
@@ -102,10 +102,52 @@
     {
       "id": "M14-0004",
       "category": "resolver",
-      "name": "resolver_direct_answer_RC041",
-      "corpus_id": "RC041",
+      "name": "resolver_direct_answer_RC019",
+      "corpus_id": "RC019",
       "user_id": 10014,
-      "query": "已激活的Windows系统能退吗？",
+      "query": "我自己寄回去邮费太贵了，有别的办法吗？",
+      "expected": "direct_answer",
+      "actual": "direct_answer",
+      "reason": "non_order_intent",
+      "effective_order_no": null,
+      "total_orders": 0,
+      "candidate_orders_count": 0,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0005",
+      "category": "resolver",
+      "name": "resolver_direct_answer_RC020",
+      "corpus_id": "RC020",
+      "user_id": 10014,
+      "query": "怎么申请退货？",
+      "expected": "direct_answer",
+      "actual": "direct_answer",
+      "reason": "non_order_intent",
+      "effective_order_no": null,
+      "total_orders": 0,
+      "candidate_orders_count": 0,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0006",
+      "category": "resolver",
+      "name": "resolver_direct_answer_RC036",
+      "corpus_id": "RC036",
+      "user_id": 10014,
+      "query": "我的订单号是多少？",
       "expected": "direct_answer",
       "actual": "direct_answer",
       "reason": "only_one_order",
@@ -121,7 +163,70 @@
       "exception": null
     },
     {
-      "id": "M14-0005",
+      "id": "M14-0007",
+      "category": "resolver",
+      "name": "resolver_direct_answer_RC037",
+      "corpus_id": "RC037",
+      "user_id": 10008,
+      "query": "这个订单买了什么？",
+      "expected": "direct_answer",
+      "actual": "direct_answer",
+      "reason": "only_one_order",
+      "effective_order_no": "ORD20260718019",
+      "total_orders": 1,
+      "candidate_orders_count": 1,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0008",
+      "category": "resolver",
+      "name": "resolver_direct_answer_RC040",
+      "corpus_id": "RC040",
+      "user_id": 10008,
+      "query": "什么情况下可以7天无理由退货？",
+      "expected": "direct_answer",
+      "actual": "direct_answer",
+      "reason": "non_order_intent",
+      "effective_order_no": null,
+      "total_orders": 0,
+      "candidate_orders_count": 0,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0009",
+      "category": "resolver",
+      "name": "resolver_direct_answer_RC041",
+      "corpus_id": "RC041",
+      "user_id": 10008,
+      "query": "已激活的Windows系统能退吗？",
+      "expected": "direct_answer",
+      "actual": "direct_answer",
+      "reason": "only_one_order",
+      "effective_order_no": "ORD20260718019",
+      "total_orders": 1,
+      "candidate_orders_count": 1,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0010",
       "category": "resolver",
       "name": "resolver_direct_answer_RC042",
       "corpus_id": "RC042",
@@ -142,11 +247,11 @@
       "exception": null
     },
     {
-      "id": "M14-0006",
+      "id": "M14-0011",
       "category": "resolver",
       "name": "resolver_direct_answer_RC043",
       "corpus_id": "RC043",
-      "user_id": 10014,
+      "user_id": 10002,
       "query": "质量问题退货运费谁出？",
       "expected": "direct_answer",
       "actual": "direct_answer",
@@ -163,16 +268,16 @@
       "exception": null
     },
     {
-      "id": "M14-0007",
+      "id": "M14-0012",
       "category": "resolver",
       "name": "resolver_direct_answer_RC044",
       "corpus_id": "RC044",
-      "user_id": 10008,
+      "user_id": 10014,
       "query": "两次维修还能换吗？",
       "expected": "direct_answer",
       "actual": "direct_answer",
       "reason": "only_one_order",
-      "effective_order_no": "ORD20260718019",
+      "effective_order_no": "ORD20260718036",
       "total_orders": 1,
       "candidate_orders_count": 1,
       "extracted_entities": {
@@ -184,7 +289,7 @@
       "exception": null
     },
     {
-      "id": "M14-0008",
+      "id": "M14-0013",
       "category": "resolver",
       "name": "resolver_direct_answer_RC045",
       "corpus_id": "RC045",
@@ -205,123 +310,18 @@
       "exception": null
     },
     {
-      "id": "M14-0009",
+      "id": "M14-0014",
       "category": "resolver",
       "name": "resolver_direct_answer_RC059",
       "corpus_id": "RC059",
-      "user_id": 10014,
+      "user_id": 10002,
       "query": "我刚下的单能取消吗？",
       "expected": "direct_answer",
       "actual": "direct_answer",
       "reason": "only_one_order",
-      "effective_order_no": "ORD20260718036",
+      "effective_order_no": "ORD20260718001",
       "total_orders": 1,
       "candidate_orders_count": 1,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0010",
-      "category": "resolver",
-      "name": "resolver_direct_answer_RC061",
-      "corpus_id": "RC061",
-      "user_id": 10014,
-      "query": "运费险怎么用？",
-      "expected": "direct_answer",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
-      "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0011",
-      "category": "resolver",
-      "name": "resolver_direct_answer_RC062",
-      "corpus_id": "RC062",
-      "user_id": 10002,
-      "query": "7天无理由退货包含运费吗？",
-      "expected": "direct_answer",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
-      "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0012",
-      "category": "resolver",
-      "name": "resolver_direct_answer_RC063",
-      "corpus_id": "RC063",
-      "user_id": 10014,
-      "query": "三包政策是什么？",
-      "expected": "direct_answer",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
-      "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0013",
-      "category": "resolver",
-      "name": "resolver_direct_answer_RC066",
-      "corpus_id": "RC066",
-      "user_id": 10008,
-      "query": "我下错单了，能直接改地址不取消重拍吗？",
-      "expected": "direct_answer",
-      "actual": "direct_answer",
-      "reason": "only_one_order",
-      "effective_order_no": "ORD20260718019",
-      "total_orders": 1,
-      "candidate_orders_count": 1,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0014",
-      "category": "resolver",
-      "name": "resolver_direct_answer_RC067",
-      "corpus_id": "RC067",
-      "user_id": 10014,
-      "query": "价保7天是什么意思？",
-      "expected": "direct_answer",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
-      "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -335,14 +335,14 @@
       "category": "resolver",
       "name": "resolver_show_picker_RC001",
       "corpus_id": "RC001",
-      "user_id": 10020,
+      "user_id": 10019,
       "query": "我在网上买的衣服还没收到，但现在不想要了，能退款吗？",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 5,
-      "candidate_orders_count": 5,
+      "total_orders": 4,
+      "candidate_orders_count": 4,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -356,29 +356,8 @@
       "category": "resolver",
       "name": "resolver_show_picker_RC002",
       "corpus_id": "RC002",
-      "user_id": 10005,
+      "user_id": 10013,
       "query": "快递拦截好像没成功，怎么办？",
-      "expected": "show_picker",
-      "actual": "show_picker",
-      "reason": "multiple_orders_disambiguate",
-      "effective_order_no": null,
-      "total_orders": 5,
-      "candidate_orders_count": 5,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0017",
-      "category": "resolver",
-      "name": "resolver_show_picker_RC003",
-      "corpus_id": "RC003",
-      "user_id": 10017,
-      "query": "我的订单什么时候能退款？",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
@@ -394,18 +373,39 @@
       "exception": null
     },
     {
+      "id": "M14-0017",
+      "category": "resolver",
+      "name": "resolver_show_picker_RC003",
+      "corpus_id": "RC003",
+      "user_id": 10005,
+      "query": "我的订单什么时候能退款？",
+      "expected": "show_picker",
+      "actual": "show_picker",
+      "reason": "multiple_orders_disambiguate",
+      "effective_order_no": null,
+      "total_orders": 5,
+      "candidate_orders_count": 5,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
       "id": "M14-0018",
       "category": "resolver",
       "name": "resolver_show_picker_RC004",
       "corpus_id": "RC004",
-      "user_id": 10019,
+      "user_id": 10009,
       "query": "退款多久能到账？",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 4,
-      "candidate_orders_count": 4,
+      "total_orders": 2,
+      "candidate_orders_count": 2,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -419,14 +419,14 @@
       "category": "resolver",
       "name": "resolver_show_picker_RC005",
       "corpus_id": "RC005",
-      "user_id": 10004,
+      "user_id": 10006,
       "query": "商品有质量问题，申请退款",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 4,
-      "candidate_orders_count": 4,
+      "total_orders": 5,
+      "candidate_orders_count": 5,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -440,14 +440,14 @@
       "category": "resolver",
       "name": "resolver_show_picker_RC006",
       "corpus_id": "RC006",
-      "user_id": 10015,
+      "user_id": 10013,
       "query": "钱包使用一段时间想换货",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 3,
-      "candidate_orders_count": 3,
+      "total_orders": 2,
+      "candidate_orders_count": 2,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -461,14 +461,14 @@
       "category": "resolver",
       "name": "resolver_show_picker_RC007",
       "corpus_id": "RC007",
-      "user_id": 10019,
+      "user_id": 10009,
       "query": "宝贝出现磨损要求退款",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 4,
-      "candidate_orders_count": 4,
+      "total_orders": 2,
+      "candidate_orders_count": 2,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -482,7 +482,7 @@
       "category": "resolver",
       "name": "resolver_show_picker_RC008",
       "corpus_id": "RC008",
-      "user_id": 10004,
+      "user_id": 10019,
       "query": "收到宝贝20天想退换",
       "expected": "show_picker",
       "actual": "show_picker",
@@ -503,29 +503,8 @@
       "category": "resolver",
       "name": "resolver_show_picker_RC009",
       "corpus_id": "RC009",
-      "user_id": 10003,
+      "user_id": 10013,
       "query": "包包底座与图片不符",
-      "expected": "show_picker",
-      "actual": "show_picker",
-      "reason": "multiple_orders_disambiguate",
-      "effective_order_no": null,
-      "total_orders": 3,
-      "candidate_orders_count": 3,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0024",
-      "category": "resolver",
-      "name": "resolver_show_picker_RC010",
-      "corpus_id": "RC010",
-      "user_id": 10017,
-      "query": "退货申请通过后下一步操作",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
@@ -541,12 +520,12 @@
       "exception": null
     },
     {
-      "id": "M14-0025",
+      "id": "M14-0024",
       "category": "resolver",
-      "name": "resolver_show_picker_RC011",
-      "corpus_id": "RC011",
-      "user_id": 10010,
-      "query": "退货质检入库后多久退款？",
+      "name": "resolver_show_picker_RC010",
+      "corpus_id": "RC010",
+      "user_id": 10018,
+      "query": "退货申请通过后下一步操作",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
@@ -562,11 +541,32 @@
       "exception": null
     },
     {
+      "id": "M14-0025",
+      "category": "resolver",
+      "name": "resolver_show_picker_RC011",
+      "corpus_id": "RC011",
+      "user_id": 10004,
+      "query": "退货质检入库后多久退款？",
+      "expected": "show_picker",
+      "actual": "show_picker",
+      "reason": "multiple_orders_disambiguate",
+      "effective_order_no": null,
+      "total_orders": 4,
+      "candidate_orders_count": 4,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
       "id": "M14-0026",
       "category": "resolver",
       "name": "resolver_show_picker_RC012",
       "corpus_id": "RC012",
-      "user_id": 10012,
+      "user_id": 10020,
       "query": "我要 500 块赔偿，不给就投诉 12315！",
       "expected": "show_picker",
       "actual": "show_picker",
@@ -585,37 +585,16 @@
     {
       "id": "M14-0027",
       "category": "resolver",
-      "name": "resolver_show_picker_RC013",
-      "corpus_id": "RC013",
-      "user_id": 10013,
-      "query": "您能帮忙改成七天无理由退货吗？",
-      "expected": "show_picker",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
-      "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "success": false,
-      "exception": null
-    },
-    {
-      "id": "M14-0028",
-      "category": "resolver",
       "name": "resolver_show_picker_RC014",
       "corpus_id": "RC014",
-      "user_id": 10010,
+      "user_id": 10017,
       "query": "由于订单时间过长这边无法核实",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 3,
-      "candidate_orders_count": 3,
+      "total_orders": 2,
+      "candidate_orders_count": 2,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -625,11 +604,11 @@
       "exception": null
     },
     {
-      "id": "M14-0029",
+      "id": "M14-0028",
       "category": "resolver",
       "name": "resolver_show_picker_RC015",
       "corpus_id": "RC015",
-      "user_id": 10006,
+      "user_id": 10020,
       "query": "收到的商品有破损，我要退货",
       "expected": "show_picker",
       "actual": "show_picker",
@@ -646,12 +625,33 @@
       "exception": null
     },
     {
-      "id": "M14-0030",
+      "id": "M14-0029",
       "category": "resolver",
       "name": "resolver_show_picker_RC016",
       "corpus_id": "RC016",
-      "user_id": 10005,
+      "user_id": 10009,
       "query": "东西坏了，我想换一个新的，可以吗？",
+      "expected": "show_picker",
+      "actual": "show_picker",
+      "reason": "multiple_orders_disambiguate",
+      "effective_order_no": null,
+      "total_orders": 2,
+      "candidate_orders_count": 2,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0030",
+      "category": "resolver",
+      "name": "resolver_show_picker_RC021",
+      "corpus_id": "RC021",
+      "user_id": 10005,
+      "query": "退货时需要附什么信息？",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
@@ -669,94 +669,94 @@
     {
       "id": "M14-0031",
       "category": "resolver",
-      "name": "resolver_show_picker_RC017",
-      "corpus_id": "RC017",
-      "user_id": 10004,
-      "query": "我退货运费谁出？怎么退给我？",
+      "name": "resolver_show_picker_RC022",
+      "corpus_id": "RC022",
+      "user_id": 10020,
+      "query": "退货麻烦吗？",
       "expected": "show_picker",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
+      "actual": "show_picker",
+      "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
+      "total_orders": 5,
+      "candidate_orders_count": 5,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
         "keywords": []
       },
-      "success": false,
+      "success": true,
       "exception": null
     },
     {
       "id": "M14-0032",
       "category": "resolver",
-      "name": "resolver_show_picker_RC018",
-      "corpus_id": "RC018",
-      "user_id": 10004,
-      "query": "退货要自己出邮费吗？",
+      "name": "resolver_show_picker_RC023",
+      "corpus_id": "RC023",
+      "user_id": 10006,
+      "query": "我已经穿过了，洗过了，还能退吗？",
       "expected": "show_picker",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
+      "actual": "show_picker",
+      "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
+      "total_orders": 5,
+      "candidate_orders_count": 5,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
         "keywords": []
       },
-      "success": false,
+      "success": true,
       "exception": null
     },
     {
       "id": "M14-0033",
       "category": "resolver",
-      "name": "resolver_show_picker_RC019",
-      "corpus_id": "RC019",
-      "user_id": 10017,
-      "query": "我自己寄回去邮费太贵了，有别的办法吗？",
+      "name": "resolver_show_picker_RC024",
+      "corpus_id": "RC024",
+      "user_id": 10005,
+      "query": "如何寄回商品？",
       "expected": "show_picker",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
+      "actual": "show_picker",
+      "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
+      "total_orders": 5,
+      "candidate_orders_count": 5,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
         "keywords": []
       },
-      "success": false,
+      "success": true,
       "exception": null
     },
     {
       "id": "M14-0034",
       "category": "resolver",
-      "name": "resolver_show_picker_RC020",
-      "corpus_id": "RC020",
-      "user_id": 10003,
-      "query": "怎么申请退货？",
+      "name": "resolver_show_picker_RC025",
+      "corpus_id": "RC025",
+      "user_id": 10015,
+      "query": "换货来不及了，能退了我重拍吗？",
       "expected": "show_picker",
-      "actual": "direct_answer",
-      "reason": "non_order_intent",
+      "actual": "show_picker",
+      "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 0,
-      "candidate_orders_count": 0,
+      "total_orders": 3,
+      "candidate_orders_count": 3,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
         "keywords": []
       },
-      "success": false,
+      "success": true,
       "exception": null
     },
     {
       "id": "M14-0035",
       "category": "resolver",
-      "name": "resolver_show_picker_RC021",
-      "corpus_id": "RC021",
-      "user_id": 10020,
-      "query": "退货时需要附什么信息？",
+      "name": "resolver_show_picker_RC026",
+      "corpus_id": "RC026",
+      "user_id": 10012,
+      "query": "快递怎么一直没更新？等了三天了",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
@@ -774,16 +774,16 @@
     {
       "id": "M14-0036",
       "category": "resolver",
-      "name": "resolver_show_picker_RC022",
-      "corpus_id": "RC022",
-      "user_id": 10015,
-      "query": "退货麻烦吗？",
+      "name": "resolver_show_picker_RC027",
+      "corpus_id": "RC027",
+      "user_id": 10019,
+      "query": "显示已签收但我没收到，怎么办？",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 3,
-      "candidate_orders_count": 3,
+      "total_orders": 4,
+      "candidate_orders_count": 4,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -795,10 +795,10 @@
     {
       "id": "M14-0037",
       "category": "resolver",
-      "name": "resolver_show_picker_RC023",
-      "corpus_id": "RC023",
-      "user_id": 10012,
-      "query": "我已经穿过了，洗过了，还能退吗？",
+      "name": "resolver_show_picker_RC028",
+      "corpus_id": "RC028",
+      "user_id": 10006,
+      "query": "快递显示到站点但一直没派送",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
@@ -816,16 +816,16 @@
     {
       "id": "M14-0038",
       "category": "resolver",
-      "name": "resolver_show_picker_RC024",
-      "corpus_id": "RC024",
-      "user_id": 10018,
-      "query": "如何寄回商品？",
+      "name": "resolver_show_picker_RC029",
+      "corpus_id": "RC029",
+      "user_id": 10009,
+      "query": "包裹破损了，里面的东西都压坏了",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 3,
-      "candidate_orders_count": 3,
+      "total_orders": 2,
+      "candidate_orders_count": 2,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -837,16 +837,16 @@
     {
       "id": "M14-0039",
       "category": "resolver",
-      "name": "resolver_show_picker_RC025",
-      "corpus_id": "RC025",
-      "user_id": 10013,
-      "query": "换货来不及了，能退了我重拍吗？",
+      "name": "resolver_show_picker_RC030",
+      "corpus_id": "RC030",
+      "user_id": 10016,
+      "query": "我买的 250 克 3 罐腰果，只有 1 罐？",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 2,
-      "candidate_orders_count": 2,
+      "total_orders": 4,
+      "candidate_orders_count": 4,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -858,16 +858,16 @@
     {
       "id": "M14-0040",
       "category": "resolver",
-      "name": "resolver_show_picker_RC026",
-      "corpus_id": "RC026",
-      "user_id": 10017,
-      "query": "快递怎么一直没更新？等了三天了",
+      "name": "resolver_show_picker_RC031",
+      "corpus_id": "RC031",
+      "user_id": 10020,
+      "query": "物流信息怎么还没更新？",
       "expected": "show_picker",
       "actual": "show_picker",
       "reason": "multiple_orders_disambiguate",
       "effective_order_no": null,
-      "total_orders": 2,
-      "candidate_orders_count": 2,
+      "total_orders": 5,
+      "candidate_orders_count": 5,
       "extracted_entities": {
         "order_no": null,
         "sku": null,
@@ -881,8 +881,98 @@
       "category": "refund",
       "name": "refund_synthesize_RC001",
       "corpus_id": "RC001",
-      "user_id": 10020,
+      "user_id": 10019,
       "query": "我在网上买的衣服还没收到，但现在不想要了，能退款吗？",
+      "expected": "ask_order_no",
+      "actual": "ask_order_no",
+      "flow_stages": [
+        "fetch_order"
+      ],
+      "completed": true,
+      "refundable": null,
+      "escalate_to_human": null,
+      "final_answer": "您有 4 个订单，请选择要退款的订单：",
+      "final_answer_len": 19,
+      "token_count": 1,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "hallucination": {
+        "has_hallucination": false,
+        "hallucination_details": [],
+        "extracted_entities": {
+          "order_nos": [],
+          "amounts": [
+            "4"
+          ],
+          "statuses": []
+        }
+      },
+      "coverage": {
+        "coverage_rate": 0.0,
+        "ref_keywords": [
+          "24小时"
+        ],
+        "agent_keywords": [],
+        "missing_keywords": [
+          "24小时"
+        ]
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0042",
+      "category": "refund",
+      "name": "refund_synthesize_RC002",
+      "corpus_id": "RC002",
+      "user_id": 10013,
+      "query": "快递拦截好像没成功，怎么办？",
+      "expected": "ask_order_no",
+      "actual": "ask_order_no",
+      "flow_stages": [
+        "fetch_order"
+      ],
+      "completed": true,
+      "refundable": null,
+      "escalate_to_human": null,
+      "final_answer": "您有 2 个订单，请选择要退款的订单：",
+      "final_answer_len": 19,
+      "token_count": 1,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "hallucination": {
+        "has_hallucination": false,
+        "hallucination_details": [],
+        "extracted_entities": {
+          "order_nos": [],
+          "amounts": [
+            "2"
+          ],
+          "statuses": []
+        }
+      },
+      "coverage": {
+        "coverage_rate": 1.0,
+        "ref_keywords": [],
+        "agent_keywords": [],
+        "missing_keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0043",
+      "category": "refund",
+      "name": "refund_synthesize_RC003",
+      "corpus_id": "RC003",
+      "user_id": 10005,
+      "query": "我的订单什么时候能退款？",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
       "flow_stages": [
@@ -913,10 +1003,12 @@
       "coverage": {
         "coverage_rate": 0.0,
         "ref_keywords": [
+          "签收",
           "24小时"
         ],
         "agent_keywords": [],
         "missing_keywords": [
+          "签收",
           "24小时"
         ]
       },
@@ -924,55 +1016,12 @@
       "exception": null
     },
     {
-      "id": "M14-0042",
+      "id": "M14-0044",
       "category": "refund",
-      "name": "refund_synthesize_RC002",
-      "corpus_id": "RC002",
-      "user_id": 10005,
-      "query": "快递拦截好像没成功，怎么办？",
-      "expected": "ask_order_no",
-      "actual": "ask_order_no",
-      "flow_stages": [
-        "fetch_order"
-      ],
-      "completed": true,
-      "refundable": null,
-      "escalate_to_human": null,
-      "final_answer": "您有 5 个订单，请选择要退款的订单：",
-      "final_answer_len": 19,
-      "token_count": 1,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "hallucination": {
-        "has_hallucination": false,
-        "hallucination_details": [],
-        "extracted_entities": {
-          "order_nos": [],
-          "amounts": [
-            "5"
-          ],
-          "statuses": []
-        }
-      },
-      "coverage": {
-        "coverage_rate": 1.0,
-        "ref_keywords": [],
-        "agent_keywords": [],
-        "missing_keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0043",
-      "category": "refund",
-      "name": "refund_synthesize_RC003",
-      "corpus_id": "RC003",
-      "user_id": 10017,
-      "query": "我的订单什么时候能退款？",
+      "name": "refund_synthesize_RC004",
+      "corpus_id": "RC004",
+      "user_id": 10009,
+      "query": "退款多久能到账？",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
       "flow_stages": [
@@ -1016,60 +1065,11 @@
       "exception": null
     },
     {
-      "id": "M14-0044",
-      "category": "refund",
-      "name": "refund_synthesize_RC004",
-      "corpus_id": "RC004",
-      "user_id": 10019,
-      "query": "退款多久能到账？",
-      "expected": "ask_order_no",
-      "actual": "ask_order_no",
-      "flow_stages": [
-        "fetch_order"
-      ],
-      "completed": true,
-      "refundable": null,
-      "escalate_to_human": null,
-      "final_answer": "您有 4 个订单，请选择要退款的订单：",
-      "final_answer_len": 19,
-      "token_count": 1,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "hallucination": {
-        "has_hallucination": false,
-        "hallucination_details": [],
-        "extracted_entities": {
-          "order_nos": [],
-          "amounts": [
-            "4"
-          ],
-          "statuses": []
-        }
-      },
-      "coverage": {
-        "coverage_rate": 0.0,
-        "ref_keywords": [
-          "签收",
-          "24小时"
-        ],
-        "agent_keywords": [],
-        "missing_keywords": [
-          "签收",
-          "24小时"
-        ]
-      },
-      "success": true,
-      "exception": null
-    },
-    {
       "id": "M14-0045",
       "category": "refund",
       "name": "refund_synthesize_RC006",
       "corpus_id": "RC006",
-      "user_id": 10015,
+      "user_id": 10013,
       "query": "钱包使用一段时间想换货",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
@@ -1079,7 +1079,7 @@
       "completed": true,
       "refundable": null,
       "escalate_to_human": null,
-      "final_answer": "您有 3 个订单，请选择要退款的订单：",
+      "final_answer": "您有 2 个订单，请选择要退款的订单：",
       "final_answer_len": 19,
       "token_count": 1,
       "extracted_entities": {
@@ -1093,7 +1093,7 @@
         "extracted_entities": {
           "order_nos": [],
           "amounts": [
-            "3"
+            "2"
           ],
           "statuses": []
         }
@@ -1112,7 +1112,7 @@
       "category": "refund",
       "name": "refund_synthesize_RC007",
       "corpus_id": "RC007",
-      "user_id": 10019,
+      "user_id": 10009,
       "query": "宝贝出现磨损要求退款",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
@@ -1122,7 +1122,7 @@
       "completed": true,
       "refundable": null,
       "escalate_to_human": null,
-      "final_answer": "您有 4 个订单，请选择要退款的订单：",
+      "final_answer": "您有 2 个订单，请选择要退款的订单：",
       "final_answer_len": 19,
       "token_count": 1,
       "extracted_entities": {
@@ -1136,7 +1136,7 @@
         "extracted_entities": {
           "order_nos": [],
           "amounts": [
-            "4"
+            "2"
           ],
           "statuses": []
         }
@@ -1159,7 +1159,7 @@
       "category": "refund",
       "name": "refund_synthesize_RC008",
       "corpus_id": "RC008",
-      "user_id": 10004,
+      "user_id": 10019,
       "query": "收到宝贝20天想退换",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
@@ -1206,55 +1206,8 @@
       "category": "refund",
       "name": "refund_synthesize_RC009",
       "corpus_id": "RC009",
-      "user_id": 10003,
+      "user_id": 10013,
       "query": "包包底座与图片不符",
-      "expected": "ask_order_no",
-      "actual": "ask_order_no",
-      "flow_stages": [
-        "fetch_order"
-      ],
-      "completed": true,
-      "refundable": null,
-      "escalate_to_human": null,
-      "final_answer": "您有 3 个订单，请选择要退款的订单：",
-      "final_answer_len": 19,
-      "token_count": 1,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "hallucination": {
-        "has_hallucination": false,
-        "hallucination_details": [],
-        "extracted_entities": {
-          "order_nos": [],
-          "amounts": [
-            "3"
-          ],
-          "statuses": []
-        }
-      },
-      "coverage": {
-        "coverage_rate": 0.0,
-        "ref_keywords": [
-          "运费"
-        ],
-        "agent_keywords": [],
-        "missing_keywords": [
-          "运费"
-        ]
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0049",
-      "category": "refund",
-      "name": "refund_synthesize_RC010",
-      "corpus_id": "RC010",
-      "user_id": 10017,
-      "query": "退货申请通过后下一步操作",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
       "flow_stages": [
@@ -1285,23 +1238,23 @@
       "coverage": {
         "coverage_rate": 0.0,
         "ref_keywords": [
-          "24小时"
+          "运费"
         ],
         "agent_keywords": [],
         "missing_keywords": [
-          "24小时"
+          "运费"
         ]
       },
       "success": true,
       "exception": null
     },
     {
-      "id": "M14-0050",
+      "id": "M14-0049",
       "category": "refund",
-      "name": "refund_synthesize_RC011",
-      "corpus_id": "RC011",
-      "user_id": 10010,
-      "query": "退货质检入库后多久退款？",
+      "name": "refund_synthesize_RC010",
+      "corpus_id": "RC010",
+      "user_id": 10018,
+      "query": "退货申请通过后下一步操作",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
       "flow_stages": [
@@ -1330,6 +1283,53 @@
         }
       },
       "coverage": {
+        "coverage_rate": 0.0,
+        "ref_keywords": [
+          "24小时"
+        ],
+        "agent_keywords": [],
+        "missing_keywords": [
+          "24小时"
+        ]
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0050",
+      "category": "refund",
+      "name": "refund_synthesize_RC011",
+      "corpus_id": "RC011",
+      "user_id": 10004,
+      "query": "退货质检入库后多久退款？",
+      "expected": "ask_order_no",
+      "actual": "ask_order_no",
+      "flow_stages": [
+        "fetch_order"
+      ],
+      "completed": true,
+      "refundable": null,
+      "escalate_to_human": null,
+      "final_answer": "您有 4 个订单，请选择要退款的订单：",
+      "final_answer_len": 19,
+      "token_count": 1,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "hallucination": {
+        "has_hallucination": false,
+        "hallucination_details": [],
+        "extracted_entities": {
+          "order_nos": [],
+          "amounts": [
+            "4"
+          ],
+          "statuses": []
+        }
+      },
+      "coverage": {
         "coverage_rate": 1.0,
         "ref_keywords": [],
         "agent_keywords": [],
@@ -1343,7 +1343,7 @@
       "category": "refund",
       "name": "refund_escalate_quality_RC005",
       "corpus_id": "RC005",
-      "user_id": 10004,
+      "user_id": 10006,
       "query": "商品有质量问题，申请退款",
       "expected": "escalate",
       "actual": "escalate",
@@ -1375,7 +1375,7 @@
       "category": "refund",
       "name": "refund_escalate_quality_RC015",
       "corpus_id": "RC015",
-      "user_id": 10006,
+      "user_id": 10020,
       "query": "收到的商品有破损，我要退货",
       "expected": "escalate",
       "actual": "escalate",
@@ -1407,7 +1407,7 @@
       "category": "refund",
       "name": "refund_escalate_quality_RC056",
       "corpus_id": "RC056",
-      "user_id": 10018,
+      "user_id": 10006,
       "query": "我买的东西有质量问题想退，但是已经签收10天了",
       "expected": "escalate",
       "actual": "escalate",
@@ -1439,7 +1439,7 @@
       "category": "refund",
       "name": "refund_escalate_quality_RC069",
       "corpus_id": "RC069",
-      "user_id": 10004,
+      "user_id": 10017,
       "query": "我买了双鞋穿了 2 天就开胶了，能退吗？",
       "expected": "escalate",
       "actual": "escalate",
@@ -1503,7 +1503,7 @@
       "category": "refund",
       "name": "refund_escalate_quality_RC095",
       "corpus_id": "RC095",
-      "user_id": 10017,
+      "user_id": 10005,
       "query": "我刚买的手机屏幕有坏点，能换吗？",
       "expected": "escalate",
       "actual": "escalate",
@@ -1535,7 +1535,7 @@
       "category": "refund",
       "name": "refund_escalate_quality_RC097",
       "corpus_id": "RC097",
-      "user_id": 10018,
+      "user_id": 10010,
       "query": "买回来发现是二手商品，能退吗？",
       "expected": "escalate",
       "actual": "escalate",
@@ -1567,7 +1567,7 @@
       "category": "refund",
       "name": "refund_escalate_emotion_RC012",
       "corpus_id": "RC012",
-      "user_id": 10012,
+      "user_id": 10020,
       "query": "我要 500 块赔偿，不给就投诉 12315！",
       "expected": "escalate",
       "actual": "escalate",
@@ -1599,7 +1599,7 @@
       "category": "refund",
       "name": "refund_escalate_emotion_RC033",
       "corpus_id": "RC033",
-      "user_id": 10015,
+      "user_id": 10004,
       "query": "你们再不派送我就投诉 12315 和 12305！",
       "expected": "escalate",
       "actual": "escalate",
@@ -1631,7 +1631,7 @@
       "category": "refund",
       "name": "refund_escalate_emotion_RC051",
       "corpus_id": "RC051",
-      "user_id": 10019,
+      "user_id": 10012,
       "query": "我要投诉！你们这是什么破服务！",
       "expected": "escalate",
       "actual": "escalate",
@@ -1663,7 +1663,7 @@
       "category": "refund",
       "name": "refund_escalate_manual_RC053",
       "corpus_id": "RC053",
-      "user_id": 10012,
+      "user_id": 10018,
       "query": "转人工！我不要机器人回复！",
       "expected": "escalate",
       "actual": "escalate",
@@ -1695,7 +1695,7 @@
       "category": "refund",
       "name": "refund_escalate_amount_RC054",
       "corpus_id": "RC054",
-      "user_id": 10011,
+      "user_id": 10019,
       "query": "我花了 3000 块买的，质量这么差要 3 倍赔偿！",
       "expected": "escalate",
       "actual": "unknown",
@@ -1746,8 +1746,100 @@
       "category": "refund",
       "name": "refund_ask_order_no_RC013",
       "corpus_id": "RC013",
-      "user_id": 10013,
+      "user_id": 10010,
       "query": "您能帮忙改成七天无理由退货吗？",
+      "expected": "ask_order_no",
+      "actual": "ask_order_no",
+      "flow_stages": [
+        "fetch_order"
+      ],
+      "completed": true,
+      "refundable": null,
+      "escalate_to_human": null,
+      "final_answer": "您有 3 个订单，请选择要退款的订单：",
+      "final_answer_len": 19,
+      "token_count": 1,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "hallucination": {
+        "has_hallucination": false,
+        "hallucination_details": [],
+        "extracted_entities": {
+          "order_nos": [],
+          "amounts": [
+            "3"
+          ],
+          "statuses": []
+        }
+      },
+      "coverage": {
+        "coverage_rate": 0.0,
+        "ref_keywords": [
+          "退货退款",
+          "协商"
+        ],
+        "agent_keywords": [],
+        "missing_keywords": [
+          "退货退款",
+          "协商"
+        ]
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0064",
+      "category": "refund",
+      "name": "refund_ask_order_no_RC014",
+      "corpus_id": "RC014",
+      "user_id": 10017,
+      "query": "由于订单时间过长这边无法核实",
+      "expected": "ask_order_no",
+      "actual": "ask_order_no",
+      "flow_stages": [
+        "fetch_order"
+      ],
+      "completed": true,
+      "refundable": null,
+      "escalate_to_human": null,
+      "final_answer": "您有 2 个订单，请选择要退款的订单：",
+      "final_answer_len": 19,
+      "token_count": 1,
+      "extracted_entities": {
+        "order_no": null,
+        "sku": null,
+        "keywords": []
+      },
+      "hallucination": {
+        "has_hallucination": false,
+        "hallucination_details": [],
+        "extracted_entities": {
+          "order_nos": [],
+          "amounts": [
+            "2"
+          ],
+          "statuses": []
+        }
+      },
+      "coverage": {
+        "coverage_rate": 1.0,
+        "ref_keywords": [],
+        "agent_keywords": [],
+        "missing_keywords": []
+      },
+      "success": true,
+      "exception": null
+    },
+    {
+      "id": "M14-0065",
+      "category": "refund",
+      "name": "refund_ask_order_no_RC016",
+      "corpus_id": "RC016",
+      "user_id": 10009,
+      "query": "东西坏了，我想换一个新的，可以吗？",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
       "flow_stages": [
@@ -1778,98 +1870,6 @@
       "coverage": {
         "coverage_rate": 0.0,
         "ref_keywords": [
-          "退货退款",
-          "协商"
-        ],
-        "agent_keywords": [],
-        "missing_keywords": [
-          "退货退款",
-          "协商"
-        ]
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0064",
-      "category": "refund",
-      "name": "refund_ask_order_no_RC014",
-      "corpus_id": "RC014",
-      "user_id": 10010,
-      "query": "由于订单时间过长这边无法核实",
-      "expected": "ask_order_no",
-      "actual": "ask_order_no",
-      "flow_stages": [
-        "fetch_order"
-      ],
-      "completed": true,
-      "refundable": null,
-      "escalate_to_human": null,
-      "final_answer": "您有 3 个订单，请选择要退款的订单：",
-      "final_answer_len": 19,
-      "token_count": 1,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "hallucination": {
-        "has_hallucination": false,
-        "hallucination_details": [],
-        "extracted_entities": {
-          "order_nos": [],
-          "amounts": [
-            "3"
-          ],
-          "statuses": []
-        }
-      },
-      "coverage": {
-        "coverage_rate": 1.0,
-        "ref_keywords": [],
-        "agent_keywords": [],
-        "missing_keywords": []
-      },
-      "success": true,
-      "exception": null
-    },
-    {
-      "id": "M14-0065",
-      "category": "refund",
-      "name": "refund_ask_order_no_RC016",
-      "corpus_id": "RC016",
-      "user_id": 10005,
-      "query": "东西坏了，我想换一个新的，可以吗？",
-      "expected": "ask_order_no",
-      "actual": "ask_order_no",
-      "flow_stages": [
-        "fetch_order"
-      ],
-      "completed": true,
-      "refundable": null,
-      "escalate_to_human": null,
-      "final_answer": "您有 5 个订单，请选择要退款的订单：",
-      "final_answer_len": 19,
-      "token_count": 1,
-      "extracted_entities": {
-        "order_no": null,
-        "sku": null,
-        "keywords": []
-      },
-      "hallucination": {
-        "has_hallucination": false,
-        "hallucination_details": [],
-        "extracted_entities": {
-          "order_nos": [],
-          "amounts": [
-            "5"
-          ],
-          "statuses": []
-        }
-      },
-      "coverage": {
-        "coverage_rate": 0.0,
-        "ref_keywords": [
           "质量问题"
         ],
         "agent_keywords": [],
@@ -1885,7 +1885,7 @@
       "category": "refund",
       "name": "refund_ask_order_no_RC017",
       "corpus_id": "RC017",
-      "user_id": 10004,
+      "user_id": 10011,
       "query": "我退货运费谁出？怎么退给我？",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
@@ -1932,7 +1932,7 @@
       "category": "refund",
       "name": "refund_ask_order_no_RC018",
       "corpus_id": "RC018",
-      "user_id": 10004,
+      "user_id": 10020,
       "query": "退货要自己出邮费吗？",
       "expected": "ask_order_no",
       "actual": "ask_order_no",
@@ -1942,7 +1942,7 @@
       "completed": true,
       "refundable": null,
       "escalate_to_human": null,
-      "final_answer": "您有 4 个订单，请选择要退款的订单：",
+      "final_answer": "您有 5 个订单，请选择要退款的订单：",
       "final_answer_len": 19,
       "token_count": 1,
       "extracted_entities": {
@@ -1956,7 +1956,7 @@
         "extracted_entities": {
           "order_nos": [],
           "amounts": [
-            "4"
+            "5"
           ],
           "statuses": []
         }
@@ -1987,14 +1987,13 @@
       "actual": "invalid_order",
       "flow_stages": [
         "decide",
-        "fetch_policy",
         "synthesize"
       ],
       "completed": true,
       "refundable": null,
       "escalate_to_human": null,
-      "final_answer": "不能退，该订单当前不支持退款。  \n原因：订单 ORD20269999XXX 已下单 0 天，根据现有信息，该订单不可退款。请确认是否符合退款条件或联系人工客服咨询详情。",
-      "final_answer_len": 85,
+      "final_answer": "不能退，该订单当前不支持退款。  \n原因：已下单 0 天，且系统显示不可退款。请确认是否符合退款条件或联系商家协商。",
+      "final_answer_len": 58,
       "token_count": 1,
       "extracted_entities": {
         "order_no": "ORD20269999XXX",
@@ -2002,25 +2001,12 @@
         "keywords": []
       },
       "hallucination": {
-        "has_hallucination": true,
-        "hallucination_details": [
-          {
-            "type": "fake_order_no",
-            "value": "ORD20269999XXX",
-            "valid_options": [
-              "ORD20260718002",
-              "ORD20260718003",
-              "ORD20260718004"
-            ]
-          }
-        ],
+        "has_hallucination": false,
+        "hallucination_details": [],
         "extracted_entities": {
-          "order_nos": [
-            "ORD20269999XXX"
-          ],
+          "order_nos": [],
           "amounts": [
-            "0",
-            "20269999"
+            "0"
           ],
           "statuses": []
         }
@@ -2045,8 +2031,8 @@
       "completed": true,
       "refundable": null,
       "escalate_to_human": null,
-      "final_answer": "不能退，该订单当前不支持退款。  \n原因：已下单 0 天，且系统显示不可退款。  \n建议您查看订单详情页的退款规则或联系客服咨询其他解决方案。",
-      "final_answer_len": 71,
+      "final_answer": "不能退，该订单当前状态不支持退款。  \n原因：已下单 0 天，订单状态为未知，无法进行退款操作。  \n建议查看订单详情中的具体原因。",
+      "final_answer_len": 66,
       "token_count": 1,
       "extracted_entities": {
         "order_no": "ORD00000000XXX",
@@ -2079,13 +2065,14 @@
       "actual": "invalid_order",
       "flow_stages": [
         "decide",
+        "fetch_policy",
         "synthesize"
       ],
       "completed": true,
       "refundable": null,
       "escalate_to_human": null,
-      "final_answer": "不能退，因为该订单当前不支持退款。  \n订单刚下单，尚未满足退款条件，且已下单 0 天，暂无法发起退款操作。",
-      "final_answer_len": 54,
+      "final_answer": "不能退，该订单当前不支持退款。  \n已下单0天，可能处于不可退状态，请确认订单详情。",
+      "final_answer_len": 42,
       "token_count": 1,
       "extracted_entities": {
         "order_no": "ORD99999999999",
