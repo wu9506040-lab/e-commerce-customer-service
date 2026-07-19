@@ -173,27 +173,32 @@ def _build_refund_scenarios() -> List[Scenario]:
     counter = 41
 
     # === synthesize 分支（10 条，refund/logistics 类的普通退款话术）===
-    # 选 ask_order_no 分支下、escalate_trigger=none 的条目作为 synthesize（普通退款路径）
+    # P0 整改（2026-07-19 · V6 重跑）：改用 USER_ONE_ORDER 分配
+    # 旧版用 USER_MULTI_ORDERS → Resolver 返回 SHOW_PICKER → ask_order_no 分支
+    # → 12 个有效 case 全部在 ask_order_no 分支无政策文本（V5 metric 修复后 0/12）
+    #
+    # 新版：USER_ONE_ORDER (3 users: 10002/10008/10014) → Resolver DIRECT_ANSWER
+    # → auto-pick effective_order_no → LangGraph decide_node → fetch_policy → synthesize
+    # → 输出含 "24小时"/"7天无理由" 的政策文本 → 政策覆盖率可量化
     normal_refund_entries = [
         e for e in filter_by_branch("ask_order_no")
         if e.get("escalate_trigger") == "none"
         and e.get("scenario_type") in ("refund", "logistics", "order", "policy")
     ][:10]
 
-    for entry in normal_refund_entries:
+    for i, entry in enumerate(normal_refund_entries):
         scenarios.append(Scenario(
             id=f"M14-{counter:04d}",
             category="refund",
             name=f"refund_synthesize_{entry['id']}",
-            user_id=USER_MULTI_ORDERS[hash(entry["id"]) % len(USER_MULTI_ORDERS)],
+            user_id=USER_ONE_ORDER[i % len(USER_ONE_ORDER)],  # 改：USER_ONE_ORDER (3 users round-robin)
             intent="refund_query",
             query=entry["query"],
             corpus_id=entry["id"],
             entities={"order_no": None, "sku": None},
-            # 真实话术大多不含 order_no，RefundFlow 实际走 ask_order_no 分支（请用户提供）
-            # 这才是真实业务场景：80% 用户首次咨询不带 order_no
-            expected="ask_order_no",
-            note=f"来源: {entry['source']} | 普通退款路径（无 order_no → 实际走 ask_order_no）",
+            # 1-order user 自动解析 → 实际走 synthesize 分支
+            expected="synthesize",  # 改：ask_order_no → synthesize
+            note=f"来源: {entry['source']} | 1-order user Resolver DIRECT_ANSWER 自动解析 → synthesize 分支输出政策文本",
         ))
         counter += 1
 
