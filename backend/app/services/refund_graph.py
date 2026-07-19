@@ -55,6 +55,9 @@ from app.services.policy_service import PolicyService
 # 保留 unused import 让 mock 路径有效，避免一次性更新大量旧测试。
 from app.tools.order_tool import OrderTool  # noqa: F401
 
+# V10-D：synthesize_answer 后置反幻觉校验（修 M14-0045 fake_amount / M14-0070 fake_order_no）
+from app.services.validation.hallucination_guard import post_synthesize_check
+
 logger = logging.getLogger(__name__)
 
 
@@ -132,6 +135,10 @@ ANTI_FABRICATION_ENABLED: bool = bool(_RULES.get("ANTI_FABRICATION_ENABLED", Tru
 FABRICATION_BLOCK_FAKE_AMOUNT: bool = bool(_RULES.get("FABRICATION_BLOCK_FAKE_AMOUNT", True))
 FABRICATION_BLOCK_FAKE_ORDER_NO: bool = bool(_RULES.get("FABRICATION_BLOCK_FAKE_ORDER_NO", True))
 FABRICATION_BLOCK_FAKE_STATUS: bool = bool(_RULES.get("FABRICATION_BLOCK_FAKE_STATUS", True))
+
+# V10-D 后置强校验：synthesize 节点产出 final_answer 后做正则反幻觉（修 M14-0045/0070）
+# 关闭 → 退回 V9 行为（仅 prompt 层防御，LLM 编造仍可能泄漏）
+POST_SYNTHESIZE_HALLUCINATION_CHECK: bool = bool(_RULES.get("POST_SYNTHESIZE_HALLUCINATION_CHECK", True))
 
 # 决策枚举（LLM 输出和硬规则共用）
 VALID_DECISIONS = ("synthesize", "need_more_info", "need_confirm_order", "escalate")
@@ -727,7 +734,20 @@ def synthesize_answer(state: RefundState) -> RefundState:
         [{"role": "user", "content": prompt}],
         temperature=0.3,
     )
-    return {"final_answer": result.get("reply", "")}
+    final_answer = result.get("reply", "") or ""
+
+    # V10-D 后置强校验：即使 prompt #7/#8 已约束，LLM 仍可能在金额/订单号上编造。
+    # 修 M14-0045（synthesize 输出 "54 元" 对应 real 322.21）
+    #   与 M14-0070（invalid_order 路径 synthesize 输出 "ORD99999999999" → 剥离或替换）
+    # 关闭开关 POST_SYNTHESIZE_HALLUCINATION_CHECK → 退回 V9 行为。
+    if POST_SYNTHESIZE_HALLUCINATION_CHECK:
+        cleaned_answer, _hits = post_synthesize_check(
+            final_answer,
+            order_info,
+        )
+        return {"final_answer": cleaned_answer}
+
+    return {"final_answer": final_answer}
 
 
 def escalate_to_human(state: RefundState) -> RefundState:
