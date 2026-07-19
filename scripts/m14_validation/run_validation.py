@@ -529,8 +529,13 @@ def _compute_metrics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     hallucinated = sum(1 for r in total_with_output if (r.get("hallucination") or {}).get("has_hallucination"))
     hallucination_rate = hallucinated / len(total_with_output) if total_with_output else 0.0
 
-    # 5. 政策覆盖率（新增真指标）
-    coverage_results = [r for r in results if r.get("coverage") is not None]
+    # 5. 政策覆盖率（新增真指标 · V5 修复：跳过 coverage_rate=None 的 case）
+    # None 表示"ref 无关键词（无指标）"；计入会稀释真实数据
+    coverage_results = [
+        r for r in results
+        if r.get("coverage") is not None
+        and (r.get("coverage") or {}).get("coverage_rate") is not None
+    ]
     coverage_sum = sum((r.get("coverage") or {}).get("coverage_rate", 0) for r in coverage_results)
     avg_coverage = coverage_sum / len(coverage_results) if coverage_results else 0.0
 

@@ -8,10 +8,15 @@ answer_quality.py - 真回答质量评估模块
 设计：
 - 4 类业务（refund/logistics/order/policy）每类有关键词表
 - 覆盖率 = ref_answer 中出现且 Agent 输出中也出现的关键词 / ref_answer 中出现的关键词总数
+
+2026-07-19 修复（V5 P2 任务）：
+- 当 ref_answer 不含 POLICY_KEYWORDS 时，coverage_rate 返 None（标记为"无指标"）
+- 上层统计时跳过 None case（不计入分子分母）
+- 修复前：硬编码 1.0 稀释真实数据（V4 16 个 case 中 4 个空 ref 贡献 25% 分子）
 """
 import logging
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +55,8 @@ POLICY_KEYWORDS = {
 # =============================================================
 @dataclass
 class CoverageReport:
-    """回答覆盖率报告"""
-    coverage_rate: float = 0.0
+    """回答覆盖率报告（V5 修复：coverage_rate 可为 None）"""
+    coverage_rate: Optional[float] = None  # None = ref 无关键词（无指标）
     ref_keywords: List[str] = field(default_factory=list)
     agent_keywords: List[str] = field(default_factory=list)
     missing_keywords: List[str] = field(default_factory=list)
@@ -77,25 +82,27 @@ def evaluate_coverage(
 
     Returns:
         CoverageReport: 覆盖率 + 命中关键词 + 缺失关键词
+        coverage_rate=None 表示"ref 无关键词（无指标）"，上层应跳过
     """
     if not agent_output or not ref_answer:
-        return CoverageReport()
+        return CoverageReport(coverage_rate=None)
 
     keywords = POLICY_KEYWORDS.get(scenario_type, [])
     if not keywords:
-        return CoverageReport(coverage_rate=1.0)
+        return CoverageReport(coverage_rate=None)  # 场景无关键词表 = 无指标
 
     # ref_answer 中出现的关键词（这些是"应该覆盖"的目标）
     ref_present = [kw for kw in keywords if kw in ref_answer]
     if not ref_present:
-        # ref 没有这些关键词，意味着这条话术"不需要"覆盖这些关键术语，按 100% 计
-        return CoverageReport(coverage_rate=1.0, ref_keywords=[], agent_keywords=[], missing_keywords=[])
+        # V5 修复：ref 没有这些关键词 → 标记为 None（无指标）
+        # 修复前硬编码 1.0 会稀释真实数据（如 V4 16 个 case 中 4 个空 ref 贡献 25% 分子）
+        return CoverageReport(coverage_rate=None, ref_keywords=[], agent_keywords=[], missing_keywords=[])
 
     # agent_output 中覆盖了 ref 里的哪些关键词
     agent_covered = [kw for kw in ref_present if kw in agent_output]
     missing = [kw for kw in ref_present if kw not in agent_output]
 
-    coverage = len(agent_covered) / len(ref_present) if ref_present else 1.0
+    coverage = len(agent_covered) / len(ref_present) if ref_present else 0.0
 
     return CoverageReport(
         coverage_rate=round(coverage, 4),
