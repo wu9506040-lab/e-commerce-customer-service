@@ -159,16 +159,7 @@ class OrderContextResolver:
                 reason="resolver_disabled",
             )
 
-        # 支持 order_query + refund_query（0/1/N 决策 intent-agnostic，与意图无关）
-        # product_query / policy_query 仍走 DIRECT_ANSWER（不需要订单解析）
-        if intent not in {"order_query", "refund_query"}:
-            return OrderResolverResult(
-                action=OrderResolverAction.DIRECT_ANSWER,
-                intent=intent,
-                reason="non_order_intent",
-            )
-
-        # 1. 匿名用户
+        # 1. 匿名用户（P2-4：前置于越权检查，避免匿名 + 自报订单泄露身份）
         if user_id == ANONYMOUS_USER_ID:
             if REQUIRE_LOGIN:
                 return OrderResolverResult(
@@ -178,7 +169,13 @@ class OrderContextResolver:
                 )
             # REQUIRE_LOGIN=False 时降级（保留可配置性，但默认 True）
 
-        # 2. 用户已提供有效 order_no → DIRECT_ANSWER
+        # 2. P2-4 防越权：任何意图 + 用户提供的有效 order_no → 校验归属
+        # 修复 V8 失败 case：
+        #   - M14-0096 (policy_query + cross-user 10009→001) → NOT_FOUND
+        #   - M14-0099 (order_query + user 10004 own 005) → DIRECT_ANSWER
+        # 注：原 L181 的 provided_order_no 检查只在 intent ∈ {order_query, refund_query} 时生效；
+        #   non_order_intent（如 policy_query）短路导致 ownership check 丢失。
+        #   现提升到 intent filter 之前，对所有意图生效。
         provided_order_no = (entities or {}).get("order_no")
         if provided_order_no and self._is_valid_order_no(provided_order_no):
             # 校验归属（防越权）
@@ -190,8 +187,8 @@ class OrderContextResolver:
                     reason="order_not_found_or_not_owned",
                     effective_order_no=provided_order_no,
                 )
-            # 注入 status_zh（P1-3：单订单也注入，前端 / decide node 用）
-            candidate = _inject_status_zh([order]) if order else []
+            # 订单归属当前用户 → 注入 status_zh（P1-3：单订单也注入，前端 / decide node 用）
+            candidate = _inject_status_zh([order])
             return OrderResolverResult(
                 action=OrderResolverAction.DIRECT_ANSWER,
                 intent=intent,
@@ -201,7 +198,16 @@ class OrderContextResolver:
                 total_orders=1,
             )
 
-        # 3. ctx 已携带 current_order_no → DIRECT_ANSWER（用户从 OrderCard 跳入）
+        # 3. 支持 order_query + refund_query（0/1/N 决策 intent-agnostic，与意图无关）
+        # product_query / policy_query 在无 order_no 时仍走 DIRECT_ANSWER（不需要订单解析）
+        if intent not in {"order_query", "refund_query"}:
+            return OrderResolverResult(
+                action=OrderResolverAction.DIRECT_ANSWER,
+                intent=intent,
+                reason="non_order_intent",
+            )
+
+        # 4. ctx 已携带 current_order_no → DIRECT_ANSWER（用户从 OrderCard 跳入）
         if ctx.current_order_no:
             order = OrderTool.get_order_by_no(user_id, ctx.current_order_no)
             if order is None:
