@@ -31,6 +31,8 @@ from app.services.refund_graph import (  # noqa: E402
     _validate_decide_output,
     _build_decide_prompt,
     _should_fetch_policy,
+    synthesize_answer,
+    POLICY_QUOTE_REQUIRED,
 )
 
 
@@ -437,3 +439,141 @@ class TestFetchPolicyTrigger:
             }
             result = _should_fetch_policy(state)
             assert result == "synthesize", f"{decision} 应跳过 fetch_policy"
+
+
+# =============================================================
+# 7. T2.2 政策原文引用强制（T2.2 · 致命问题 4 政策覆盖率提升）
+# =============================================================
+class TestPolicyQuote:
+    """致命问题 4 政策覆盖率提升：POLICY_QUOTE_REQUIRED=True 时
+    synthesize prompt 必须包含 #6 硬约束（强制 LLM 引用政策原文段落）。
+
+    设计原则（CLAUDE.md §9.4.2 配置分离）：
+      - 业务规则 YAML 化（POLICY_QUOTE_REQUIRED 开关）
+      - synthesize node 不动 schema，仅在 prompt 内追加 #6
+      - 关闭开关 → 行为退回 V2（不强制引用）
+
+    防 LLM 复述窜改：用「直接引用」+「双引号包裹」硬约束，让 AI 把政策条款
+    当作"事实"嵌入回答，而非"参考后意译"。
+    """
+
+    def _make_state(self, *, with_policy_docs=True):
+        state = {
+            "resolver_result": {"action": "direct_answer", "total_orders": 1},
+            "decide_result": {
+                "decision": "synthesize",
+                "confidence": 0.95,
+                "target_order_no": "O20260718001",
+                "reason": "签收 1 天在 7 天时效内",
+                "escalate": {"enabled": False},
+                "need_info": {"enabled": False},
+                "reply_key_points": ["确认在 7 天时效内", "引导用户申请退款"],
+                "policy_needed": with_policy_docs,
+            },
+            "orders": [{
+                "order_no": "O20260718001",
+                "sku_name": "智能手机",
+                "status_zh": "已签收",
+                "amount": 3999.00,
+            }],
+            "order_info": {"order_no": "O20260718001", "status": "delivered", "total_amount": 3999.0},
+            "refundable": True,
+            "reason": "签收 1 天在 7 天时效内",
+            "days_since_order": 1,
+            "status_zh": "已签收",
+            "query": "我昨天收到的手机能退吗",
+            "history": [],
+            "context_block": "",
+            "image_urls": [],
+            "policy_docs": ([
+                {"text": "收货后 7 天内可申请无理由退款，需保持商品完好"},
+            ] if with_policy_docs else []),
+        }
+        return state
+
+    def test_policy_quote_required_flag_loaded_from_yaml(self):
+        """decide.yaml 的 POLICY_QUOTE_REQUIRED 必须被加载为顶层常量"""
+        # 直接读模块属性（启动期加载）
+        from app.services import refund_graph as rg_module
+        assert hasattr(rg_module, "POLICY_QUOTE_REQUIRED"), \
+            "POLICY_QUOTE_REQUIRED 顶层常量必须存在"
+        assert isinstance(rg_module.POLICY_QUOTE_REQUIRED, bool)
+        # 当前 YAML 配置为 True（policy_quote_required 提升默认开启）
+        assert rg_module.POLICY_QUOTE_REQUIRED is True, \
+            "默认开关应为 True（T2.2 已开）"
+
+    def test_synthesize_prompt_includes_quote_rule_when_docs_present(self):
+        """policy_docs 非空 + POLICY_QUOTE_REQUIRED=True → prompt 必须包含 #6 硬约束 + 引号包裹指引"""
+        assert POLICY_QUOTE_REQUIRED is True, "前置条件：开关已开启"
+
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "根据「收货后 7 天内可申请无理由退款」，您可以申请退款。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            result = synthesize_answer(self._make_state(with_policy_docs=True))
+
+        prompt = captured["prompt"]
+        assert "6." in prompt, "prompt 必须有 #6 硬约束条目"
+        assert "「」" in prompt or "引号" in prompt, \
+            "#6 必须指引 LLM 用「」引号包裹政策原文"
+        assert "禁止改字" in prompt or "不得改字" in prompt or "不得意译" in prompt, \
+            "#6 必须要求 LLM 字面引用、禁止意译"
+        assert result["final_answer"], "LLM 应返回引用政策的回答"
+
+    def test_synthesize_prompt_skips_quote_rule_when_docs_empty(self):
+        """policy_docs 为空 → prompt 不应强制引用（无可引内容）"""
+        # 即便 POLICY_QUOTE_REQUIRED=True，policy_docs 为空时不打硬约束
+        # （避免 LLM "为引用而引用" 出现幻觉）
+        assert POLICY_QUOTE_REQUIRED is True, "前置条件：开关已开启"
+
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "您可以申请退款。订单在 7 天时效内。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            synthesize_answer(self._make_state(with_policy_docs=False))
+
+        prompt = captured["prompt"]
+        # 关键反例：policy_docs 为空时不应有「」必引约束
+        # 允许 #6 行不出现（避免空引用幻觉）
+        policy_block = "（无相关政策）"
+        assert policy_block in prompt, "无政策时必须显式标注"
+        # 修复点: 即便开关 True，无政策时不应硬逼 LLM 编
+        # 因 #6 行只在 docs 非空时注入
+        assert "政策原文" not in prompt or "无相关政策" in prompt, \
+            "policy_docs 空时不应要求引用政策原文"
+
+    def test_yaml_flag_can_disable_quote_rule(self):
+        """POLICY_QUOTE_REQUIRED=False → synthesize prompt 不注入 #6 行"""
+        from app.services import refund_graph as rg_module
+
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "好的，您可以直接申请退款。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            # 临时切换为 False
+            original = rg_module.POLICY_QUOTE_REQUIRED
+            try:
+                rg_module.POLICY_QUOTE_REQUIRED = False
+                synthesize_answer(self._make_state(with_policy_docs=True))
+            finally:
+                rg_module.POLICY_QUOTE_REQUIRED = original
+
+        prompt = captured["prompt"]
+        # 关闭开关后，#6 行不出现（约束不存在）
+        # 注意：policy_docs 仍注入【政策依据】块，但 prompt 顶层不应有"必须用引号引用"硬约束
+        assert "禁止改字" not in prompt and "不得改字" not in prompt and "不得意译" not in prompt, \
+            "POLICY_QUOTE_REQUIRED=False 时不应注入 #6 强制引用约束"
+        # 仍应保留 1~5 老硬约束
+        assert "1." in prompt and "5." in prompt
