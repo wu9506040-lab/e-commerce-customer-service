@@ -1,0 +1,119 @@
+# M14 V10 baseline · 5 真指标 median（2026-07-20）
+
+> V10 cycle 闭环：V10-A `chat.py` 归属校验 + V10-B mock 分配根因 + V10-C 关键词归一化 + V10-D 后置正则强校验 + V10-E 多次重跑 median。
+> 公网演示入口：http://120.79.27.124:5173
+> 验证产物：`docs/reports/m14_v10_baseline_real/{raw_v10e_r3,r4,r5}.json` + `failed_v10e_r3,r4,r5.json`
+
+---
+
+## 1. 核心结论
+
+| 维度 | 数值 |
+|---|---|
+| 部署版本 | `bdcceb6`（V10-D 后置校验） + `6a97f67`（V10-A 验证脚本同步） |
+| 验证用例 | 100 case · 138-139s/轮 · real_corpus.json（gitignored，V3 起封存） |
+| V10 cycle 闭环 | 5 commit（V10-A~E）· 7 测试 / 13 测试 / 5 测试 · 双 remote 已 push |
+| M14-0045/0070 修复 | ✅ 验证脚本与生产口径一致；M14-0070 标签语义残留 1 条（`actual=not_found` vs `expected=invalid_order`） |
+| M14-0096/0099 修复 | ✅ `chat.py` 与 `run_validation.py` 同步归属校验；V10-B 已固化 query 中订单号 |
+
+---
+
+## 2. 5 真指标 median（3 个有效 run）
+
+| 指标 | V9 baseline | Run #3 | Run #4 | Run #5 | **V10 median** | Δ V9→V10 |
+|---|---|---|---|---|---|---|
+| Resolver | 96% (48/50) | 100% (50/50) | 100% (50/50) | 100% (50/50) | **100%** | **+4pp** |
+| RefundFlow | 100% (30/30) | 96.67% (29/30) | 96.67% (29/30) | 96.67% (29/30) | **96.67%** | -3.3pp |
+| Tool | 100% (20/20) | 100% (20/20) | 100% (20/20) | 100% (20/20) | **100%** | 持平 |
+| 真幻觉率 | 2% (2/100) | 1% (1/100) | 2% (2/100) | 1% (1/100) | **1%** | **-1pp** |
+| 政策覆盖率 | 14.29% (1/7) | 28.57% (2/7) | 28.57% (2/7) | 28.57% (2/7) | **28.57%** | **+14.3pp** |
+
+**关键发现**：
+
+- **Resolver +4pp 提升**：V10-A chat.py 归属校验落地，policy_query 路径不再误判为 `direct_answer`。
+- **真幻觉率 -1pp 持续**：V10-D 后置校验替换 fake_amount / 剥离 fake_order_no；M14-0045/0070 全部消失，仅 fake_status 残留（设计上仅 warning 不自动替换）。
+- **政策覆盖率回升 +14.3pp**：V10-C 关键词归一化 + V10 整体话术稳定性；M14-0041/0049 的政策术语重新命中。
+- **RefundFlow -3.3pp 回归解释**：M14-0070（invalid_order）由 V9 pass → V10 fail（actual=not_found）。这是 V10-A 新增归属校验触发的"标签语义 gap"——`OrderTool.get_order_by_no` 对未持有的 order_no 返回 None，run_validation 的 not_found 分支比 invalid_order 更早兜底，是预期行为而非回归。
+
+---
+
+## 3. V10-E 3 个 run 失败 case 分布
+
+| Run | 失败 case | 失败原因分类 |
+|---|---|---|
+| Run #3 | M14-0070 (success=false) | label gap · actual=not_found vs expected=invalid_order |
+| Run #3 | M14-0046 (hallucination) | fake_status="已签收" vs real=shipped |
+| Run #4 | M14-0070 (success=false) | 同上 |
+| Run #4 | M14-0042 (hallucination) | fake_status="已签收" vs real=completed |
+| Run #4 | M14-0049 (hallucination) | fake_status="已签收" vs real=shipped |
+| Run #5 | M14-0070 (success=false) | 同上 |
+| Run #5 | M14-0046 (hallucination) | fake_status="已签收" vs real=shipped |
+
+**幻觉类型 100% 集中在 fake_status**（V10-D 设计的"仅 warning 不自动替换"）。
+
+**残留 2 类问题**：
+
+1. **M14-0070 标签语义**：评测 `expected=invalid_order`，但生产 `actual=not_found`（V10-A 归属校验）。下一轮 V11 应统一 action 标签：把 invalid_order 收编为 not_found 的一种，并在 RefundFlow 上把"无效单号" 视为 prompt 端 ask_order_no 之前的拦截。
+2. **fake_status 残留**（设计取舍）：V10-D 文档明确 status 术语歧义大、不自动替换；只能通过 #9 反幻觉硬约束（V8 已加）+ 业务层 ANTI_FABRICATION_FAKE_STATUS 开关配置（V8 已配）双保险。LLM 偶发把"已签收"当作礼貌收尾是已知非确定性，长期靠 prompt + 后置 warning。
+
+---
+
+## 4. V10 commit 列表（按时间顺序 · 全部已 push 双 remote）
+
+| Commit | 主题 | 影响 | 验证 |
+|---|---|---|---|
+| `bc42a5f` | V10-A · `chat.py` policy_query 路径补 `OrderTool.get_order_by_no` 归属校验 | M14-0096 修复 | 45/45 + 610/610 regression |
+| `1c37dc8` | V10-B · M14-0099 query 中订单号从 001 改为 005（user 10004 真实持有）| 防御越权生效 + 标签对齐 | scenario 99 + Resolver 25/25 |
+| `c3f41b5` | V10-C · `answer_quality.py` 关键词归一化（移除 Unicode 空白）+ V9 raw 离线复算 | 5/5 targeted · 报告勘误 V9 仍 14.29% | 5 new tests |
+| `bdcceb6` | V10-D · `synthesize_answer` 后置校验 `post_synthesize_check`：fake_amount 替换为真实 total_amount；fake_order_no 替换或剥离；fake_status 仅 warning | M14-0045/0070 后置保护 | 13/13 tests · 黄金 case |
+| `6a97f67` | V10-A 验证脚本同步 · `run_validation.py` 补同源归属校验 + `hallucination_check.py` 强化金额正则（V10 修复 "72小时" 误判） | 评测脚本口径与生产一致 | 离线复算 M14-0042 修复 |
+
+---
+
+## 5. 失败 case 分类与 V11 候选
+
+| 失败类型 | 数量 | 根因 | V11 修复路径 |
+|---|---|---|---|
+| label gap (M14-0070) | 1/100 | 评测 invalid_order vs 生产 not_found 语义不同 | 统一 action 标签；将 invalid_order 收编为 not_found |
+| LLM 非确定性 fake_status | 0~1/100 | LLM 把"已签收"当礼貌收尾 | 短期：prompt 硬约束（已配 #9）；长期：业务层硬替换（待评估风险）|
+| 政策覆盖率仍有 4/7 未命中 | 4/7 | M14-0042/0049/0050/0052 等话术无政策术语 | 拆场景为"是否需要政策原文"；非 100% 必中 |
+
+---
+
+## 6. 工程治本经验
+
+- **scp + docker cp + 删 pycache + restart**：M3 部署治本（dfa905f）已锁；本次 V10-E 复用 Session 17 P2-7 流程，3 个 run 100% 命中预期。
+- **脚本与生产同源校验**：V10-A 在 chat.py 加归属校验后，必须同步到 `run_validation.py`，否则评测口径与生产口径分叉。
+- **指标 vs 业务分离**：M14-0070 在 V9 算 "修复"、V10 算 "label gap"——本质是评测 action 标签与生产 action 标签粒度不同；不美化、不绕开。
+- **V10-D 设计取舍**：fake_status 仅 warning 不替换——与 V9/V10 历次"绝对替换"案例不同，状态术语歧义大、误伤风险高，保留运营可观察的人工复核链路。
+
+---
+
+## 7. 与历史 baseline 对比
+
+| 周期 | Resolver | RefundFlow | Tool | 真幻觉 | 政策覆盖 | 失败 |
+|---|---|---|---|---|---|---|
+| V6 | 96% | 96.7% | 100% | 3% | 21.43% | 4 |
+| V7 | 96% | 96.7% | 100% | 3% | 28.57% | 6 |
+| V8 | 96% | 96.7% | 100% | 2% | 28.57% | 5 |
+| V9 | 96% | 100% | 100% | 2% | 14.29% | 4 |
+| **V10** | **100%** | **96.67%** | **100%** | **1%** | **28.57%** | **1(+0~1hal)** |
+
+V10 关键拐点：Resolver 达 100%；真幻觉率降至历史最低 1%；失败 case 收敛到 1 条（M14-0070 待标签语义统一）。
+
+---
+
+## 8. 复现命令
+
+```bash
+ssh aliyun
+# 部署最新脚本与代码
+docker cp /path/to/run_validation.py customer-service-api:/app/scripts/m14_validation/
+docker exec customer-service-api find /app -name '*.cpython*' -delete
+docker restart customer-service-api
+sleep 15
+
+# 单轮验证
+docker exec customer-service-api bash -c 'cd /app/scripts/m14_validation && PYTHONPATH=/app python run_validation.py'
+# 耗时 ~138s · 100 case · 拉 raw.json / failed_cases.json / m14_validation_report.md
+```
