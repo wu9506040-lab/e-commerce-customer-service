@@ -577,3 +577,165 @@ class TestPolicyQuote:
             "POLICY_QUOTE_REQUIRED=False 时不应注入 #6 强制引用约束"
         # 仍应保留 1~5 老硬约束
         assert "1." in prompt and "5." in prompt
+
+
+# =============================================================
+# 8. P2-1 + P2-2 反幻觉硬约束 #7 + #8（commit ref · M14-0045 / M14-0070 真实话术根因）
+# =============================================================
+class TestAmountOrderHardRule:
+    """P2-1 + P2-2 反幻觉硬约束 #7 + #8（V6 baseline 真实话术根因）：
+
+    V6 暴露两类 LLM 非确定性幻觉：
+      - M14-0045: synthesize 阶段输出"54 元"，与【事实陈述】订单金额 322.21 不符
+        （commit 40df27e V6 baseline · fake_amount 幻觉）
+      - M14-0070: invalid_order 阶段输出"ORD99999999999"（用户输入的虚假单号）
+        （commit 40df27e V6 baseline · fake_order_no 幻觉）
+
+    治本：synthesize prompt 注入 #7 + #8 硬约束
+      - #7: 引用金额必须从【事实陈述】取值（¥{order_amount}），禁止编造
+      - #8: 引用订单号必须从【事实陈述】取值（{target_order_no}），禁止编造
+
+    设计原则（CLAUDE.md §9.4.2 配置分离）：
+      - 业务逻辑注入，不动 schema，仅在 prompt 内追加
+      - 适用条件：order_info 有 order_no + total_amount 才注入（空事实硬约束无意义）
+      - 单测验证 prompt 字符串含目标金额/订单号 + 反幻觉关键词
+    """
+
+    def _make_state(self, *, target_amount=322.21, target_order_no="ORD20260718001",
+                    with_policy_docs=True, missing_amount=False, missing_order_no=False):
+        order_info = {}
+        if not missing_amount:
+            order_info["total_amount"] = target_amount
+        if not missing_order_no:
+            order_info["order_no"] = target_order_no
+        order_info["status"] = "delivered"
+
+        state = {
+            "resolver_result": {"action": "direct_answer", "total_orders": 1},
+            "decide_result": {
+                "decision": "synthesize",
+                "confidence": 0.95,
+                "target_order_no": None if missing_order_no else target_order_no,
+                "reason": "签收 1 天在 7 天时效内",
+                "escalate": {"enabled": False},
+                "need_info": {"enabled": False},
+                "reply_key_points": ["确认在 7 天时效内", "引导用户申请退款"],
+                "policy_needed": with_policy_docs,
+            },
+            "orders": [{
+                "order_no": target_order_no,
+                "sku_name": "智能手表",
+                "status_zh": "已签收",
+                "amount": target_amount,
+            }],
+            "order_info": order_info,
+            "refundable": True,
+            "reason": "签收 1 天在 7 天时效内",
+            "days_since_order": 1,
+            "status_zh": "已签收",
+            "query": "我昨天收到的智能手表能退吗",
+            "history": [],
+            "context_block": "",
+            "image_urls": [],
+            "policy_docs": ([
+                {"text": "收货后 7 天内可申请无理由退款，需保持商品完好"},
+            ] if with_policy_docs else []),
+        }
+        return state
+
+    def test_synthesize_prompt_includes_amount_rule(self):
+        """#7 硬约束：prompt 必须含「禁止编造金额」+ 实际金额数值"""
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "您的订单可以申请退款，金额 322.21 元。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            synthesize_answer(self._make_state(target_amount=322.21))
+
+        prompt = captured["prompt"]
+        assert "7." in prompt, "prompt 必须有 #7 硬约束条目"
+        assert "禁止编造金额" in prompt, "#7 必须禁止 LLM 编造金额"
+        assert "322.21" in prompt, "#7 必须含实际订单金额数值（让 LLM 看到唯一可信金额）"
+
+    def test_synthesize_prompt_includes_order_no_rule(self):
+        """#8 硬约束：prompt 必须含「禁止输出事实陈述外的订单号」+ 实际订单号"""
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": f"您的订单 ORD20260718001 可以申请退款。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            synthesize_answer(self._make_state(target_order_no="ORD20260718001"))
+
+        prompt = captured["prompt"]
+        assert "8." in prompt, "prompt 必须有 #8 硬约束条目"
+        assert "禁止输出" in prompt and "订单号" in prompt, \
+            "#8 必须禁止 LLM 输出【事实陈述】外的订单号"
+        assert "ORD20260718001" in prompt, "#8 必须含实际订单号（让 LLM 看到唯一可信订单号）"
+
+    def test_synthesize_prompt_skips_rules_when_order_info_empty(self):
+        """order_info 缺 total_amount/order_no → #7+#8 不注入（避免空事实硬约束无意义）"""
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "无法识别订单，请提供订单号。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            # missing_amount + missing_order_no
+            synthesize_answer(self._make_state(missing_amount=True, missing_order_no=True))
+
+        prompt = captured["prompt"]
+        # 关键反例：order_info 空时不应有 #7+#8 行
+        assert "禁止编造金额" not in prompt, \
+            "order_info 无 total_amount 时不应注入 #7"
+        assert "禁止输出【事实陈述】外的订单号" not in prompt, \
+            "order_info 无 order_no 时不应注入 #8"
+        # 老硬约束 1~5 仍保留
+        assert "1." in prompt and "5." in prompt
+
+    def test_synthesize_prompt_keeps_old_rules_with_new_rules(self):
+        """#7+#8 注入时，老硬约束 1~5 不被破坏"""
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            return {"reply": "可以退款。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            synthesize_answer(self._make_state())
+
+        prompt = captured["prompt"]
+        # 1~8 全部存在（policy_quote_rule 因 policy_docs 非空也注入 #6）
+        for marker in ("1.", "2.", "3.", "4.", "5.", "6.", "7.", "8."):
+            assert marker in prompt, f"硬约束 #{marker} 必须保留"
+
+    def test_synthesize_prompt_v6_hallucination_amount_rejected(self):
+        """M14-0045 反例：LLM 即使被 prompt 编造金额（"54 元"），硬约束 #7 也应明确禁止
+
+        验证 prompt 中 #7 段含目标金额数值且明确禁止近似表述，让 LLM 无幻觉空间。
+        """
+        captured: dict = {}
+
+        def _fake_chat(messages, temperature=None, **kwargs):
+            captured["prompt"] = messages[0]["content"]
+            # V6 真实幻觉样本：54 元（与实际 322.21 元不符）
+            return {"reply": "您可申请退款约 54 元。"}
+
+        with patch("app.services.refund_graph.get_llm_provider") as mock_llm:
+            mock_llm.return_value.chat.side_effect = _fake_chat
+            synthesize_answer(self._make_state(target_amount=322.21))
+
+        prompt = captured["prompt"]
+        # 反幻觉关键句必须存在
+        assert "约" in prompt and "禁止编造" in prompt, \
+            "#7 必须含「约 X 元」类近似表述的反例关键词 + 禁止编造"
+        assert "不一致的数字" in prompt, \
+            "#7 必须含「禁止输出与事实陈述不一致的数字」"
