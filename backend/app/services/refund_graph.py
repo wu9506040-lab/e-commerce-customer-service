@@ -124,6 +124,7 @@ MAX_LLM_RETRIES: int = int(_RULES["MAX_LLM_RETRIES"])
 STATUS_ZH_MAP: dict[str, str] = dict(_RULES["STATUS_ZH_MAP"])
 _HARD_RULES_BY_ID: dict[str, dict[str, Any]] = {r["id"]: r for r in _RULES["HARD_RULES"]}
 _IMAGE_URLS_OVERRIDE: dict[str, Any] = _RULES["IMAGE_URLS_OVERRIDE"]
+POLICY_QUOTE_REQUIRED: bool = bool(_RULES.get("POLICY_QUOTE_REQUIRED", False))
 
 # 决策枚举（LLM 输出和硬规则共用）
 VALID_DECISIONS = ("synthesize", "need_more_info", "need_confirm_order", "escalate")
@@ -622,6 +623,17 @@ def synthesize_answer(state: RefundState) -> RefundState:
 
     context_section = f"\n【上下文】\n{context_block}\n" if context_block else ""
 
+    # T2.2 致命问题4 政策覆盖率提升 - 反幻觉 #6：
+    #   当 POLICY_QUOTE_REQUIRED=True 且 policy_docs 非空时，强制要求 LLM 直接引用政策原文
+    #   （带引号，字面照搬），而非转述/概括
+    policy_quote_rule = ""
+    if POLICY_QUOTE_REQUIRED and (state.get("policy_docs") or []):
+        policy_quote_rule = (
+            "6. 必须从【政策依据】中挑选 1 句最相关的政策原文，"
+            "用双引号「」包裹后嵌入回答（如：根据\"收货后 7 天内可申请无理由退款\"，您可以...）；"
+            "原文不得改字、不得省略、不得意译\n\n"
+        )
+
     prompt = (
         "你是专业的电商客服。请严格按以下规则回答：\n\n"
         "【硬约束 - 违反任何一条都视为错误回答】\n"
@@ -629,7 +641,8 @@ def synthesize_answer(state: RefundState) -> RefundState:
         "2. 如果【事实陈述】与【政策依据】冲突，以【事实陈述】为准\n"
         "3. 如果【事实陈述】信息不足，直接告知用户并禁止推测\n"
         "4. 回答中出现的订单号必须与【事实陈述】中的 order_no 完全一致，禁止换单\n"
-        "5. 用户问【能不能退/能退款吗】时，必须在第一句明确回答【可以退】或【不能退 + 原因】\n\n"
+        "5. 用户问【能不能退/能退款吗】时，必须在第一句明确回答【可以退】或【不能退 + 原因】\n"
+        f"{policy_quote_rule}"
         "【决策指令】\n"
         f"{decision_instruction}\n\n"
         "【关键回复点】\n"
