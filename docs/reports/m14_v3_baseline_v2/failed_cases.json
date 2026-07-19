@@ -1,0 +1,144 @@
+[
+  {
+    "id": "M14-0027",
+    "category": "resolver",
+    "name": "resolver_show_picker_RC013",
+    "corpus_id": "RC013",
+    "user_id": 10013,
+    "query": "您能帮忙改成七天无理由退货吗？",
+    "expected": "show_picker",
+    "actual": "direct_answer",
+    "flow_stages": [],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 show_picker，实际 direct_answer"
+  },
+  {
+    "id": "M14-0031",
+    "category": "resolver",
+    "name": "resolver_show_picker_RC017",
+    "corpus_id": "RC017",
+    "user_id": 10004,
+    "query": "我退货运费谁出？怎么退给我？",
+    "expected": "show_picker",
+    "actual": "direct_answer",
+    "flow_stages": [],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 show_picker，实际 direct_answer"
+  },
+  {
+    "id": "M14-0032",
+    "category": "resolver",
+    "name": "resolver_show_picker_RC018",
+    "corpus_id": "RC018",
+    "user_id": 10004,
+    "query": "退货要自己出邮费吗？",
+    "expected": "show_picker",
+    "actual": "direct_answer",
+    "flow_stages": [],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 show_picker，实际 direct_answer"
+  },
+  {
+    "id": "M14-0033",
+    "category": "resolver",
+    "name": "resolver_show_picker_RC019",
+    "corpus_id": "RC019",
+    "user_id": 10017,
+    "query": "我自己寄回去邮费太贵了，有别的办法吗？",
+    "expected": "show_picker",
+    "actual": "direct_answer",
+    "flow_stages": [],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 show_picker，实际 direct_answer"
+  },
+  {
+    "id": "M14-0034",
+    "category": "resolver",
+    "name": "resolver_show_picker_RC020",
+    "corpus_id": "RC020",
+    "user_id": 10003,
+    "query": "怎么申请退货？",
+    "expected": "show_picker",
+    "actual": "direct_answer",
+    "flow_stages": [],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 show_picker，实际 direct_answer"
+  },
+  {
+    "id": "M14-0062",
+    "category": "refund",
+    "name": "refund_escalate_amount_RC054",
+    "corpus_id": "RC054",
+    "user_id": 10011,
+    "query": "我花了 3000 块买的，质量这么差要 3 倍赔偿！",
+    "expected": "escalate",
+    "actual": "unknown",
+    "flow_stages": [
+      "fetch_order"
+    ],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 escalate，实际 unknown"
+  },
+  {
+    "id": "M14-0068",
+    "category": "refund",
+    "name": "refund_invalid_order_no",
+    "corpus_id": "",
+    "user_id": 10003,
+    "query": "退款订单 ORD20269999XXX",
+    "expected": "invalid_order",
+    "actual": "invalid_order",
+    "flow_stages": [
+      "decide",
+      "fetch_policy",
+      "synthesize"
+    ],
+    "hallucination_details": [
+      {
+        "type": "fake_order_no",
+        "value": "ORD20269999XXX",
+        "valid_options": [
+          "ORD20260718002",
+          "ORD20260718003",
+          "ORD20260718004"
+        ]
+      }
+    ],
+    "exception": null,
+    "failure_reason": "幻觉: fake_order_no"
+  },
+  {
+    "id": "M14-0096",
+    "category": "edge",
+    "name": "edge_cross_user_not_found",
+    "corpus_id": "RC017",
+    "user_id": 10009,
+    "query": "订单 ORD20260718001 退货运费谁出？",
+    "expected": "not_found",
+    "actual": "direct_answer",
+    "flow_stages": [],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 not_found，实际 direct_answer"
+  },
+  {
+    "id": "M14-0099",
+    "category": "edge",
+    "name": "edge_very_long_query",
+    "corpus_id": "",
+    "user_id": 10004,
+    "query": "我想查询一下我最近下的那个订单号是 ORD20260718001 的那个快递现在到哪里了因为我已经等了好几天了希望能尽快帮我看一下具体位置谢谢",
+    "expected": "direct_answer",
+    "actual": "not_found",
+    "flow_stages": [],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 direct_answer，实际 not_found"
+  }
+]
