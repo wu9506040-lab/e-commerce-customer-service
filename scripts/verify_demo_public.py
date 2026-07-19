@@ -123,9 +123,9 @@ async def step1_homepage(page: Page) -> bool:
     # 验证 4 个数字锚点
     content = await page.content()
     anchors = {
-        "122 pytest": "122/122" in content or "122 " in content,
+        "385 pytest": "385/385" in content or "385 " in content,
         "0 token Guard": "0 token" in content or "三层" in content or "3 层" in content,
-        "LangGraph 6 节点": "LangGraph" in content and "6 节点" in content or "6 节点" in content,
+        "LangGraph 4 节点": "LangGraph" in content and "4 节点" in content or "4 节点" in content,
         "5 服务部署": "5 服务" in content or "Docker Compose" in content,
     }
     found = sum(1 for v in anchors.values() if v)

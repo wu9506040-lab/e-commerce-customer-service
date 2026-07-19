@@ -210,7 +210,7 @@ function goShop(cat?: string) {
       </div>
       <div class="highlight-grid">
         <div class="highlight-box">
-          <div class="highlight-num">122 / 122</div>
+          <div class="highlight-num">385 / 385</div>
           <div class="highlight-label">pytest 测试通过</div>
           <div class="highlight-desc">退款反幻觉 / 防串单 / 上下文贯通 / Token 防滥用 25+ 案例</div>
         </div>
@@ -220,7 +220,7 @@ function goShop(cat?: string) {
           <div class="highlight-desc">规则 + embedding 闲聊识别 + 行为监控，挡 95% 异常请求</div>
         </div>
         <div class="highlight-box">
-          <div class="highlight-num">6 节点</div>
+          <div class="highlight-num">4 节点</div>
           <div class="highlight-label">LangGraph 退款状态机</div>
           <div class="highlight-desc">可退/质量问题/超期/已退 4 路径分支 + V2 fallback</div>
         </div>

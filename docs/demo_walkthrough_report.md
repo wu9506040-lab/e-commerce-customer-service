@@ -21,12 +21,12 @@
 
 | # | 路径 | 验证点 |
 |---|---|---|
-| 1 | `/` | 4 个数字锚点（122 pytest / 0 token Guard / LangGraph 6 节点 / 5 服务部署） |
+| 1 | `/` | 4 个数字锚点（385 pytest / 0 token Guard / LangGraph 4 节点 / 5 服务部署） |
 | 2 | `/login?tab=login` → "一键 demo" | 游客登录 → /chat（直接进入 AI 对话页，省去浏览商品环节） |
 | 3 | `/shop` | 10 个商品卡片 |
 | 4 | `/shop/SKU001` | 商品详情 + 加入购物车 |
 | 5 | `/chat` 问 "退款政策是什么？" | 命中 RAG 知识库（policy_hits=5）+ 退款流程图 |
-| 6 | `/chat` 问 "我想退款" | 意图=refund_query；追问订单号；LangGraph 6 节点状态机 |
+| 6 | `/chat` 问 "我想退款" | 意图=refund_query；追问订单号；LangGraph 4 节点状态机 |
 | 7 | `/profile` | 订单生命周期（pending → paid → shipped → delivered → refunded） |
 | 8 | 顶部栏 "切换账号" | 已登录态可视化 + 退出/切换 |
 
@@ -90,7 +90,7 @@ ECS 120.79.27.124 / 5 Docker services
 ├── frontend (nginx:alpine)         → :5173
 │   └── Vue3 + Vite + TS dist/
 ├── api (FastAPI :8000)              → :8000
-│   ├── /chat (SSE, LangGraph 6 节点)
+│   ├── /chat (SSE, LangGraph 4 节点)
 │   ├── /intent / /products / /orders
 │   ├── /auth (HttpOnly JWT cookie)
 │   └── services: synthesizer / intent / guard 3 层 / policy / refund_graph
@@ -107,7 +107,7 @@ ECS 120.79.27.124 / 5 Docker services
 
 ## 6. 演示流程要点
 
-1. **首页开场**：4 个数字锚点（0 token 拦截 + LangGraph 6 节点 + 5 服务 + 122 pytest）→ 量化技术资产
+1. **首页开场**：4 个数字锚点（0 token 拦截 + LangGraph 4 节点 + 5 服务 + 385 pytest）→ 量化技术资产
 2. **登录两种**：游客一键（看免注册） + demotest（看完整数据）
 3. **商品 → 咨询链路**：演示 RAG 命中，"运费险"问一句 → 引文 `policy_hits=5`
 4. **LangGraph 退款**：问 "我想退款" → 看意图分流 → 看订单状态机分支
