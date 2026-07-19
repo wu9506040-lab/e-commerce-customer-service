@@ -5911,3 +5911,109 @@ rerank(top-15) → top-3 → LLM 生成
 - ✅ 双 commit push Gitee origin + GitHub github 双仓成功（77eb804 / e72ecc1）
 - ⏸ ECS 真实话术复跑：本地无 MySQL docker + Qdrant 真实数据，需 ECS 上跑 `tests/run_validation.py` 验证 hit@K +10-20% 假设
 
+---
+
+## §50 · P4-2 运营聚合指标与 admin 运营驾驶舱（2026-07-19 · 未提交）
+
+### What
+
+实现 admin-only 运营聚合 API 与 Vue3 运营数据驾驶舱，覆盖四类最小运营指标：
+
+1. 按日去重的会话数、活跃用户数和消息数；
+2. assistant 消息响应延迟 P50/P95；
+3. 已持久化 handoff 事件的 P0/P1/P2/未分类分布与类别分布；
+4. 最近 100 次进程内 RAG hit@1/3/5/10 快照。
+
+新增后端 Schema、AnalyticsService、admin 路由及测试；新增前端 API 类型、admin 路由守卫、导航入口、composable 和统计页面。所有改动仍在 worktree，未 commit/push。
+
+### Why
+
+P4-1 已能按时间窗查询单个会话和消息，但运营侧仍缺少“整体运行得怎么样”的聚合视图。将聚合计算放在后端可以统一口径，前端只负责展示，避免不同页面各自计算导致数字漂移；同时为后续真实流量观察响应延迟、人工介入和 RAG 质量提供最小可用入口。
+
+本次不新增数据库、不写入业务执行链、不引入 MQ 或图表依赖，优先把现有 MySQL、operation_logs 和 Metrics 内存窗口转成可解释的 admin 只读能力。
+
+### Tech
+
+| 技术点 | 落地 |
+|--------|------|
+| 接口 | `GET /api/admin/analytics`，独立于 conversation 动态路由 |
+| 契约 | `AdminAnalyticsResponse` 及 `DailyActivityPoint`、`LatencySummary`、`HandoffSummary`、`HitAtKSummary` |
+| 时间窗 | `start_date/end_date` 必填，最大 90 天，后端 end-exclusive；前端结束日期按包含当天转换 |
+| 日活 | SQLAlchemy 聚合 `messages.create_time`，按 `session_id/user_id` 去重，补齐空日期 |
+| 延迟 | 只统计未删除的 assistant 消息和非负 `latency_ms`，使用线性插值计算 P50/P95 |
+| handoff | 聚合 `operation_logs` 中的 `chat_handoff*` 事件，不能把未持久化的 P1 当成真实 0 |
+| hit@K | 读取 `Metrics` 最近 100 次窗口，响应与页面都标注重启清零限制 |
+| 缓存 | Redis key 按时间窗 hash，TTL 300 秒；Redis 异常 warning 后回退数据库 |
+| 前端 | Vue3 + TypeScript + CSS 原生 KPI/趋势/占比条，不安装 ECharts |
+| 权限 | 后端 `require_admin` 为真实边界；前端 `requiresAdmin` 和 admin 菜单为第二层保护 |
+
+### Flow
+
+```text
+Admin 浏览器
+  → Vue Router requiresAuth + requiresAdmin
+  → GET /api/admin/analytics?start_date=...&end_date=...
+  → require_admin
+  → AnalyticsService.get_analytics()
+      ├─ Redis 命中：反序列化聚合结果
+      └─ 未命中：
+          ├─ messages → daily_activity
+          ├─ messages assistant latency → P50/P95
+          ├─ operation_logs → handoff 分布
+          ├─ Metrics 内存快照 → hit@K
+          └─ Redis setex 300s（失败不阻断）
+  → AdminAnalyticsResponse
+  → 页面渲染 KPI、趋势、风险颜色、口径限制
+```
+
+### Problem & Fix
+
+| 问题 | 根因 | 处理 |
+|------|------|------|
+| 运营指标没有现成 service | 现有 `metrics.py` 主要是内存窗口，不能直接代表历史时间窗 | 新建 AnalyticsService，仅聚合已有持久化数据和公开快照 |
+| P1 handoff 无法完整回溯 | RefundFlow 自动升级未单独写入 operation_logs | `coverage_complete=false`，返回 limitations，不伪造 P1 统计 |
+| hit@K 不能按日期历史查询 | 当前 Metrics 只保留进程内最近 100 次 | 页面明确“实时窗口”，不包装成历史趋势 |
+| 本地 Docker 不可用 | Docker Desktop Linux daemon 未运行，项目配置 fail-fast | 使用临时 SQLite dependency override 做 HTTP 验证，不修改 `.env` 或共享容器 |
+| 临时服务首次启动失败 | JWT_SECRET 占位符和 DATABASE_URL 缺失 | 仅在临时命令注入测试 secret 与 SQLite URL，验证后停止服务 |
+| 未分类 handoff 条使用默认京东红 | 通用 `.handoff-bar` 样式先于优先级样式生效 | 增加 `.handoff-bar.unclassified` 灰色 design token，浏览器复验计算值 `rgb(204, 204, 204)` |
+| 首次浏览器颜色断言不符 | 测试脚本预期 `rgb(191, 191, 191)`，实际 `--gray-400` 为 `rgb(204, 204, 204)` | 按当前设计 token 修正断言后复验通过 |
+
+### Architecture Role
+
+Analytics 属于只读运营分析模块，依赖 Conversation/Message、OperationLog 和 Metrics 的公开数据接口，不反向修改会话、RAG 或 handoff 执行状态。调用方向保持：
+
+```text
+Admin UI → Admin API → AnalyticsService → ORM / Redis / Metrics snapshot
+```
+
+接口层只负责参数、权限和响应模型；service 负责聚合口径；前端不复制业务计算。独立 `/api/admin/analytics` 也避免与 `/api/admin/conversations/{session_id}/messages` 动态路径混用。
+
+### 8 件套交付
+
+1. **模块职责说明**：只读计算运营聚合指标，不保存新的业务状态。
+2. **接口定义**：admin-only `GET /api/admin/analytics` 及 Pydantic response DTO。
+3. **输入输出模型**：时间窗 query 参数；输出日活、延迟、handoff、hit@K、缓存状态和 limitations。
+4. **数据模型**：复用 `messages`、`operation_logs` 和 Metrics 内存快照；不新增表。
+5. **依赖关系图**：Admin UI → API → AnalyticsService → SQLAlchemy/Redis/Metrics。
+6. **调用流程**：见本节 Flow，包含缓存命中和数据库回源分支。
+7. **测试方案**：pytest SQLite 聚合/分位数/缓存/RBAC/参数错误；curl 200/400；Playwright 页面、截图和 console/pageerror 检查。
+8. **已知限制**：handoff 统计为部分持久化口径；hit@K 重启清零；Redis 缓存为 best-effort；当前仍是单租户数据模型。
+
+### 验证
+
+- ✅ `backend/tests/test_admin_analytics.py`：10/10 targeted PASS。
+- ✅ Backend 回归：排除历史 MySQL-only Docker hostname case 后 442 PASS、1 deselected。
+- ✅ Frontend `vue-tsc --noEmit` + `vite build` PASS。
+- ✅ 临时 SQLite HTTP 服务：正常时间窗 HTTP 200；缺少 `end_date` HTTP 400；响应字段通过 Pydantic 校验。
+- ✅ Playwright：`/admin/analytics` 页面和关键 KPI 正常；console error 0、pageerror 0；截图归档至 `docs/reports/p4_2_admin_analytics.png`。
+- ✅ 验证完成后停止临时 uvicorn 与 Vite 进程；未修改项目配置、未 commit/push。
+
+### 关联文档
+
+- `backend/app/schemas/admin_analytics.py`
+- `backend/app/services/analytics_service.py`
+- `backend/app/api/admin_analytics.py`
+- `frontend/src/views/AdminAnalytics.vue`
+- `frontend/src/composables/useAdminAnalytics.ts`
+- `docs/development/next_phase_plan_v11.md` §12
+

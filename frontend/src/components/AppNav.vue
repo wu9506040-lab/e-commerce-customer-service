@@ -114,6 +114,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenu));
                   <div class="dropdown-role">{{ user.role === 'admin' ? '管理员' : '普通用户' }}</div>
                 </div>
                 <hr/>
+                <a v-if="user.role === 'admin'" class="dropdown-item" @click="go('/admin/analytics')">运营面板</a>
                 <a class="dropdown-item" @click="go('/profile')">个人中心</a>
                 <a class="dropdown-item" @click="go('/chat')">我的对话</a>
                 <hr/>
