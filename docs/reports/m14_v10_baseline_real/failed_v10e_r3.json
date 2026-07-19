@@ -1,0 +1,44 @@
+[
+  {
+    "id": "M14-0046",
+    "category": "refund",
+    "name": "refund_synthesize_RC007",
+    "corpus_id": "RC007",
+    "user_id": 10014,
+    "query": "宝贝出现磨损要求退款",
+    "expected": "synthesize",
+    "actual": "synthesize",
+    "flow_stages": [
+      "decide",
+      "synthesize"
+    ],
+    "hallucination_details": [
+      {
+        "type": "fake_status",
+        "value": "已签收",
+        "mapped_to": "delivered",
+        "valid_options": [
+          "shipped"
+        ]
+      }
+    ],
+    "exception": null,
+    "failure_reason": "幻觉: fake_status"
+  },
+  {
+    "id": "M14-0070",
+    "category": "refund",
+    "name": "refund_invalid_order_no",
+    "corpus_id": "",
+    "user_id": 10003,
+    "query": "ORD99999999999 怎么退款",
+    "expected": "invalid_order",
+    "actual": "not_found",
+    "flow_stages": [
+      "policy_query_ownership_check_v10a"
+    ],
+    "hallucination_details": [],
+    "exception": null,
+    "failure_reason": "预期 invalid_order，实际 not_found"
+  }
+]
