@@ -134,6 +134,7 @@ class PolicyService:
                     fused = rrf_fuse(
                         [hits, bm25_hits],
                         k=settings.RRF_K,
+                        weights=settings.RAG_TYPE_BOOST,  # P3-3
                     )
                     hits = fused[:coarse_top_k]
                     logger.debug(
@@ -351,7 +352,11 @@ class PolicyService:
 
             # RRF 融合全局候选
             try:
-                fused = rrf_fuse(per_query_hits, k=settings.RRF_K)
+                fused = rrf_fuse(
+                    per_query_hits,
+                    k=settings.RRF_K,
+                    weights=settings.RAG_TYPE_BOOST,  # P3-3
+                )
             except Exception as e:
                 logger.warning(
                     f"search_multi_policy[A8] RRF 失败，降级到首路前 {top_k}: {e}"
@@ -473,7 +478,11 @@ class PolicyService:
             return []
 
         try:
-            fused = rrf_fuse(per_query_hits, k=settings.RRF_K)
+            fused = rrf_fuse(
+                per_query_hits,
+                k=settings.RRF_K,
+                weights=settings.RAG_TYPE_BOOST,  # P3-3
+            )
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.info(
                 f"[multi_query_metrics] mode={mode} queries={len(valid_queries)} "
