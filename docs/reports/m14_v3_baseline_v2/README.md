@@ -102,16 +102,43 @@
 | 业务规则 | LLM 非确定性；本次是 generate temperature + prompt 命中，未在代码层加固防伪 |
 | 结论 | **不能因单次 0% 就声明"防伪规则已修复"**；保留 P2 优先级的反幻觉硬约束任务 |
 
-### 6.2 ⚠️ ECS Qdrant 当前为空 — policy_coverage 25% 不能作为 RAG 完整生效的证据
+### 6.2 ✅ ECS Qdrant KB 重灌已闭环（2026-07-19 20:55）
 
-| 维度 | 状态 |
+#### 修复时间线
+
+| 时间 | 动作 |
 |------|------|
-| ECS Qdrant `/collections` | `{"result":{"collections":[]},"status":"ok"}` |
-| 影响范围 | `policy_coverage` 25% 是 RefundFlow `synthesize` 阶段关键词引用率；该阶段需要 RAG 检索命中政策原文 |
-| 当前验证结果 | 4/16 关键词覆盖恰好等于 V2 数据，不是 T2.2 规则新增强的覆盖 |
-| 风险 | T2.2 政策原文强制引用规则的"公网端到端"验证**未真正完成**；Qdrant volume/容器需独立排查 |
+| 20:48 | SSH 调查根因：Qdrant `/collections` 空 + volume 内 collections/ 目录从未写入 |
+| 20:50 | scp KB 12 文件 + ingest 脚本到 ECS `/tmp/` |
+| 20:52 | docker cp 到容器 `/app/docs/ecommerce_kb/` + `/app/scripts/ingest_ecommerce_kb.py` |
+| 20:54 | `PYTHONPATH=/app python scripts/ingest_ecommerce_kb.py` 容器内执行 |
+| 20:55 | 验证 Qdrant 93 points + MySQL 81 行 + chat API 端到端 4 contexts 命中 |
 
-**结论**：T2.2 在 ECS 上的状态是"代码部署 + 规则就绪 + 服务端可读配置"，**但公网业务效果未在 RAG 库非空条件下验证**。这是新的 blocker，须独立任务处理（不在本批修复范围）。
+#### 根因（已锁定）
+
+| 维度 | 修复前 | 修复后 |
+|------|--------|--------|
+| Qdrant `points_count` | 0 | **93** ✅ |
+| MySQL `knowledge_documents` 行数 | 0 | **81**（total_chunks=93 与 Qdrant 对齐）|
+| 7 doc_type 分布 | — | faq 32 / policy 10 / promotion 4 / return_policy 6 / shipping_policy 6 / warranty_policy 1 / product 22 |
+| T2.4 `db.flush` 双写一致性 | 未验证 | **已验证**（Qdrant 93 = MySQL total_chunks 93） |
+| T2.2 政策原文引用（公网端到端）| **未真正完成** | **4 contexts 命中** ✅ |
+
+#### 端到端验证证据
+
+```bash
+$ curl -s -X POST http://localhost:8000/api/chat -d '{
+    "user_id":10003,"session_id":"kb_verify_002",
+    "query":"7天无理由退货需要满足什么条件？","stream":false}'
+```
+→ `intent: policy_query` + `contexts: [faq_top_002, policy_return_main, policy_return_faq_01, faq_top_010]` 全部 `type=policy` ✅
+
+#### 残留待办（独立任务 · 不在本批修复范围）
+
+- **P2 baseline V4 重跑**：用 KB 真实环境重跑 100 case，量化 policy_coverage 实际增量（25% → 更高）
+- **P2 部署层修复（治本）**：`deploy/docker-compose.yml` 加 `../docs:/app/docs:ro` + `../scripts:/app/scripts:ro` volume mount；API 容器 entrypoint 加 `--mode if-empty` 启动自动 ingest（避免下次重建又丢 KB）
+
+详细修复报告：`docs/reports/ecs_kb_reingest_2026_07_19/README.md`
 
 ### 6.3 NOT_FOUND 边缘 case 保留 P2
 
