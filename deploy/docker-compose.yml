@@ -10,8 +10,10 @@ services:
   # ---------------------------------------------------------
   api:
     build:
-      context: ../backend
-      dockerfile: Dockerfile
+      # M3 治本（2026-07-19）：build context 改为项目根，让 Dockerfile 能 COPY scripts/
+      # （原 context=../backend 无法引用项目根的 scripts/ 目录）
+      context: ..
+      dockerfile: backend/Dockerfile
     image: customer-service-api:dev
     container_name: customer-service-api
     restart: unless-stopped
@@ -53,6 +55,8 @@ services:
     volumes:
       - uploads_data:/app/uploads
       - logs_data:/app/logs
+      # M3 治本（2026-07-19）：KB 文档随容器重建（volume mount），避免 ECS 容器销毁后 Qdrant KB 丢失
+      - ./../docs/ecommerce_kb:/app/docs/ecommerce_kb:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -71,7 +75,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      # 延长启动期（2026-07-19 M3）：给 entrypoint.sh KB 检测 + 可选 ingest 留 60s
+      start_period: 60s
 
   # ---------------------------------------------------------
   # 前端 - Vue3 构建产物 + nginx 反代
