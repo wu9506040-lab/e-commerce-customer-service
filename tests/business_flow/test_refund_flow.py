@@ -122,13 +122,26 @@ class TestRefundFlowShortcuts:
 class TestRefundFlowLangGraph:
     """mock LangGraph stream() → 验证 flow_stage 推送 + token 输出"""
 
+    @patch("app.services.business_flow.refund_flow.OrderTool")
     @patch("app.services.business_flow.refund_flow.refund_graph_app")
     @patch("app.services.business_flow.refund_flow._extract_order_no_from_history", return_value=None)
-    def test_judge_yields_meta_with_flow_stage(self, _mock_extract, mock_app):
-        """LangGraph judge node → yield meta.flow_stage='judge' + refundable + reason"""
+    def test_judge_yields_meta_with_flow_stage(self, _mock_extract, mock_app, mock_tool):
+        """LangGraph decide node → yield meta.flow_stage='decide' + refundable + reason
+
+        M14 V3 修复：
+        - judge 节点改名 decide（refund_graph.py:733）
+        - RefundFlow.run() 新增 OrderTool.get_order_by_no 调用（refund_flow.py:330），需 mock
+        """
+        # V3 新增：OrderTool.get_order_by_no mock（line 330 真实调用，否则本地无 DB 必 fail）
+        mock_tool.get_order_by_no.return_value = {
+            "order_no": "ORD001",
+            "status": "delivered",
+            "create_time": "2026-07-15T10:00:00",
+            "total_amount": 299.0,
+        }
         mock_app.stream.return_value = [
             {"fetch_order": {"order_info": {"order_no": "ORD001", "status": "delivered"}, "days_since_order": 3}},
-            {"judge": {"refundable": True, "reason": "已签收 3 天，在 7 天内", "days_since_order": 3}},
+            {"decide": {"refundable": True, "reason": "已签收 3 天，在 7 天内", "days_since_order": 3}},
             {"fetch_policy": {"policy_docs": [{"text": "7 天无理由退货"}]}},
             {"synthesize": {"final_answer": "您的订单可以退款"}},
         ]
@@ -140,15 +153,15 @@ class TestRefundFlowLangGraph:
         )
         events = list(flow.run())
 
-        # 验证流：meta(fetch_order) → meta(judge) → meta(fetch_policy) → meta(synthesize) → token → done
-        # 注意：fetch_order 没显式 yield（与 handle_refund_v3 一致，只在 judge/fetch_policy/synthesize yield meta）
+        # 验证流：meta(fetch_order) → meta(decide) → meta(fetch_policy) → meta(synthesize) → token → done
+        # 注意：fetch_order 没显式 yield（与 handle_refund_v3 一致，只在 decide/fetch_policy/synthesize yield meta）
         meta_stages = [e[1].get("flow_stage") for e in events if e[0] == "meta"]
-        assert "judge" in meta_stages
+        assert "decide" in meta_stages
         assert "fetch_policy" in meta_stages
         assert "synthesize" in meta_stages
 
-        # 验证 judge meta 携带 refundable + reason
-        judge_metas = [e[1] for e in events if e[0] == "meta" and e[1].get("flow_stage") == "judge"]
+        # 验证 decide meta 携带 refundable + reason
+        judge_metas = [e[1] for e in events if e[0] == "meta" and e[1].get("flow_stage") == "decide"]
         assert len(judge_metas) == 1
         assert judge_metas[0]["refundable"] is True
         assert "已签收" in judge_metas[0]["reason"]
@@ -248,7 +261,7 @@ class TestRefundFlowAutoResolve:
         mock_tool.get_order_by_no.return_value = None
         # mock LangGraph 走通
         mock_app.stream.return_value = [
-            {"judge": {"refundable": True, "reason": "已签收 3 天", "days_since_order": 3}},
+            {"decide": {"refundable": True, "reason": "已签收 3 天", "days_since_order": 3}},
             {"synthesize": {"final_answer": "您的订单可以退款"}},
         ]
 
@@ -265,9 +278,9 @@ class TestRefundFlowAutoResolve:
         assert call_kwargs["order_no"] == "ORD20260718001"
         assert call_kwargs["user_id"] == 10002
 
-        # 验证流中有 judge/synthesize meta（LangGraph 路径被走通）
+        # 验证流中有 decide/synthesize meta（LangGraph 路径被走通）
         meta_stages = [e[1].get("flow_stage") for e in events if e[0] == "meta"]
-        assert "judge" in meta_stages
+        assert "decide" in meta_stages
         assert "synthesize" in meta_stages
 
         # 关键：不再 yield "请提供" token
@@ -324,7 +337,7 @@ class TestRefundFlowAutoResolve:
         # LangGraph 应走通
         with patch("app.services.business_flow.refund_flow.refund_graph_app") as mock_app:
             mock_app.stream.return_value = [
-                {"judge": {"refundable": True, "reason": "已签收 3 天", "days_since_order": 3}},
+                {"decide": {"refundable": True, "reason": "已签收 3 天", "days_since_order": 3}},
                 {"synthesize": {"final_answer": "OK"}},
             ]
 
