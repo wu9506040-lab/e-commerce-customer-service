@@ -185,15 +185,20 @@ def upsert_knowledge_meta(
             )
             db.add(doc)
 
-        # refresh 必须在 close 前（expire_on_commit=False 已设，commit 后字段可访问，
-        # 但 refresh 强制重读是拿自增 id 的标准做法）
-        db.refresh(doc)
+        # T2.4 致命问题7 修复：db.refresh(doc) → db.flush()
+        # 根因：db.refresh() 在 new (未持久化) 对象上是非法操作，抛
+        #   "Instance '<KnowledgeDocument>' is not persistent within this Session"
+        # 旧版 with_safe_session 在 except 块吞咽这条异常 → success=False → return None
+        #   → ingest_text P1-3 rollback 删新 Qdrant 点 → 只剩旧的脏数据
+        # 改 flush()：立刻发送 INSERT，让 autogen PK 填充 doc.id（不需要真正 commit）
+        # 对于 existing（已 SELECT 加载），flush 不发 SQL，无副作用
+        db.flush()
         logger.info(
             f"upsert_knowledge_meta: source={source}, "
             f"chunks={total_chars}, uploader_id={uploader_id}, "
             f"id={doc.id}"
         )
-        success = True  # 只有 refresh + log 都成功才认为成功
+        success = True  # 只有 flush + log 都成功才认为成功
 
     return doc if success else None
 
