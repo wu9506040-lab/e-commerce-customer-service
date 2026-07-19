@@ -634,6 +634,23 @@ def synthesize_answer(state: RefundState) -> RefundState:
             "原文不得改字、不得省略、不得意译\n\n"
         )
 
+    # P2-1 + P2-2 反幻觉 #7 + #8（commit ref · M14-0045 / M14-0070 真实话术根因）：
+    #   V6 baseline 暴露两类 LLM 非确定性幻觉：
+    #     - M14-0045: synthesize 阶段输出"54 元"，与【事实陈述】订单金额 322.21 不符
+    #     - M14-0070: invalid_order 阶段输出"ORD99999999999"（用户输入的虚假单号）
+    #   治本：在 synthesize prompt 强约束"金额/订单号必须从【事实陈述】取值，禁止编造"
+    #   适用条件：order_info 有 order_no/total_amount 才注入（避免空事实时硬约束无意义）
+    amount_order_rule = ""
+    if order_info.get("total_amount") is not None and target_order_no and target_order_no != "未知":
+        amount_order_rule = (
+            f"7. 引用金额时只能使用【事实陈述】中订单金额 ¥{order_amount}，"
+            "禁止编造金额（如「约 50 元」「大概 100 元」类近似表述），"
+            "禁止输出与【事实陈述】不一致的数字\n"
+            f"8. 引用订单号只能使用【事实陈述】中订单号 {target_order_no}，"
+            "禁止输出【事实陈述】外的订单号（即便用户输入了不存在的单号），"
+            "禁止省略或改写订单号\n\n"
+        )
+
     prompt = (
         "你是专业的电商客服。请严格按以下规则回答：\n\n"
         "【硬约束 - 违反任何一条都视为错误回答】\n"
@@ -643,6 +660,7 @@ def synthesize_answer(state: RefundState) -> RefundState:
         "4. 回答中出现的订单号必须与【事实陈述】中的 order_no 完全一致，禁止换单\n"
         "5. 用户问【能不能退/能退款吗】时，必须在第一句明确回答【可以退】或【不能退 + 原因】\n"
         f"{policy_quote_rule}"
+        f"{amount_order_rule}"
         "【决策指令】\n"
         f"{decision_instruction}\n\n"
         "【关键回复点】\n"
