@@ -16,12 +16,12 @@
 | **RefundFlow 分支准确率** | **96.7%** (29/30) | **100%** (30/30) | **+3.3pp** ✅ | **M14-0062 实证修复**（P2-5 关键词扩展）|
 | Tool 调用准确率 | **100%** (20/20) | **100%** (20/20) | 持平 | ✅ OrderTool 稳定 |
 | **真幻觉率** ⬇️ | **2%** (2/100) | **2%** (2/100) | 持平 | #7/#8/#9 + ANTI_FABRICATION 持续生效 |
-| **政策覆盖率** ⬆️ | **28.57%** (2.0/7) | **14.29%** (1.0/7) | **-14.29pp** ⚠️ | LLM 非确定性 + 空格匹配 metric 缺陷 |
+| **政策覆盖率** ⬆️ | **28.57%** (2.0/7) | **14.29%** (1.0/7) | **-14.29pp** ⚠️ | LLM 未生成对应政策术语（V9 raw 离线复算确认） |
 
 **核心结论**：
 - ✅ **P2-5 完全修复 M14-0062**：RefundFlow 96.7%→100%，"3 倍赔偿"+"质量这么差" 现正确命中 compensation/quality P0 → escalate（flow_stages `['escalate']`）
-- ⚠️ P2-4 修复逻辑正确但 **M14-0096 不在 P2-4 覆盖范围**（policy_query 不走 Resolver 路径）+ M14-0099 是 mock 数据 race condition（详见 §3）
-- ⚠️ 政策覆盖率 14.29% 是 LLM 非确定性 + 关键词空格匹配 metric 缺陷（详见 §4）
+- ⚠️ P2-4 修复逻辑正确但 **M14-0096 不在 P2-4 覆盖范围**（policy_query 不走 Resolver 路径）+ M14-0099 是 fixture 订单号错配（详见 §3）
+- ⚠️ 政策覆盖率 14.29% 来自本次 LLM 未生成对应政策术语；V10-C 已离线验证空格归一化不改变 V9 baseline（详见 §4）
 - ❌ M14-0045/0070 仍 fail（LLM 非确定性瓶颈 · 后置正则待 P2-7）
 
 ---
@@ -149,16 +149,11 @@ if provided_order_no and self._is_valid_order_no(provided_order_no):
 
 **当前决策**：V10 待评估（**不影响 V9 baseline 量化 P2-5 价值**）。
 
-### 3.4 M14-0099 Mock Race 实证
+### 3.4 M14-0099 Fixture 错配实证（V10-B 已修）
 
-**根因**：M14-0099 expected=direct_answer（基于 V3 时代 mock 数据：user 10004 持有 ORD20260718001）。V9 重跑时 mock 数据按 round-robin 顺序分配，10004 不再持有 001，因此 Resolver 校验返回 not_found。
+**根因勘误**：该问题不是随机 race。`mock_data.py` 按全局索引确定性分配订单：user 10004 持有 `ORD20260718005~008`；但 M14-0099 query 写成 `ORD20260718001`，同时 fixture `entities.order_no` 又写成 `ORD20260718005`。生产分类器从 query 抽出 `001` 后正确触发防越权 `not_found`。
 
-**修复路径**（V10 backlog）：
-- 选项 A：固化 mock 数据分配（user_id % 10 → 订单号稳定）
-- 选项 B：更新 M14-0099 expected 标签为 not_found（与 V9 实际行为一致）
-- 选项 C：构建稳定的 fixture 订单分配逻辑（与生产数据隔离）
-
-**当前决策**：V10 待评估（**P2-4 修复逻辑本身正确**，仅评测标签 race condition）。
+**V10-B 修复**：commit `1c37dc8` 将 query 订单号一行校正为 `005`，保留 user 10004 与 expected=`direct_answer`；静态验证确认 100 场景分布不变、query/entity/实际归属三者一致，Resolver 25/25 PASS。
 
 ---
 
@@ -170,28 +165,28 @@ if provided_order_no and self._is_valid_order_no(provided_order_no):
 
 | Case | ref_kws | agent_kws | matched | 备注 |
 |------|---------|-----------|---------|------|
-| M14-0041 | `['24小时']` | `[]` | ❌ | agent 输出含 "24小时" 但 metric 算空格未匹配 |
-| M14-0043 | `['签收', '24小时']` | `[]` | ❌ | V8 命中"签收"，V9 LLM 未生成 |
+| M14-0041 | `['24小时']` | `[]` | ❌ | V10-C 复核 raw：agent 未生成“24小时” |
+| M14-0043 | `['签收', '24小时']` | `[]` | ❌ | V8 命中“签收”，V9 LLM 未生成 |
 | M14-0044 | `['签收', '24小时']` | `[]` | ❌ | 同上 |
 | M14-0046 | `['质量问题']` | `[]` | ❌ | LLM 走模板未引用 |
 | **M14-0047** | `['7天无理由']` | `['7天无理由']` | ✅ | V8/V9 双稳定命中 |
 | M14-0048 | `['运费']` | `[]` | ❌ | LLM 模板未含 |
-| M14-0049 | `['24小时']` | `[]` | ❌ | 同 M14-0041 |
+| M14-0049 | `['24小时']` | `[]` | ❌ | V10-C 复核 raw：agent 未生成“24小时” |
 
-### 4.2 波动根因（双因素）
+### 4.2 波动根因（V10-C 离线复核勘误）
 
-| 因素 | 占比 | 详情 |
-|------|------|------|
-| **LLM 非确定性** | 70% | V8 命中 "签收"/"24小时"，V9 LLM 走模板未引用（多次重跑观察波动）|
-| **Metric 空格匹配缺陷** | 30% | M14-0041/0049 agent 输出含"24小时"，但 metric 严格匹配 "24小时" 不识别空格变体 |
+| 因素 | V9 实际影响 | 详情 |
+|------|-------------|------|
+| **LLM 非确定性** | 100% | V8 命中“签收/24小时”，V9 原始回答未生成对应政策术语 |
+| **Metric 空格匹配缺陷** | 0%（V9 raw）| 严格匹配确有格式鲁棒性缺口，但 V9 两条候选回答中根本没有“24小时”；修复后离线复算仍为 14.29% |
 
-### 4.3 V10 修复路径
+### 4.3 V10 处置
 
-- **路径 A**：metric 增强 — ref_kws 去空格归一化（"24 小时" ⇔ "24小时"）
-- **路径 B**：多次重跑取众数（policy_coverage 跑 3 次取 median，V6 baseline 文中已提到）
-- **路径 C**：扩 ref_keywords 列表（含同义词）
+- **V10-C（已修）**：匹配前移除 Unicode 空白（“24 小时” ⇔ “24小时”），5 个确定性测试通过；保持 canonical 关键词与 JSON 契约不变。
+- **V10-E（待跑）**：policy coverage 连跑 3 次取 median，量化 LLM 非确定性。
+- **不扩关键词表**：当前问题是回答未生成政策术语，不用扩词表美化指标。
 
-**当前决策**：V10 候选（**不影响 M14 V9 量化 P2-5 修复价值**）
+**勘误结论**：V10-C 是格式鲁棒性修复，不改变 V9 14.29% baseline；V9 波动应归因于 LLM 输出差异。
 
 ---
 
@@ -203,7 +198,7 @@ if provided_order_no and self._is_valid_order_no(provided_order_no):
 | M14-0062 | **fail (escalate unknown)** | **NOT in failed** | ✅ **P2-5 完全修复** |
 | M14-0070 | fail (fake_order_no) | fail (fake_order_no) | 持平 · LLM 瓶颈 |
 | M14-0096 | fail (not_found ↔ direct_answer) | fail (not_found ↔ direct_answer) | 持平 · **P2-4 不覆盖 policy_query 路径** |
-| M14-0099 | fail (not_found ↔ direct_answer) | fail (not_found ↔ direct_answer) | 持平 · **P2-4 修复正确但 mock race** |
+| M14-0099 | fail (not_found ↔ direct_answer) | fail (not_found ↔ direct_answer) | 持平 · **P2-4 修复正确但 fixture 错配** |
 | **合计** | **5** | **4** | **-1 (-20%)** ✅ |
 
 ---
@@ -214,7 +209,7 @@ if provided_order_no and self._is_valid_order_no(provided_order_no):
 |------|---------|---------|---------|
 | 修复目标 | M14-0062（escalate unknown）| M14-0096/0099（防御越权）| M14-0045/0070（fake_amount/order_no）|
 | 单点 case 修复 | ✅ M14-0062 完全消除 | ✅ 修复逻辑正确（防御越权生效）；覆盖范围外 case（M14-0096）需 V10 补充 | — |
-| 失败 case 减少 | -1 (5 → 4) | 0（mock race / 路径覆盖待 V10）| 预期 -2（5 → 2）|
+| 失败 case 减少 | -1 (5 → 4) | 0（fixture 错配 / 路径覆盖待 V10）| 预期 -2（5 → 2）|
 | 假设解释 | LLM 在补偿/质量字段约束下能可靠采纳真值 | Resolver 校验防越权逻辑稳定 | LLM 金额/订单号仍偶发"近似猜" |
 
 **核心洞察（V9 实证）**：
@@ -228,9 +223,9 @@ if provided_order_no and self._is_valid_order_no(provided_order_no):
 
 | 优先级 | ID | 任务 | 工时 | 关联 |
 |--------|----|------|------|------|
-| **V10-A** | M14-0096 path coverage | chat.py policy_query 路径加 order_no 实体校验（与 P2-4 同源）| 30 min | P2-4 路径补全 |
-| **V10-B** | M14-0099 mock race | 固化 mock 订单分配 或更新 expected 标签 | 30 min | P2-4 评测标签对齐 |
-| **V10-C** | Metric 空格匹配缺陷 | ref_kws 去空格归一化 | 30 min | policy_coverage 稳定性 |
+| ~~**V10-A**~~ | ~~M14-0096 path coverage~~ | ~~chat.py policy_query 路径加 order_no 实体校验（与 P2-4 同源）~~ ✅ DONE `bc42a5f` | 30 min | P2-4 路径补全 |
+| ~~**V10-B**~~ | ~~M14-0099 fixture 错配~~ | ~~固化 mock 订单分配 或更新 expected 标签~~ ✅ DONE `1c37dc8` | 30 min | P2-4 评测标签对齐 |
+| ~~**V10-C**~~ | ~~Metric 空格匹配缺陷~~ | ~~ref_kws 去空格归一化~~ ✅ DONE（本批） | 30 min | policy_coverage 稳定性 |
 | **V10-D** | 后置正则 | synthesize fake_amount 后置强校验（修 M14-0045/0070）| 1~2h | LLM 瓶颈突破 |
 | **V10-E** | Policy coverage 多次重跑 | 3 次 median 量化稳定性 | 30 min | LLM 非确定性观察 |
 

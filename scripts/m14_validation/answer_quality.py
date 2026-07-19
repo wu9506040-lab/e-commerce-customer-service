@@ -13,6 +13,10 @@ answer_quality.py - 真回答质量评估模块
 - 当 ref_answer 不含 POLICY_KEYWORDS 时，coverage_rate 返 None（标记为"无指标"）
 - 上层统计时跳过 None case（不计入分子分母）
 - 修复前：硬编码 1.0 稀释真实数据（V4 16 个 case 中 4 个空 ref 贡献 25% 分子）
+
+2026-07-20 修复（V10-C）：
+- 关键词匹配前移除 Unicode 空白，兼容“24小时”与“24 小时”等同义格式
+- 报告仍返回 POLICY_KEYWORDS 中的 canonical 关键词，保持历史 JSON 契约不变
 """
 import logging
 from dataclasses import dataclass, field, asdict
@@ -68,6 +72,11 @@ class CoverageReport:
 # =============================================================
 # 评估函数
 # =============================================================
+def _normalize_for_keyword_match(text: str) -> str:
+    """移除 Unicode 空白，避免展示格式差异造成政策关键词漏判。"""
+    return "".join(text.split())
+
+
 def evaluate_coverage(
     agent_output: str,
     ref_answer: str,
@@ -91,16 +100,24 @@ def evaluate_coverage(
     if not keywords:
         return CoverageReport(coverage_rate=None)  # 场景无关键词表 = 无指标
 
-    # ref_answer 中出现的关键词（这些是"应该覆盖"的目标）
-    ref_present = [kw for kw in keywords if kw in ref_answer]
+    normalized_ref = _normalize_for_keyword_match(ref_answer)
+    normalized_agent = _normalize_for_keyword_match(agent_output)
+
+    # V10-C：匹配前统一移除空白；返回值仍保留 canonical 关键词，避免报告契约变化。
+    ref_present = [
+        kw for kw in keywords
+        if _normalize_for_keyword_match(kw) in normalized_ref
+    ]
     if not ref_present:
         # V5 修复：ref 没有这些关键词 → 标记为 None（无指标）
         # 修复前硬编码 1.0 会稀释真实数据（如 V4 16 个 case 中 4 个空 ref 贡献 25% 分子）
         return CoverageReport(coverage_rate=None, ref_keywords=[], agent_keywords=[], missing_keywords=[])
 
-    # agent_output 中覆盖了 ref 里的哪些关键词
-    agent_covered = [kw for kw in ref_present if kw in agent_output]
-    missing = [kw for kw in ref_present if kw not in agent_output]
+    agent_covered = [
+        kw for kw in ref_present
+        if _normalize_for_keyword_match(kw) in normalized_agent
+    ]
+    missing = [kw for kw in ref_present if kw not in agent_covered]
 
     coverage = len(agent_covered) / len(ref_present) if ref_present else 0.0
 
