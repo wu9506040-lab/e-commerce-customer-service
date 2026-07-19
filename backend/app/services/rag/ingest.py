@@ -6,9 +6,12 @@ RAG Ingest - 知识库入库流水线（Qdrant + MySQL metadata 双写 §11）
 流程（write-through §11）：
     原文 → chunk_text() → embed_texts() → qdrant.upsert() → upsert_knowledge_meta()
 
-幂等：uuid5(source:index) 保证 Qdrant 同 source 重跑幂等；
-     MySQL knowledge_documents.source 唯一约束 + UPSERT 保证元数据幂等。
+幂等：
+- P1-1：chunk_id = uuid5(source + ":" + chunk_hash[:32])（基于内容 sha256，下标无关）
+- MySQL knowledge_documents.source 唯一约束 + UPSERT 保证元数据幂等
+- P1-3：MySQL 失败时回滚 Qdrant（防孤儿点）
 """
+import hashlib
 import logging
 import uuid
 from typing import Dict, List, Optional
@@ -37,6 +40,41 @@ MAX_TEXT_LENGTH = 100_000  # 单次请求原文上限（~100KB，保护服务）
 # =============================================================
 # 切片
 # =============================================================
+# =============================================================
+# chunk_id 生成（P1-1：基于内容 hash 稳定化）
+# =============================================================
+def compute_chunk_id(
+    source: str,
+    text: str,
+    position: Optional[int] = None,
+) -> str:
+    """
+    计算 chunk_id（P1-1）
+
+    新逻辑（开关启用时）：uuid5(source + ":" + chunk_hash[:32])
+        - 基于内容 sha256 → 同一文本永远同 ID → 重跑幂等、增量更新安全
+    旧逻辑（开关关闭时）：uuid5(source + ":" + position)
+        - 基于下标 → 仅 A/B 对比用，不推荐生产
+
+    Args:
+        source: 来源标识（如文件名）
+        text: chunk 文本内容
+        position: chunk 在原文中的下标（仅旧逻辑使用；新逻辑忽略）
+
+    Returns:
+        UUID 字符串（36 字符）
+    """
+    if settings.RAG_CHUNK_ID_BY_CONTENT_HASH:
+        chunk_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+        seed = f"{source}:{chunk_hash}"
+    else:
+        # 旧逻辑：必须有 position（与 M14 V3 前兼容）
+        if position is None:
+            raise ValueError("compute_chunk_id: 旧逻辑（开关关闭）必须传 position")
+        seed = f"{source}:{position}"
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, seed))
+
+
 def chunk_text(
     text: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -220,11 +258,12 @@ def ingest_text(
     # 3. 批量 embedding
     vectors = get_embedding_provider().embed_texts(chunks)
 
-    # 4. 构造 PointStruct（用 uuid5 保证同 source 重跑幂等）
+    # 4. 构造 PointStruct
+    # P1-1：chunk_id 基于内容 hash 而非下标（compute_chunk_id 封装开关逻辑）
     chunk_ids: List[str] = []
     points: List[PointStruct] = []
     for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{source}:{i}"))
+        point_id = compute_chunk_id(source, chunk, position=i)
         chunk_ids.append(point_id)
         points.append(
             PointStruct(

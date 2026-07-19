@@ -184,6 +184,16 @@ class Settings(BaseSettings):
     # 默认 True（数据一致性优先）；切 False 即可观察老行为用于 A/B 对比
     RAG_ROLLBACK_ON_MYSQL_FAIL: bool = True
 
+    # ---- P1-1: RAG chunk_id 基于内容 hash 稳定 ----
+    # 旧逻辑：point_id = uuid5(source + ":" + i)，基于下标
+    #   问题：source 中增/删 chunk → 后续所有 ID 整体偏移 → 删除旧点找不到新 ID → 不幂等
+    # 新逻辑：point_id = uuid5(source + ":" + chunk_hash[:32])，基于内容 sha256
+    #   收益：同一 source 的同一段文本永远得到同一 ID → 重跑幂等、增量更新安全
+    # 开启后：新数据用新 ID（与旧数据共存，不影响检索）
+    # 关闭则回退旧逻辑（仅用于 A/B 对比）
+    # 默认 True（数据稳定性优先）；旧点需 scripts/migrate_chunk_id.py 手动迁移
+    RAG_CHUNK_ID_BY_CONTENT_HASH: bool = True
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩
