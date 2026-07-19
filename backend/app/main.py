@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.admin import router as admin_router
+from app.api.admin_conversations import router as admin_conversations_router  # P4-1 admin 全局会话查询
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.conversations import router as conversations_router  # §12 会话历史读取层
@@ -151,6 +152,7 @@ async def health():
 # =============================================================
 app.include_router(chat_router)
 app.include_router(admin_router)
+app.include_router(admin_conversations_router)  # P4-1 admin 全局会话查询
 app.include_router(auth_router)
 app.include_router(conversations_router)  # §12
 app.include_router(intent_router)  # M3
