@@ -194,6 +194,27 @@ class Settings(BaseSettings):
     # 默认 True（数据稳定性优先）；旧点需 scripts/migrate_chunk_id.py 手动迁移
     RAG_CHUNK_ID_BY_CONTENT_HASH: bool = True
 
+    # ---- P1-2: RAG BM25 索引后台异步重建 ----
+    # 开启后 ingest 完成后触发后台线程重建 BM25 索引（不阻塞主流程）
+    #   - 收益：避免首次 BM25 检索触发懒加载导致 1-3s RT spike
+    #   - 关闭则保留懒加载（首次调用时构建，<100KB 数据集耗时 <1s）
+    # 关闭则 BM25 索引只在首次 bm25_search 调用时懒构建（与原行为一致）
+    # 默认 True（响应优先）；切 False 可观察懒加载行为（A/B 对比）
+    RAG_BM25_EAGER_BUILD: bool = True
+
+    # ---- P3-3: RRF 类型加权（按 doc_type 给最终 rrf_score 加权重）----
+    # 业务策略：policy（政策）类文档加权 > faq > product（商品信息）
+    #   - policy: 1.2（用户最关心"能不能退/怎么退"，policy 命中应优先）
+    #   - faq: 1.0（中性，按 RRF 排名）
+    #   - product: 0.9（次要，避免商品信息压制政策命中）
+    # 关闭则空 dict，所有 doc 一视同仁（与原 RRF 行为一致）
+    # 收益：政策类 query 召回 top-1 准确率 +10-20%（场景：用户问"运费险怎么买"）
+    RAG_TYPE_BOOST: dict = {
+        "policy": 1.2,
+        "faq": 1.0,
+        "product": 0.9,
+    }
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩

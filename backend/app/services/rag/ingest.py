@@ -280,6 +280,18 @@ def ingest_text(
     # 5. 写入 Qdrant（真源）
     qdrant_written = upsert_points(points)
 
+    # 5.5 P1-2：触发 BM25 索引后台异步重建（不阻塞主流程）
+    # 收益：避免下次 bm25_search 调用时懒加载 1-3s RT spike
+    # 关闭开关时保留懒加载（与 P1-2 之前行为一致）
+    if qdrant_written > 0 and settings.RAG_BM25_EAGER_BUILD:
+        try:
+            from app.services.bm25_index import invalidate_and_rebuild_async
+            invalidate_and_rebuild_async()
+            logger.debug(f"ingest_text: BM25 索引后台重建已触发（source={source}）")
+        except Exception:
+            # 后台重建启动失败不影响主流程（懒加载兜底）
+            logger.exception(f"ingest_text: BM25 异步重建触发失败（source={source}），下次 search 将懒加载")
+
     # 6. write-through：同步 MySQL 元数据（§11）
     # P1-3 修复：MySQL 失败时回滚 Qdrant，防止孤儿点残留
     # - upsert_knowledge_meta 内部用 with_safe_session 吞咽异常并返 None
