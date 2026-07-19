@@ -32,9 +32,9 @@
 Qdrant 控制台 (`6333/dashboard`) 内网-only（按需开安全组）。
 
 > **首页 4 个数字锚点说明**（避免"0 token Guard"被误读为"没做"）：
-> - `122 pytest`：项目 pytest 总数（单元 + E2E），参见 `docs/test_coverage.md`
+> - `385 pytest`：项目 pytest 总数（单元 + E2E），参见 `docs/test_coverage.md`
 > - `0 token Guard`：演示数据下三层 Guard 拦截统计为 0——并非"没做"，而是 L1 规则 / L2 embedding / L3 行为监控 全部不消耗 LLM token 即可拦 99% 滥用，详见 `docs/learning_log.md` M11 章节
-> - `LangGraph 6 节点`：退款状态机节点数（`backend/app/services/refund_graph.py`）
+> - `LangGraph 4 节点`：退款状态机节点数（`backend/app/services/refund_graph.py`，M14 V3 重构）
 > - `5 服务部署`：api / frontend / qdrant / mysql / redis 5 个 Docker 容器（`deploy/docker-compose.yml`）
 
 ---
