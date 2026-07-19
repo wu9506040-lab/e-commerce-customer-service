@@ -66,3 +66,7 @@ jobs:
           MYSQL_HOST: 127.0.0.1
         run: |
           python -m pytest tests/ -v --tb=short
+
+      - name: Env diff check（防部署层分叉 · 2026-07-19 commit ref）
+        run: |
+          python scripts/ci_env_diff.py
