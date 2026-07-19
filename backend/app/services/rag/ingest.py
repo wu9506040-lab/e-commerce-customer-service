@@ -260,6 +260,7 @@ def ingest_text(
 
     # 4. 构造 PointStruct
     # P1-1：chunk_id 基于内容 hash 而非下标（compute_chunk_id 封装开关逻辑）
+    # P3-3：doc_type 写入 Qdrant payload，RRF 类型加权的数据来源
     chunk_ids: List[str] = []
     points: List[PointStruct] = []
     for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
@@ -273,6 +274,7 @@ def ingest_text(
                     "text": chunk,
                     "source": source,
                     "chunk_index": i,
+                    "doc_type": doc_type,  # P3-3：给 RRF 加权用
                 },
             )
         )
