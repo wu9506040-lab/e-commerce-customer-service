@@ -177,6 +177,49 @@ def invalidate() -> None:
     logger.info("BM25 索引已失效，下次 search 将重建")
 
 
+def invalidate_and_rebuild_async() -> None:
+    """后台异步重建 BM25 索引（不阻塞 ingest 主流程）
+
+    P1-2：解决"首次 BM25 检索触发懒加载 → 1-3s RT spike"问题。
+    ingest 后立即触发后台线程重建索引，下次 bm25_search 调用命中最新索引。
+
+    线程模型：
+    - 守护线程（daemon=True），主进程退出时不等待
+    - 不返回 Future（fire-and-forget）；调用方无需等待
+    - 重建失败仅 warning，不抛（与 ingest rollback 同策略）
+
+    与 invalidate() 的差异：
+    - invalidate() 只置 None，下次 search 才懒加载
+    - invalidate_and_rebuild_async() 立即后台重建，下次 search 立即可用
+
+    调用前置条件：
+    - 仅在 settings.RAG_BM25_EAGER_BUILD=True 时由 ingest 触发
+    - 关闭开关时保留懒加载（与 P1-2 之前行为一致）
+    """
+    global _INDEX
+
+    def _rebuild() -> None:
+        """线程内重建索引（捕获所有异常 + log）"""
+        try:
+            new_index = _build_index()
+            # 写回全局（用 LOCK 保证可见性）
+            with _INDEX_LOCK:
+                global _INDEX
+                _INDEX = new_index
+            logger.info(f"BM25 索引后台重建完成: docs={len(new_index['docs'])}")
+        except Exception:
+            logger.exception("BM25 索引后台重建失败，下次 search 将懒加载")
+
+    # 先失效缓存（让并发 search 知道需要重建）
+    with _INDEX_LOCK:
+        _INDEX = None
+
+    # 启动守护线程
+    thread = threading.Thread(target=_rebuild, name="bm25-rebuild", daemon=True)
+    thread.start()
+    logger.info("BM25 索引后台重建已启动（守护线程）")
+
+
 def bm25_search(query: str, top_k: int = 15) -> List[Dict[str, Any]]:
     """
     BM25 检索（纯词法，无向量）
