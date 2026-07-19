@@ -2,12 +2,14 @@
 
 M14 V3 escalation_service 扩展单测（真实工作流重构配套）
 
-覆盖（12 case）：
+覆盖（16 case）：
   1. P0 关键词检测（4 类：complaint / compensation / quality / user_requested）= 4 case
   2. P0 优先级排序（COMPLAINT/COMPENSATION > QUALITY/USER_REQUESTED）= 1 case
   3. HandoffPayload +4 字段（priority / category / matched_keyword / detected_category）= 4 case
   4. HandoffService.handoff() 接受 priority/category 参数 = 2 case
   5. detect_handoff_keyword 兼容性（保留向后兼容）= 1 case
+  6. ESCALATE_P0_KEYWORDS 配置可访问 = 2 case
+  7. P2-5 P0 关键词数字形式 + 同义词扩展（修 M14-0062）= 4 case + 1 logging = 5 case
 """
 import os
 import sys
@@ -249,3 +251,69 @@ class TestEscalateP0KeywordsDict:
         for cat, kws in ESCALATE_P0_KEYWORDS.items():
             assert isinstance(kws, tuple), f"{cat} 应为 tuple"
             assert all(isinstance(kw, str) for kw in kws), f"{cat} 元素应为 str"
+
+
+# =============================================================
+# 7. P2-5 P0 关键词扩展（修 M14-0062 · 真实话术"3 倍赔偿"+"质量这么差"未命中）
+# =============================================================
+class TestP0KeywordExtensionP25:
+    """P2-5：扩数字形式 + 同义词，修复 M14-0062 ESCALATE_P0_KEYWORDS 漏命中"""
+
+    def test_compensation_digit_form_with_space(self):
+        """数字形式"3 倍赔偿"（含空格）→ compensation（M14-0062 主场景）"""
+        result = detect_p0_escalate("我花了 3000 块买的，质量这么差要 3 倍赔偿！")
+        assert result is not None, "M14-0062 query 应命中 compensation"
+        category, matched = result
+        assert category == "compensation", f"应归 compensation，实际 {category}"
+        assert matched == "3 倍赔", f"应匹配 '3 倍赔'，实际 {matched}"
+
+    def test_compensation_digit_form_no_space(self):
+        """数字形式"3倍赔"（无空格）→ compensation"""
+        result = detect_p0_escalate("这商品有问题，我要3倍赔")
+        assert result is not None
+        category, matched = result
+        assert category == "compensation"
+        assert matched == "3倍赔"
+
+    def test_quality_synonym_zhemechacha(self):
+        """同义词"质量这么差" → quality（M14-0062 主场景）"""
+        result = detect_p0_escalate("质量这么差怎么办")
+        assert result is not None
+        category, matched = result
+        assert category == "quality"
+        assert matched == "质量这么差"
+
+    def test_quality_synonym_zhiliangcha(self):
+        """短同义词"质量差" → quality"""
+        result = detect_p0_escalate("这质量差能退吗")
+        assert result is not None
+        category, matched = result
+        assert category == "quality"
+        assert matched == "质量差"
+
+    def test_p0_match_logging(self, caplog):
+        """P0 命中时应有结构化日志（[p0_keyword_match] prefix）"""
+        import logging
+        caplog.set_level(logging.INFO, logger="app.services.escalation_service")
+        detect_p0_escalate("质量这么差要 3 倍赔偿")
+        matching = [r for r in caplog.records if "[p0_keyword_match]" in r.getMessage()]
+        assert len(matching) >= 1, f"应至少 1 条结构化日志，实际 {len(matching)}"
+        # 字段验证
+        msg = matching[0].getMessage()
+        assert "category=" in msg, f"日志应含 category 字段，实际: {msg}"
+        assert "matched=" in msg, f"日志应含 matched 字段，实际: {msg}"
+
+    def test_existing_keywords_still_match(self):
+        """向后兼容：原 3 类 P0 关键词继续命中"""
+        # compensation 原 3 词
+        for kw in ["三倍赔偿", "退一赔三", "假一赔十"]:
+            result = detect_p0_escalate(f"我要{kw}")
+            assert result is not None
+            assert result[0] == "compensation"
+            assert result[1] == kw, f"原 {kw} 应仍命中，实际 {result[1]}"
+        # quality 原 6 词
+        for kw in ["质量问题", "破损", "坏点", "开胶", "假货", "二手商品"]:
+            result = detect_p0_escalate(f"商品{kw}")
+            assert result is not None
+            assert result[0] == "quality"
+            assert result[1] == kw, f"原 {kw} 应仍命中，实际 {result[1]}"

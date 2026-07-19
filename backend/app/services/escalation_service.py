@@ -146,12 +146,18 @@ ESCALATE_P0_KEYWORDS: dict[str, tuple[str, ...]] = {
         "12315", "12305", "315", "工商局", "市监", "投诉", "曝光",
     ),
     # 赔付类（P0 赔付 = 金额诉求 / 法规诉求）
+    # P2-5（修 M14-0062）：扩数字形式 "3 倍赔"（含/不含空格）+ "三倍赔" 短形式
+    # 真实话术 "我花了 3000 块买的，要 3 倍赔偿！" 中"3 倍赔"原未命中
     "compensation": (
         "三倍赔偿", "退一赔三", "假一赔十",
+        "三倍赔", "3倍赔", "3 倍赔",
     ),
     # 质量类（P0 质量 = 商品质量缺陷，需要凭证流程）
+    # P2-5（修 M14-0062）：扩同义词"质量这么差"/"质量差"/"质量不行"
+    # 真实话术 "质量这么差要 3 倍赔偿！" 中"质量这么差"原未命中
     "quality": (
         "质量问题", "破损", "坏点", "开胶", "假货", "二手商品",
+        "质量这么差", "质量差", "质量不行",
     ),
     # 主动要人工类（P0 = 用户明确要求升级）
     "user_requested": (
@@ -207,6 +213,10 @@ def detect_p0_escalate(query: str) -> Optional[tuple[str, str]]:
     for category in ("complaint", "compensation", "quality", "user_requested"):
         for kw in ESCALATE_P0_KEYWORDS[category]:
             if kw in q:
+                # P2-5 结构化日志：用于 audit + 运营看 100 case 真实话术命中分布
+                logger.info(
+                    f"[p0_keyword_match] category={category} matched={kw} query={q[:50]}"
+                )
                 return (category, kw)
     return None
 
