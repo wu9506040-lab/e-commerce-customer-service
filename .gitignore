@@ -177,3 +177,11 @@ frontend/_screenshots/manual/
 # 仅保留 frontend/_screenshots/walkthrough/ 下的 demo 截图 + 公开 walkthrough/report.json
 # =============================================================
 frontend/_screenshots/*_report.json
+
+# =============================================================
+# planning-with-files 临时文件（planning skill 本地 working memory，不进项目）
+# 2026-07-19：next_phase_plan_v11 规划期间自动生成，决策完应忽略避免污染工作树
+# =============================================================
+/task_plan.md
+/findings.md
+/progress.md
