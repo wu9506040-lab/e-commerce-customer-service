@@ -384,8 +384,114 @@ class TestOrderNoValidation:
 
 
 # =============================================================
-# 9. OrderResolverResult.to_dict 序列化
+# 8. order_no 格式校验
 # =============================================================
+class TestPolicyQueryOwnershipCheck:
+    """P2-4: policy_query + entities.order_no 仍校验归属
+
+    修复 V8 失败 case:
+    - M14-0096 (user 10009, policy_query, ORD20260718001) → NOT_FOUND
+    - M14-0099 (user 10004, order_query, ORD20260718005) → DIRECT_ANSWER
+    """
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    def test_policy_query_cross_user_not_found(self, mock_tool):
+        """policy_query + entities.order_no + cross-user → NOT_FOUND（防越权）"""
+        # OrderTool.get_order_by_no(10009, "ORD20260718001") = None
+        # （ORD20260718001 属于 user 10002）
+        mock_tool.get_order_by_no.return_value = None
+        r = OrderContextResolver()
+        result = r.resolve(
+            user_id=10009, intent="policy_query",
+            entities={"order_no": "ORD20260718001"}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.NOT_FOUND
+        assert result.effective_order_no == "ORD20260718001"
+        assert result.reason == "order_not_found_or_not_owned"
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    def test_policy_query_owned_upgrade_to_direct_answer(self, mock_tool):
+        """policy_query + entities.order_no + 归属正确 → DIRECT_ANSWER（订单归属优先）
+
+        对应 V8 失败 M14-0099 同根因：order_query + user 10004 own 005
+        现在 policy_query + 用户提供 own 订单号 → 同样升级 DIRECT_ANSWER
+        """
+        mock_tool.get_order_by_no.return_value = _make_order("ORD20260718005")
+        r = OrderContextResolver()
+        result = r.resolve(
+            user_id=10004, intent="policy_query",
+            entities={"order_no": "ORD20260718005"}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.DIRECT_ANSWER
+        assert result.reason == "user_provided_order_no"
+        assert result.effective_order_no == "ORD20260718005"
+        assert result.total_orders == 1
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    def test_product_query_cross_user_not_found(self, mock_tool):
+        """product_query + entities.order_no + cross-user → NOT_FOUND（防越权）"""
+        # product_query 也走 P2-4 ownership check（防越权），
+        # 不只 policy_query
+        mock_tool.get_order_by_no.return_value = None
+        r = OrderContextResolver()
+        result = r.resolve(
+            user_id=10009, intent="product_query",
+            entities={"order_no": "ORD20260718001"}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.NOT_FOUND
+        assert result.effective_order_no == "ORD20260718001"
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    @patch("app.services.context.order_context_resolver.OrderTool")
+    def test_order_query_long_query_owned(self, mock_tool):
+        """order_query + 极长 query + entities.order_no + own → DIRECT_ANSWER
+
+        对应 V8 失败 M14-0099：user 10004 own ORD20260718005
+        """
+        mock_tool.get_order_by_no.return_value = _make_order("ORD20260718005")
+        r = OrderContextResolver()
+        long_query_entities = {
+            "order_no": "ORD20260718005",
+            "sku": None,
+            "keywords": [],
+        }
+        result = r.resolve(
+            user_id=10004, intent="order_query",
+            entities=long_query_entities, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.DIRECT_ANSWER
+        assert result.reason == "user_provided_order_no"
+        assert result.effective_order_no == "ORD20260718005"
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    def test_policy_query_no_entities_unchanged(self):
+        """policy_query + entities={} → DIRECT_ANSWER（非订单意图无 order_no 时维持 non_order_intent）"""
+        r = OrderContextResolver()
+        result = r.resolve(
+            user_id=10009, intent="policy_query",
+            entities={}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.DIRECT_ANSWER
+        assert result.reason == "non_order_intent"
+
+    @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
+    def test_anonymous_user_with_order_no_ask_login(self):
+        """匿名用户 + 提供 order_no → ASK_LOGIN（不泄露订单存在性）
+
+        安全属性：匿名用户即使自报订单号，也应要求登录（防枚举）
+        """
+        r = OrderContextResolver()
+        result = r.resolve(
+            user_id=ANONYMOUS_USER_ID, intent="policy_query",
+            entities={"order_no": "ORD20260718001"}, ctx=_make_ctx(),
+        )
+        assert result.action == OrderResolverAction.ASK_LOGIN
+        assert result.reason == "anonymous_user"
+
+
 class TestResultSerialization:
     @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
     @patch("app.services.context.order_context_resolver.OrderTool")
