@@ -44,6 +44,9 @@ from app.services.escalation_service import (  # M14 V3：转人工兜底
 )
 from app.services.metrics import metrics  # M8
 from app.services.policy_service import PolicyService
+# V10-A：policy_query 路径 order_no 归属校验（修 M14-0096）
+# 与 P2-4 (order_context_resolver.py) 同源设计：OrderTool.get_order_by_no
+from app.tools.order_tool import OrderTool
 # Sprint P2 / SSE Resume：stream checkpoint 写入/读取/清理
 from app.services.redis_store import (
     STREAM_MAX_RESUME_TIMES,
@@ -310,7 +313,60 @@ async def chat(
             pre_intent = await asyncio.to_thread(IntentService.classify, payload.query)
             intent_for_cache = pre_intent.get("intent", "policy_query")
         except Exception:
+            pre_intent = None
             intent_for_cache = "policy_query"
+
+        # V10-A：policy_query + order_no entity → 校验归属（修 M14-0096）
+        # 防止 policy_query 路径绕过 OrderContextResolver 的归属校验逻辑
+        # 与 P2-4 (order_context_resolver.py) 同源：OrderTool.get_order_by_no(user_id, order_no)
+        # 注意：
+        #   - 匿名用户跳过（与 Resolver 一致，避免账号枚举）
+        #   - 仅 policy_query 触发；refund_query/order_query 已走 Resolver 内部校验
+        #   - 校验失败 → SSE not_found 流（meta.intent="not_found" + 中文提示）
+        #   - 异常 → logger.warning 放行（best-effort，不阻塞正常 policy_query）
+        if intent_for_cache == "policy_query" and user_id and user_id != ANONYMOUS_USER_ID and pre_intent:
+            pre_entities_check = (pre_intent.get("entities") or {})
+            order_no_check = pre_entities_check.get("order_no")
+            if order_no_check:
+                try:
+                    owned_order = await asyncio.to_thread(
+                        OrderTool.get_order_by_no, user_id, order_no_check
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"/chat policy_query 归属校验异常（放行）: "
+                        f"order_no={order_no_check}, user_id={user_id}, {e}"
+                    )
+                    owned_order = "ERROR"  # 哨兵值：异常时跳过 NOT_FOUND 判定，继续正常 policy_query
+                if owned_order is None:
+                    # NOT_FOUND：订单不属于当前 user 或不存在
+                    yield _sse_format({
+                        "type": "meta",
+                        "intent": "not_found",
+                        "entities": pre_entities_check,
+                        "contexts": [],
+                        "scores": [],
+                        "resolver_action": "not_found",
+                        "resolver_reason": "policy_query_order_not_owned_v10_a",
+                    })
+                    not_found_msg = f"抱歉，未找到订单 {order_no_check}，请确认订单号是否正确。"
+                    for chunk in _chunk_text(not_found_msg, size=10):
+                        yield _sse_format({"type": "token", "text": chunk})
+                    yield _sse_format({"type": "done", "session_id": session_id})
+                    yield _sse_format({"type": "closed"})
+                    try_log_action(
+                        user=user, action="chat_policy_not_found_v10a", target_type="session",
+                        target_id=session_id, ip=ip, user_agent=ua,
+                        detail={
+                            "order_no": order_no_check,
+                            "query_len": len(payload.query),
+                        },
+                    )
+                    logger.info(
+                        f"/chat policy_query not_found (V10-A): order_no={order_no_check} "
+                        f"session={session_id[:12]}... {user_ctx}"
+                    )
+                    return
 
         # M11.5：响应缓存（exact + semantic），10min 内同 query 不再调 LLM
         # 仅对 policy_query 启用，refund_query 必须走 LangGraph 保证 meta 正确
