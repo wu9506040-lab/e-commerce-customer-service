@@ -473,7 +473,7 @@ def _build_edge_scenarios() -> List[Scenario]:
 
     # === 2 个 极长 query（边界）===
     long_queries = [
-        "我想查询一下我最近下的那个订单号是 " + MOCK_ORDER_NO_PREFIX + "001 的那个快递现在到哪里了因为我已经等了好几天了希望能尽快帮我看一下具体位置谢谢",
+        "我想查询一下我最近下的那个订单号是 " + MOCK_ORDER_NO_PREFIX + "005 的那个快递现在到哪里了因为我已经等了好几天了希望能尽快帮我看一下具体位置谢谢",
         "请问我的订单 " + MOCK_ORDER_NO_PREFIX + "005 " + ("现在什么状态" * 30),
     ]
     for q in long_queries:
