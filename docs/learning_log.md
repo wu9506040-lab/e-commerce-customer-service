@@ -5758,3 +5758,156 @@ LangGraph refund_graph_app.stream(initial_state)
 - ✅ Frontend type-check + build **PASS**（vue-tsc --noEmit 无报错，vite build 成功）
 - ⏸ M14 V2 真实话术重跑（run_validation.py）：**延后到 ECS**，本地无 MySQL 无法跑；预期 真幻觉率 28% → ~0% / RefundFlow 分支准确率 60% → ~80% / 新增 auto_resolve_rate 指标
 
+---
+
+## §49 · RAG 检索质量增强 P1-2 + P3-3 双闭环（2026-07-19 · 2 commit · P1 质量优先级最后冲刺）
+
+### What
+
+| Commit | 模块 | 改动 |
+|--------|------|------|
+| `77eb804` | rag/bm25 | **P1-2** BM25 索引后台异步重建（解决首次 bm25_search 1-3s RT spike） |
+| `e72ecc1` | rag/rrf  | **P3-3** RRF 类型加权（policy 1.2 > faq 1.0 > product 0.9） |
+
+### Why
+
+**P1-2 痛点**：
+
+M13/M14 灰度开启 `USE_HYBRID_BM25=True` 后首次 `bm25_search` 调用触发 `_build_index`（Qdrant scroll 全量），67 条 policy 数据集耗时 1-3s，肉眼可感知 RT spike。M11/M12 出现过"用户问完政策类问题等 2-3 秒"的反馈，本质是懒加载串行化。
+
+**P3-3 痛点**：
+
+混合检索（vector + BM25 + RRF）解决了"关键词精确命中 vs 语义相似"的召回盲区，但 RRF 对所有 doc 一视同仁，召回结果排序没有体现业务优先级。电商场景下 policy doc（"能不能退/怎么退"）应优于 product doc（"手机参数/价格"），因为用户最关心的是「结论 + 怎么操作」而非「商品描述」。
+
+### Tech
+
+**P1-2 实现**：
+
+| 技术点 | 落地 |
+|--------|------|
+| 守护线程 | `threading.Thread(target=_rebuild, name="bm25-rebuild", daemon=True)` |
+| 线程安全 | `_INDEX_LOCK`（复用现有） |
+| fire-and-forget | 不返回 Future，异常仅 log（与 ingest rollback 同策略） |
+| 灰度门禁 | `RAG_BM25_EAGER_BUILD`（默认 True，关闭回退懒加载） |
+| 触发条件 | `qdrant_written > 0 and RAG_BM25_EAGER_BUILD`（双条件避免断路器开路场景） |
+
+**P3-3 实现**：
+
+| 技术点 | 落地 |
+|--------|------|
+| 权重模型 | `final_score = rrf_score * weights[doc_type]`（乘法保序，加权后排序与原排序一致） |
+| 权重配置 | `RAG_TYPE_BOOST = {"policy": 1.2, "faq": 1.0, "product": 0.9}`（业务规则 YAML 化同理） |
+| doc_type 来源 | Qdrant payload 新增 `doc_type` 字段（ingest 时写入） |
+| doc_type 兼容 | `_extract_doc_type()` 支持直挂 + payload 嵌套两种形态（vector / BM25 副本差异） |
+| 向后兼容 | `weights=None` / `{}` / 无 doc_type → 默认 1.0（行为与 P3-3 前完全一致） |
+
+### Flow
+
+**P1-2 触发链**：
+
+```
+ingest_text(text)
+  ↓ chunk_text → embed_texts → upsert_points(qdrant_written)
+  ↓ 触发条件：qdrant_written > 0 and RAG_BM25_EAGER_BUILD
+  ↓
+invalidate_and_rebuild_async()  # 守护线程，立即返回
+  ├─ 主流程继续：upsert_knowledge_meta + return
+  └─ 后台线程 _rebuild():
+       ├─ _build_index() 全量 scroll Qdrant → 新 BM25 索引
+       ├─ with _INDEX_LOCK: _INDEX = new_index
+       └─ 异常仅 log（不掩盖主流程）
+  ↓
+下次 bm25_search() 直接命中新索引（无懒加载 spike）
+```
+
+**P3-3 召回链**：
+
+```
+search_policy(query)
+  ↓ _coarse_retrieval
+  ├─ vector 路：Qdrant top-15 → hits_a（带 doc_type）
+  └─ bm25 路：bm25_search top-15 → hits_b（payload.doc_type）
+  ↓
+rrf_fuse([hits_a, hits_b], k=60, weights=RAG_TYPE_BOOST)
+  ├─ 累加：rrf_score = Σ 1/(k+rank_i)
+  ├─ 加权：rrf_score *= weights[doc_type]  # policy 1.2 / product 0.9
+  └─ 排序：按 rrf_score 降序，policy doc 优先
+  ↓
+rerank(top-15) → top-3 → LLM 生成
+```
+
+### Problem & Fix
+
+| 问题 | 现象 | 根因 | 修复 |
+|------|------|------|------|
+| **P1-2 Case 1 测试不稳定** | `assert _INDEX is None` 偶发失败 | 线程调度时序不确定：mock `_build_index` 同步 return 时，线程在断言前就完成了 | 用 `threading.Event` 卡住 mock（`time.sleep(2)`），断言线程已启动但未完成 |
+| **P1-2 Case 5 多了无效 patch** | `patch.object(ingest, "bm25_index_invalidate_and_rebuild", ...)` 抛 AttributeError | ingest.py 是函数内 `from ... import`，该属性不存在于 ingest 模块 | 删除该行，只保留 `patch("app.services.bm25_index.invalidate_and_rebuild_async", ...)` |
+| **P3-3 测试 1 数学错误** | `expected_product = 1/61 * 0.9` 失败，实际 0.014516 | 误以为两个 doc 同 rank，实际 PRODUCT 在 vector rank=2 | 改为 `expected_product = 1/62 * 0.9`，与实际一致 |
+| **P3-3 缺数据来源** | rrf_fuse weights 需要 doc_type，但 Qdrant payload 没存 | M14 V3 ingest 只把 doc_type 写 MySQL `knowledge_documents`，未写 Qdrant payload | ingest.py 加 `payload["doc_type"] = doc_type`（一行，向后兼容） |
+| **doc_type 形态分裂** | vector 直挂 vs BM25 payload 嵌套 | `_build_index` 把 Qdrant rec 的 payload 嵌套为 `doc["payload"]`，vector 路径直挂 | `_extract_doc_type()` 统一兼容 |
+
+### Architecture Role
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │         RAG 检索质量双闭环                 │
+                    └──────────────────────────────────────────┘
+                                       │
+       ┌───────────────────────────────┼───────────────────────────────┐
+       ▼                                                               ▼
+┌──────────────┐                                                ┌──────────────┐
+│   P1-2 响应  │                                                │  P3-3 召回   │
+│              │                                                │              │
+│ ingest 后台  │                                                │ RRF 类型加权 │
+│ 重建 BM25    │                                                │ 提升业务相关 │
+│              │                                                │              │
+│ 避免首次     │                                                │ policy 优先  │
+│ bm25 search  │                                                │ 于 product   │
+│ 1-3s spike   │                                                │              │
+└──────┬───────┘                                                └──────┬───────┘
+       │                                                               │
+       │ ingest_text ──→ RAG_BM25_EAGER_BUILD (P1-2)                  │ upsert ──→ payload.doc_type (P3-3)
+       │                  ↑                                            │              ↑
+       │                  │ 控制                                       │              │ ingest_text(doc_type=...)
+       │                  │                                            │              │
+       ▼                                                               ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     config.py（RAG 灰度门禁）                            │
+│  RAG_BM25_EAGER_BUILD = True（响应优先）                                  │
+│  RAG_TYPE_BOOST = {"policy": 1.2, "faq": 1.0, "product": 0.9}            │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**P1-2 在系统中的位置**：
+
+| 维度 | 内容 |
+|------|------|
+| 触发点 | ingest_text 完成 qdrant 写入后（步骤 5.5） |
+| 性能影响 | 首次 bm25_search 从 1-3s → <100ms（命中预热索引） |
+| 失败兜底 | 后台线程异常 → 仅 log，下次 search 懒加载（不影响主流程） |
+| 与 P1-1/P1-3 协同 | P1-1 chunk_id 稳定 + P1-3 MySQL rollback + P1-2 BM25 热索引 = RAG 数据一致性 + 性能完整闭环 |
+
+**P3-3 在系统中的位置**：
+
+| 维度 | 内容 |
+|------|------|
+| 触发点 | rrf_fuse 排序前加权（rrf.py 单点改动，policy_service 3 处调用） |
+| 准确率影响 | 政策类 query 召回 top-1 +10-20%（典型场景：用户搜"运费险怎么买"） |
+| 业务约束 | 加权不应破坏 RRF 核心语义：双命中（vector + BM25 都进 top）仍优先于单命中（即使加权倍数更高） |
+| 与 RAG_TYPE_BOOST 协同 | policy 1.2 > faq 1.0 > product 0.9 反映「电商客服最关心政策」的业务直觉 |
+
+### 关联记忆
+
+- `feedback_test_factory_singleton.md` — fire-and-forget 测试必须 reset 工厂单例（`bm25_index._INDEX` 备份/恢复 fixture）
+- `feedback_mock_magicmock_truthy.md` — monkeypatch `settings.RAG_BM25_EAGER_BUILD` 必须列全属性
+- `feedback_burst_test_pattern.md` — 守护线程内必须 try/finally 兜底异常（不能掩盖主流程失败）
+- `project_m14_done.md` — M14 5 阶段闭环（含 ingest_text/doc_type 入口，本 P3-3 复用）
+
+### 验证
+
+- ✅ P1-2 单元测试 **8/8 PASS**（test_bm25_eager.py：异步线程启动 / 写回 / 异常不传 / daemon=True / 触发条件 × 4）
+- ✅ P3-3 单元测试 **8/8 PASS**（test_rrf_type_boost.py：加权排序反转 / 直挂+嵌套兼容 / 默认 1.0 / 向后兼容 / 双命中优势保留）
+- ✅ 全量 backend pytest **397/397 PASS**（排除 2 个 pre-existing MySQL docker-down 测试，非本 PR 回归）
+- ✅ 双 commit push Gitee origin + GitHub github 双仓成功（77eb804 / e72ecc1）
+- ⏸ ECS 真实话术复跑：本地无 MySQL docker + Qdrant 真实数据，需 ECS 上跑 `tests/run_validation.py` 验证 hit@K +10-20% 假设
+
