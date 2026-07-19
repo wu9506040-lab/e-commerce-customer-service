@@ -529,15 +529,25 @@ def _compute_metrics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     hallucinated = sum(1 for r in total_with_output if (r.get("hallucination") or {}).get("has_hallucination"))
     hallucination_rate = hallucinated / len(total_with_output) if total_with_output else 0.0
 
-    # 5. 政策覆盖率（新增真指标 · V5 修复：跳过 coverage_rate=None 的 case）
-    # None 表示"ref 无关键词（无指标）"；计入会稀释真实数据
+    # 5. 政策覆盖率（新增真指标 · V5 修复 + V6 metric gate）
+    # V5: 跳过 coverage_rate=None 的 case（ref 无关键词 · 无指标）
+    # V6: 仅评 expected="synthesize" 的 case（其他分支无政策输出）
+    #     ask_order_no / escalate / invalid_order 分支不输出政策文本
+    #     → 强行评估会稀释真实数据（如 V5 12 个有效 case 全部为 0）
     coverage_results = [
         r for r in results
         if r.get("coverage") is not None
         and (r.get("coverage") or {}).get("coverage_rate") is not None
+        and r.get("expected") == "synthesize"  # V6 gate: 只评 synthesize 分支
     ]
     coverage_sum = sum((r.get("coverage") or {}).get("coverage_rate", 0) for r in coverage_results)
     avg_coverage = coverage_sum / len(coverage_results) if coverage_results else 0.0
+    coverage_skipped_v6 = sum(
+        1 for r in results
+        if r.get("coverage") is not None
+        and (r.get("coverage") or {}).get("coverage_rate") is not None
+        and r.get("expected") != "synthesize"
+    )
 
     return {
         "resolver_accuracy": {
@@ -569,8 +579,9 @@ def _compute_metrics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
             "value": round(avg_coverage, 4),
             "numerator": coverage_sum,
             "denominator": len(coverage_results),
-            "definition": "Agent 输出中关键词数 / ref_answer 关键词数（real_corpus.json 来源）",
-            "note": "新增真指标",
+            "definition": "Agent 输出中关键词数 / ref_answer 关键词数（real_corpus.json 来源 · 仅评 synthesize 分支）",
+            "note": "V6 metric: only synthesize branch produces policy text; ask_order_no/escalate/invalid_order skipped",
+            "skipped_v6_gate": coverage_skipped_v6,
         },
     }
 
