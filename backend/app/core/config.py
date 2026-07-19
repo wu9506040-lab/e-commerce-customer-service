@@ -177,6 +177,13 @@ class Settings(BaseSettings):
     # 默认 false（灰度用）；demo 时可开 true
     ENABLE_ESCALATION_HANDOFF: bool = False
 
+    # ---- P1-3: RAG ingest MySQL 失败回滚 Qdrant ----
+    # 触发场景：upsert_points 成功 → upsert_knowledge_meta 失败 → 孤儿点残留
+    # 开启后：自动 delete_points(chunk_ids) 回滚；rollback 失败仅 log warning（不掩盖 MySQL 错误）
+    # 关闭则保留原行为：静默成功 + warn log（与 M14 V3 前一致）
+    # 默认 True（数据一致性优先）；切 False 即可观察老行为用于 A/B 对比
+    RAG_ROLLBACK_ON_MYSQL_FAIL: bool = True
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩

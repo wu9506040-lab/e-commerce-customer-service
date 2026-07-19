@@ -17,7 +17,8 @@ from qdrant_client.models import PointStruct
 from sqlalchemy import select
 
 from app.clients.mysql_client import with_safe_session
-from app.clients.qdrant import ensure_collection, upsert_points
+from app.clients.qdrant import delete_points, ensure_collection, upsert_points
+from app.core.config import settings
 from app.core.providers.embedding import get_embedding_provider
 from app.models.knowledge_document import KnowledgeDocument
 
@@ -238,11 +239,14 @@ def ingest_text(
         )
 
     # 5. 写入 Qdrant（真源）
-    upsert_points(points)
+    qdrant_written = upsert_points(points)
 
     # 6. write-through：同步 MySQL 元数据（§11）
+    # P1-3 修复：MySQL 失败时回滚 Qdrant，防止孤儿点残留
+    # - upsert_knowledge_meta 内部用 with_safe_session 吞咽异常并返 None
+    # - doc is None 即为 MySQL 失败信号（语义保留：不抛异常，与原行为兼容）
     total_chars = sum(len(c) for c in chunks)
-    upsert_knowledge_meta(
+    doc = upsert_knowledge_meta(
         source=source,
         total_chunks=len(chunks),
         total_chars=total_chars,
@@ -251,6 +255,28 @@ def ingest_text(
         description=description,
         doc_type=doc_type,  # 修复：原版漏传，导致元数据全部默认 'manual'
     )
+
+    # P1-3 rollback：Qdrant 真写了点 + MySQL metadata 失败 + 开关启用 → 删 Qdrant 点
+    # 注意：qdrant_written=0（断路器开路场景）时无须回滚（Qdrant 实际没写）
+    if (
+        doc is None
+        and qdrant_written > 0
+        and settings.RAG_ROLLBACK_ON_MYSQL_FAIL
+    ):
+        try:
+            delete_points(chunk_ids)
+            logger.warning(
+                f"ingest_text rollback: MySQL metadata 写入失败，"
+                f"已删除 Qdrant {len(chunk_ids)} 个点（source={source}）"
+            )
+        except Exception:
+            # 回滚本身失败：log warning + 异常栈，但不重新抛
+            # 原因：不掩盖原 MySQL 失败信号（doc is None 已透出给调用方）
+            # 兜底清理：可后续 P1-1 / P1-2 加定时 sweep_orphan_qdrant.py 脚本
+            logger.exception(
+                f"ingest_text rollback FAILED: MySQL 失败 + Qdrant delete 也失败，"
+                f"需人工清理 orphan_points={chunk_ids[:3]}... (共 {len(chunk_ids)} 个)"
+            )
 
     logger.info(
         f"ingest_text: source={source}, chunks={len(chunks)}, "
