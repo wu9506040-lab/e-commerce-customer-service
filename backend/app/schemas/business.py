@@ -8,7 +8,7 @@ OrderService / ProductService / RefundService / LogisticsService Protocol 的出
 按此 schema 返回即可。
 """
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -135,3 +135,97 @@ class RefundTypeAdvice(BaseModel):
     recommended_type: str               # "refund_only" / "return_and_refund"
     reasoning: str                      # 推荐理由（中文）
     conditions: List[str]               # 适用条件列表
+
+
+# =============================================================
+# Sprint 18 · Promotion / CouponStackResult / BundleDiscountResult
+# =============================================================
+class Promotion(BaseModel):
+    """优惠活动 DTO
+
+    type 取值：full_reduction / discount / gift。
+    applicable_stores / applicable_categories 为空列表 = 全店/全部类目。
+    """
+    promotion_id: str
+    name: str
+    type: str
+    threshold: Optional[float] = None    # 满 X 触发（full_reduction 必填）
+    benefit: Optional[float] = None      # 减 Y（full_reduction）/ 折扣率（discount）
+    applicable_stores: List[str] = Field(default_factory=list)
+    applicable_categories: List[str] = Field(default_factory=list)
+    start_time: datetime
+    end_time: datetime
+    stackable: bool
+
+
+class CouponStackResult(BaseModel):
+    """优惠券叠加校验结果 DTO
+
+    业务语义：哪些券能一起用 / 哪些互斥 / 推荐最佳组合（优惠最大化）。
+    V2 仅给"建议"，最终叠加由用户在前端勾选。
+    """
+    stackable_groups: List[List[str]] = Field(default_factory=list)
+    # 互斥的券对：[{"a": "C001", "b": "C002", "reason": "..."}]
+    conflicting_pairs: List[dict] = Field(default_factory=list)
+    best_combination: List[str] = Field(default_factory=list)
+
+
+class BundleDiscountResult(BaseModel):
+    """跨店满减计算结果 DTO
+
+    输入每家店金额 → 输出当前合计 + 距离下一档满减还差多少 + 凑单建议。
+    next_threshold=None 表示已达标最高档，无下一档建议。
+    """
+    current_total: float
+    store_totals: Dict[str, float] = Field(default_factory=dict)
+    next_threshold: Optional[float] = None
+    next_benefit: Optional[float] = None
+    suggestion: Optional[str] = None
+
+
+# =============================================================
+# Sprint 18-C · 售中订单修改（OrderModifyService）Schema
+# =============================================================
+class ModifyResult(BaseModel):
+    """售中修改结果（地址/规格）。
+
+    success=False 时 reason 包含中文失败原因；before_snapshot/after_snapshot
+    为 None 时上层按需自补（便于审计回滚）。
+    """
+    success: bool
+    order_no: str
+    modification_type: str             # "address" / "spec"
+    reason: str                        # 中文提示
+    before_snapshot: Optional[dict] = None
+    after_snapshot: Optional[dict] = None
+
+
+class MergeResult(BaseModel):
+    """合并订单结果。
+
+    success=True 时 primary_order_no 为主订单号，merged_order_nos 为被合并订单号列表；
+    success=False 时只返 reason。
+    """
+    success: bool
+    primary_order_no: Optional[str] = None
+    merged_order_nos: List[str] = Field(default_factory=list)
+    reason: str
+
+
+# =============================================================
+# 售中订单修改 异常类（CLAUDE.md §9.3.1 五件套之「异常处理」）
+# =============================================================
+class ModifyError(Exception):
+    """售中订单修改操作错误基类"""
+
+
+class ModifyNotAllowedError(ModifyError):
+    """订单状态不允许修改（已发货/已签收/已完成/已退款）"""
+
+
+class OrderNotFoundError(ModifyError):
+    """订单不存在或越权访问（user_id 不匹配）"""
+
+
+class MergeConditionError(ModifyError):
+    """合并订单条件不满足（跨店/已发货/超过 5 分钟等）"""

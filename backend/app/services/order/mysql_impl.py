@@ -41,7 +41,7 @@ def _to_order(o: OrderORM, items: List[OrderItemORM]) -> Order:
         status=o.status,
         items=[_to_order_item(i) for i in items],
         total_amount=float(o.total_amount),
-        shipping_address=None,        # 现有 ORM 只存 address_id，V3+ 补明文地址
+        shipping_address=o.shipping_address,  # Sprint 18-C：ORM 新增 shipping_address 字段(Sprint 18-C L1)
         tracking_no=None,             # 现有 ORM 无 tracking_no，物流走 OrderTool.get_logistics mock
         create_time=o.create_time,
         update_time=o.update_time,

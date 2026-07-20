@@ -32,6 +32,9 @@ class Order(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=OrderStatus.PENDING.value)
     total_amount: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=0)
     address_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # L1 增量（Sprint 18-C · 售中地址修改）：冗余字符串地址（V2 售中协议使用）。
+    # 早期只有 address_id 整数外键；售中改地址需明文字段给客服/用户看，故新增。
+    shipping_address: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     create_time: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
     update_time: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
