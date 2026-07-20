@@ -6017,3 +6017,172 @@ Admin UI → Admin API → AnalyticsService → ORM / Redis / Metrics snapshot
 - `frontend/src/composables/useAdminAnalytics.ts`
 - `docs/development/next_phase_plan_v11.md` §12
 
+---
+
+## §51 · P4-3 单对话 export + replay · 兜底链 L9 定位（2026-07-20 · commit b6e6661 + 本 docs commit）
+
+### What
+
+新增 admin / super_admin 后台工具，让管理员能拉取单对话完整 export JSON 并按需 replay：
+
+- **export**：拉取某次对话的全部消息（含 RAG contexts / scores / token / latency）+ 系统快照（含 7 个 ENABLE_* 灰度开关当前值），组装成自描述 JSON 供后续排查 / 离线审计 / CI fixture 使用。
+- **replay**：在「当下系统」用 sandbox user 重新跑用户问题，不写 conversations / messages，仅对比同 query 在不同版本下的表现（CI 回归 / A/B 对比）。
+
+新增内容：1 个 deps（`require_super_admin`）+ 4 个 Pydantic schema（ConversationExport / ExportItem / ReplayRequest / ReplayResponse / SystemSnapshot）+ 2 个 endpoint（GET export / POST replay）+ 3 个 helper（`_mask_phone` / `_collect_system_snapshot` / `_build_export_payload`）+ 7 个 L1 mock + L2 集成测试。0 数据库改动 / 0 现有文件改动 / 0 新增依赖。
+
+### Why
+
+**核心定位**：P4-3 是 **admin / super_admin 后台工具**，不是用户工具。普通用户（role=user）永远接触不到这个接口。
+
+**用户视角原则**：用户**不会**主动报 bug、不会复现 bug、不会参与排查。用户视角只有两件事——能用 + 别出错。一旦出错就要么默默退出、要么转人工。所以"事后排查"必须是 admin / SRE / CI 的活。
+
+**P4-3 在钱相关场景中的价值**：退款 / 赔付等高危场景要求"出问题后 admin 必须能查 + 必须能复现"，P4-3 正是这一环：
+
+| 真实场景 | P4-3 怎么用 |
+|---------|-------------|
+| 监控告警：真幻觉率从 1% 涨到 5% | admin 拉异常时段所有会话 → 抽样 export → 本地 replay 排查根因 |
+| admin 季度抽检 5% 对话 | 随机抽 → export JSON → 离线给标注团队打分 |
+| 改了 prompt / 切了 LLM provider | 用同一 export JSON 分别 replay V9 / V10 → diff 结果验证非回归 |
+| CI 回归门禁 | 把历史对话 export 当 fixture → CI 每天自动 replay → 检测 prompt 改坏 |
+| 退款 bug 事后追责 | admin 通过 P4-1 全局列表找到异常会话 → export 完整对话 + 系统快照 → replay 复现 |
+
+**为什么不是用户工具**：用户视角"出问题 = 转人工"，根本不应该参与排查。设计假设：**bug 出现 → admin 主动发现 → admin 主动定位 → 修复 → 灰度放量**。这条链路在 commit message 和 endpoint 文档里都要明确。
+
+### Tech
+
+| 技术点 | 落地 |
+|--------|------|
+| 新增 deps | `require_super_admin`（仅 replay 使用；避免普通 admin 误触 LLM 成本失控） |
+| RBAC 分级 | `admin` → 读 / list / export；`super_admin` → + replay（会调 LLM） |
+| Export schema | `ConversationExportItem` 仅含 ORM 已持久化字段（contexts/scores/token/latency）；**不**包含 intent/tool_calls（ORM 未存，避免伪字段误导） |
+| 系统快照 | `_collect_system_snapshot()` 捕获 `ENABLE_*` 全部 7 个灰度开关当下值；用于跨时间 diff（"同一对话为何跑出不同结果"） |
+| Replay 沙箱化 | `user_id=ANONYMOUS_USER_ID=0`（跳过 profile 维护）+ `session_id=None`（不与真实会话关联） + `orchestrator.run_stream` 是同步 generator（不写 conversations/messages） |
+| 消息上限 | `EXPORT_MAX_MESSAGES=1000`（防 payload 过大；超出截断 + `truncated=true` 标记） |
+| 脱敏 | `_mask_phone` 11 位手机号 → `138****1234`；`_mask_email` 沿用 P4-1 形式（`a***@b.com`） |
+| Audit | 复用 `try_log_action`，分别记 `admin_export_conversation` / `admin_replay_conversation` + 失败时 `result="fail"` |
+| Lazy import | `from app.services.chat.orchestrator import Synthesizer` 在函数体内（避免循环依赖 + 测试时易 mock） |
+
+### Flow
+
+#### 钱相关 9 层兜底链（以退款为例）
+
+```
+用户问"我要退款 ORD001"
+    ↓
+L1 P0 前置拦截：投诉 12315 / 赔付三倍？ → 是 → 0 LLM token 转人工（chat.py:197）
+    ↓ 否
+L2 LangGraph 4 节点状态机（judge → decide → tool/synth）（refund_graph.py）
+    ↓
+L3 judge 节点用 refund_rules.yaml 判断可退性（业务规则配置化）
+    ↓
+L4 RefundTool.get_order_by_no 实时查 MySQL（单一事实源）
+    ↓
+L5 Synthesizer 用结构化事实合成回答（金额/订单号/状态从 order_info 取）
+    ↓
+L6 后置正则扫 final_answer：金额/订单号/状态偏离真实值 → 替换/剥离（hallucination_guard.py）
+    ↓
+L7 audit_log 全量记录（admin_id + action + detail）（audit_service.py）
+    ↓
+任意环节异常 → L8 escalate_to_human（HandoffCard 三色 · P0 红 / P1 橙 / P2 灰）
+    ↓
+任意环节告警 → L9 admin 抽样 audit（P4-1 全局查询 → P4-3 export → replay 复现）
+```
+
+#### 单次 export 数据流
+
+```
+admin GET /api/admin/conversations/{sid}/export
+    ↓
+require_admin  ← deps.py:62（非 admin 返 403）
+    ↓
+SELECT Conversation WHERE session_id = ? AND deleted = 0
+    ↓
+SELECT Message WHERE session_id = ? ORDER BY id ASC LIMIT 1001
+    ↓
+_build_export_payload(conv, messages, admin, truncated)  ← 组装 payload
+    ├─ contexts / scores / token / latency 直接映射 ORM 字段
+    ├─ _collect_system_snapshot()  ← 捕获 7 个 ENABLE_* 当下值
+    └─ system_snapshot.captured_at = utcnow()
+    ↓
+try_log_action(action="admin_export_conversation", detail={msg_count, truncated})
+    ↓
+Response: ConversationExport JSON
+```
+
+#### 单次 replay 数据流
+
+```
+super_admin POST /api/admin/conversations/{sid}/replay
+    ↓
+require_super_admin  ← deps.py:74（仅 super_admin 通过）
+    ↓
+SELECT Conversation WHERE session_id = ?  ← 仅验证存在（不参与 replay 业务）
+    ↓
+lazy import Synthesizer.run_stream(query, user_id=0, history=..., session_id=None)
+    ↓ 沙箱化：user_id=ANONYMOUS_USER_ID + 不传 session_id
+for event in run_stream:
+    ├─ ("meta", {intent, entities})  → 收集
+    ├─ ("token", str)               → 忽略（replay 不流式）
+    └─ ("done", {answer})           → 收集
+    ↓
+try_log_action(action="admin_replay_conversation", detail={query, intent, latency_ms})
+    ↓
+Response: ConversationReplayResponse{answer, intent, entities, latency_ms, system_snapshot}
+```
+
+### Problem & Fix
+
+| 问题 | 根因 | 处理 |
+|------|------|------|
+| 最初把 P4-3 定位为"用户复现 bug 工具" | 设计稿里把 export/replay 的"调试"语义简化成"复现单次对话 bug"，误以为用户会主动反馈并复现 | **修正**：明确 P4-3 是 **admin / super_admin 后台工具**，普通用户（role=user）永远接触不到；用户视角只关心"能用 + 别出错"，不参与排查 |
+| `_build_export_payload` 最初尝试从 `m.contexts.get("intent")` 提取字段 | `Message.contexts` 实际是 `JSON list`（RAG 召回原文数组），不是 dict；ORM 也没存 intent / tool_calls | 简化为仅导出 ORM 已持久化的字段（contexts/scores/token/latency），不引入伪字段；replay 端点重新分类意图而非依赖历史 intent |
+| 测试 mock 路径 `patch("app.api.admin_conversations.Synthesizer")` 失败 | admin_conversations.py 用 lazy import（函数体内 `from ... import Synthesizer`），模块顶层没有 Synthesizer 属性 | 修正为 `patch("app.services.chat.orchestrator.Synthesizer.run_stream", return_value=...)` |
+| 第一个 replay endpoint 实现自己写 `get_db_gen_for_replay()` | anti-pattern：与 FastAPI Depends(get_db) 风格不一致，会破坏现有 sqlite 测试 fixture | 改为标准 `db: Session = Depends(get_db)`，与 export 端点一致 |
+| Commit message 未明确"钱相关兜底"价值 | P4-3 的真正业务价值在于钱相关场景的"事后排查能力"，commit message 用了"admin 审计 / SRE 排障 / CI 回归 fixture"过于技术化 | 追加本 docs commit（§51）：明确 L9 定位 + 9 层兜底链 + 用户零参与原则 |
+
+### Architecture Role
+
+P4-3 属于 admin_conversations 子模块（已有 P4-1 全局查询 / P4-2 运营聚合 / P4-3 export+replay 三件套），保持模块边界清晰：
+
+```
+调用方向（保持单向）
+    Admin UI → /api/admin/conversations/{sid}/export|replay
+        → require_admin / require_super_admin
+        → Conversation + Message ORM（只读）
+        → audit_service.try_log_action（best-effort）
+        → Synthesizer.run_stream（replay 专用，沙箱化）
+```
+
+**CLAUDE.md §9.2.2 零侵入**：未修改 `api/conversations.py`（用户级接口保持隔离）；未修改 `services/synthesizer.py` / `orchestrator.py`（复用其 public interface）；未新增表 / 未修改 ORM。
+
+**CLAUDE.md §3.3 YAGNI**：未实现 export 全量下载 CSV、replay 跨 session 批量执行、replay 历史回放等"未来可能用到"的能力——按"当下 admin / SRE / CI 的实际需求"实现最小集。
+
+### 8 件套交付
+
+1. **模块职责说明**：admin_conversations 增 export/replay 子模块（admin 审计 / SRE 排障 / CI 回归 fixture）；**用户零参与**。
+2. **接口定义**：`require_super_admin` deps + 2 endpoint（GET export / POST replay）+ 1 deps（与 admin 分级）。
+3. **输入输出模型**：5 Pydantic model（ConversationExport / ConversationExportItem / ConversationReplayRequest / ConversationReplayResponse / SystemSnapshot）；所有字段 ORM 实存，无伪字段。
+4. **数据模型**：0 新表（复用 Conversation / Message / OperationLog / User）。
+5. **依赖关系图**：`deps.require_admin/super_admin → admin_conversations → Conversation/Message ORM → audit_service.try_log_action → orchestrator.Synthesizer.run_stream`（replay 沙箱化 lazy import）。
+6. **调用流程**：见本节 Flow（含 9 层兜底链 + 单次 export / replay 数据流）。
+7. **测试方案**：7 L1 mock + L2 集成（`_mask_phone` 边界 / `_build_export_payload` 组装 / export admin 成功 / export 404 / export 截断 1000 / replay super_admin sandbox 验证 / replay 404）；pytest `test_admin_conversations.py` 12 → 19 全过。
+8. **已知限制**：消息上限 1000（防 payload 过大） + sandbox user_id=ANONYMOUS_USER_ID（不维护 profile） + super_admin only（防 LLM 成本失控） + 不写 conversations/messages（仅 metrics 累计）。
+
+### 验证
+
+- ✅ `pytest tests/test_admin_conversations.py`：12 → **19 / 19** 全过（7 个新增）。
+- ✅ Backend 全量 pytest：473 / 474（1 个 pre-existing GBK 编码 flake `test_prompt_loader_version.py::test_v2_content_change_picks_up`，与本次改动无关）。
+- ✅ Frontend `vue-tsc --noEmit`：0 错误（前端无改动，确认未破坏）。
+- ✅ `git commit b6e6661`：单 commit，+597 行 / 4 文件，独立可回滚。
+- ✅ Commit message 含 8 件套 + 钱相关 9 层兜底链定位。
+
+### 关联文档
+
+- `backend/app/api/admin_conversations.py`（+301 行）
+- `backend/app/api/deps.py`（+17 行 · `require_super_admin`）
+- `backend/app/schemas/admin_conversations.py`（+94 行 · 4 Pydantic model）
+- `backend/tests/test_admin_conversations.py`（+192 行 · 7 测试）
+- `docs/development/next_phase_plan_v11.md` §12.3（P4-3 原始设计稿）
+- commit `b6e6661`
+
+
