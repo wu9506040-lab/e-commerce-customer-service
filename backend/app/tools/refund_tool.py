@@ -7,12 +7,11 @@
 import datetime
 from typing import Optional
 
-from sqlalchemy import select
-
 from app.clients.mysql_client import with_safe_session
 from app.models.order import Order, OrderStatus
 from app.models.refund import Refund
 from app.services.config_loader import get_config_loader
+from app.services.order.factory import get_order_service_factory, run_sync
 
 # 业务规则（启动期加载一次，来自 config/business_rules/refund.yaml）
 # 单一真相源：与 refund_graph / order_lifecycle 共享同一份 YAML
@@ -89,58 +88,55 @@ class RefundTool:
                 "days_since_order": int, # 用于 policy 融合时引用
             }
         """
-        with with_safe_session(commit=False) as db:
-            order = db.query(Order).filter(
-                Order.order_no == order_no,
-                Order.user_id == user_id,  # 越权防护
-                Order.deleted == 0,
-            ).first()
+        # Sprint 15：订单查询走 OrderService Protocol（含 user_id 越权防护 + 软删过滤）
+        svc = get_order_service_factory().get_order_service()
+        order = run_sync(svc.get_order(user_id, order_no))
 
-            if not order:
-                return {
-                    "refundable": False,
-                    "reason": "订单不存在或不属于当前用户",
-                    "order_no": order_no,
-                    "order_status": None,
-                    "days_since_order": None,
-                }
-
-            days = (datetime.datetime.now() - order.create_time).days if order.create_time else 0
-
-            if order.status == OrderStatus.REFUNDED.value:
-                return {
-                    "refundable": False,
-                    "reason": "该订单已退款，无法重复申请",
-                    "order_no": order_no,
-                    "order_status": order.status,
-                    "days_since_order": days,
-                }
-
-            if order.status == OrderStatus.DELIVERED.value:
-                if days > RefundTool.REFUND_WINDOW_DAYS:
-                    return {
-                        "refundable": False,
-                        "reason": f"已签收 {days} 天，超过 {RefundTool.REFUND_WINDOW_DAYS} 天无理由退货期限",
-                        "order_no": order_no,
-                        "order_status": order.status,
-                        "days_since_order": days,
-                    }
-                return {
-                    "refundable": True,
-                    "reason": f"已签收 {days} 天，在 {RefundTool.REFUND_WINDOW_DAYS} 天无理由退货期限内",
-                    "order_no": order_no,
-                    "order_status": order.status,
-                    "days_since_order": days,
-                }
-
-            # pending / paid / shipped / completed：都可发起
+        if not order:
             return {
-                "refundable": True,
-                "reason": f"订单状态「{order.status}」，可发起退款申请",
+                "refundable": False,
+                "reason": "订单不存在或不属于当前用户",
+                "order_no": order_no,
+                "order_status": None,
+                "days_since_order": None,
+            }
+
+        days = (datetime.datetime.now() - order.create_time).days if order.create_time else 0
+
+        if order.status == OrderStatus.REFUNDED.value:
+            return {
+                "refundable": False,
+                "reason": "该订单已退款，无法重复申请",
                 "order_no": order_no,
                 "order_status": order.status,
                 "days_since_order": days,
             }
+
+        if order.status == OrderStatus.DELIVERED.value:
+            if days > RefundTool.REFUND_WINDOW_DAYS:
+                return {
+                    "refundable": False,
+                    "reason": f"已签收 {days} 天，超过 {RefundTool.REFUND_WINDOW_DAYS} 天无理由退货期限",
+                    "order_no": order_no,
+                    "order_status": order.status,
+                    "days_since_order": days,
+                }
+            return {
+                "refundable": True,
+                "reason": f"已签收 {days} 天，在 {RefundTool.REFUND_WINDOW_DAYS} 天无理由退货期限内",
+                "order_no": order_no,
+                "order_status": order.status,
+                "days_since_order": days,
+            }
+
+        # pending / paid / shipped / completed：都可发起
+        return {
+            "refundable": True,
+            "reason": f"订单状态「{order.status}」，可发起退款申请",
+            "order_no": order_no,
+            "order_status": order.status,
+            "days_since_order": days,
+        }
 
     @staticmethod
     def _to_dict(r: Refund) -> dict:

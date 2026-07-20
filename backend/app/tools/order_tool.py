@@ -9,10 +9,14 @@ from typing import Optional
 
 from app.clients.mysql_client import with_safe_session
 from app.models.order import Order, OrderItem
+from app.services.order.factory import get_order_service_factory, run_sync
+
+# Sprint 15：订单/商品读取改走 OrderService Protocol（CLAUDE.md §9.3.2）。
+# 越权防护 / 状态过滤 / 软删过滤等语义下沉到 MySQLOrderService，Tool 层只做 DTO→dict 适配。
 
 
 class OrderTool:
-    """订单查询工具（静态方法集合；类形式方便未来扩展为单例 / 依赖注入）"""
+    """订单查询工具（静态方法集合；DB 访问经 OrderService Protocol）"""
 
     # ---------- 订单主表 ----------
 
@@ -29,12 +33,9 @@ class OrderTool:
         Returns:
             订单 dict 列表（按 create_time DESC）
         """
-        with with_safe_session(commit=False) as db:
-            q = db.query(Order).filter(Order.user_id == user_id, Order.deleted == 0)
-            if status:
-                q = q.filter(Order.status == status)
-            orders = q.order_by(Order.create_time.desc()).limit(limit).all()
-            return [OrderTool._order_to_dict(o) for o in orders]
+        svc = get_order_service_factory().get_order_service()
+        orders, _ = run_sync(svc.list_user_orders(user_id, status=status, limit=limit))
+        return [OrderTool._order_dto_to_dict(o) for o in orders]
 
     @staticmethod
     def get_order_by_no(user_id: int, order_no: str) -> Optional[dict]:
@@ -44,19 +45,19 @@ class OrderTool:
         Returns:
             订单 dict 或 None（订单不存在 / 不属于该 user）
         """
-        with with_safe_session(commit=False) as db:
-            order = db.query(Order).filter(
-                Order.order_no == order_no,
-                Order.user_id == user_id,  # 越权防护
-                Order.deleted == 0,
-            ).first()
-            return OrderTool._order_to_dict(order) if order else None
+        svc = get_order_service_factory().get_order_service()
+        order = run_sync(svc.get_order(user_id, order_no))
+        return OrderTool._order_dto_to_dict(order) if order else None
 
     # ---------- 订单明细 ----------
 
     @staticmethod
     def get_order_items(order_id: int) -> list[dict]:
-        """查订单明细（order_id 来自上一级调用，已校验过归属）"""
+        """查订单明细（order_id 来自上一级调用，已校验过归属）
+
+        note：Protocol 的 Order.items 按 order_no 聚合；本方法保留 order_id 入参
+        （多个调用方依赖），故仍直接查 order_items 表。
+        """
         with with_safe_session(commit=False) as db:
             items = db.query(OrderItem).filter(
                 OrderItem.order_id == order_id,
@@ -137,8 +138,8 @@ class OrderTool:
     # ---------- 私有 ----------
 
     @staticmethod
-    def _order_to_dict(o: Order) -> dict:
-        """订单 → dict（已含 order_no 字段，给 LangGraph synthesize 节点注入 prompt）"""
+    def _order_dto_to_dict(o) -> dict:
+        """OrderService.Order (DTO) → dict（与旧 _order_to_dict 字段/格式一致）"""
         return {
             "order_no": o.order_no,
             "status": o.status,

@@ -12,6 +12,7 @@ from app.api.admin import router as admin_router
 from app.api.admin_analytics import router as admin_analytics_router  # P4-2 admin 运营聚合
 from app.api.admin_conversations import router as admin_conversations_router  # P4-1 admin 全局会话查询
 from app.api.auth import router as auth_router
+from app.api.channels import router as channels_router  # S14 ChannelAdapter Webhook
 from app.api.chat import router as chat_router
 from app.api.conversations import router as conversations_router  # §12 会话历史读取层
 from app.api.intent import router as intent_router  # M3 意图分类
@@ -160,6 +161,7 @@ app.include_router(conversations_router)  # §12
 app.include_router(intent_router)  # M3
 app.include_router(public_router)  # M13 cloud：公开 demo 入口
 app.include_router(shop_router)  # 前端商品橱窗 + 我的订单
+app.include_router(channels_router)  # S14 ChannelAdapter Webhook 接入
 
 
 # =============================================================

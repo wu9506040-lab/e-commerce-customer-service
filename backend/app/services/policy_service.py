@@ -50,6 +50,7 @@ from typing import List
 
 from app.clients.qdrant import QDRANT_COLLECTION, search as qdrant_search
 from app.core.config import settings
+from app.schemas.knowledge import SearchResult
 from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,16 @@ logger = logging.getLogger(__name__)
 # 没有 doc_type 字段，不做后过滤。等 V2.6 引入商品/政策混合 KB 时再加 doc_type 过滤。
 # M13 修复：原硬编码 "knowledge_base" 与 ingest 的 "faq_v1" 不一致 → 政策检索 0 命中
 COLLECTION_NAME = QDRANT_COLLECTION
+
+
+def _get_knowledge_source():
+    """获取 KnowledgeSource（spec §3.4 #5 mock 替换点）
+
+    Sprint 17：PolicyService 走 KnowledgeSource Protocol 而非直接 import qdrant。
+    这里用函数包装方便测试 monkeypatch。
+    """
+    from app.rag.factory import get_knowledge_source
+    return get_knowledge_source()
 
 
 def _format_hits(hits: list[dict]) -> list[dict]:
@@ -499,3 +510,57 @@ class PolicyService:
                 f"fallback=first"
             )
             return per_query_hits[0][:top_k]
+
+    # =============================================================
+    # Sprint 17: 通过 KnowledgeSource Protocol 检索（spec §3.4 #5 验证点）
+    # =============================================================
+    @staticmethod
+    def search_policy_via_protocol(query: str, top_k: int = 3) -> list[dict]:
+        """通过 KnowledgeSource Protocol 检索（同步包装 async）。
+
+        与 search_policy 的区别：
+        - search_policy: 直接调 qdrant_search + BM25/RRF/rerank（含 A4/A5/A8 全部能力）
+        - search_policy_via_protocol: 走 KnowledgeSource Protocol 接口
+          （Sprint 17 简化版，仅 dense + 可选 hybrid；rerank 由调用方决定）
+
+        用途：
+        - 接入方自定义 KnowledgeSource 时走此入口（业务不感知底层）
+        - spec §3.4 #5 验证 PolicyService 已通过 Protocol 解耦（mock 替换测试用）
+
+        Returns:
+            与 search_policy schema 一致：
+            [{"text", "source", "score", "rerank_score", "rrf_score"}, ...]
+        """
+        import asyncio
+
+        if not query or not query.strip():
+            return []
+
+        ks = _get_knowledge_source()
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # 已在事件循环内（M14 orchestrator 异步路径）；用 run_coroutine_threadsafe
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    future = ex.submit(
+                        asyncio.run, ks.search(query, top_k=top_k)
+                    )
+                    results = future.result(timeout=10)
+            else:
+                results = loop.run_until_complete(ks.search(query, top_k=top_k))
+        except RuntimeError:
+            # 没事件循环（pytest 同步场景）；直接 asyncio.run
+            results = asyncio.run(ks.search(query, top_k=top_k))
+
+        # SearchResult → 兼容 schema（供 orchestrator/synthesizer 无改动消费）
+        return [
+            {
+                "text": r.content,
+                "source": r.metadata.get("source", ""),
+                "score": r.score,
+                "rerank_score": r.metadata.get("rerank_score"),
+                "rrf_score": r.metadata.get("rrf_score"),
+            }
+            for r in results
+        ]
