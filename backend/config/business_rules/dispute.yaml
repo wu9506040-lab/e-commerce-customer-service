@@ -1,0 +1,87 @@
+# 售后纠纷业务规则 — Sprint 20 通用客服中台（spec §3.3）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("dispute")
+# 启动期一次加载；改完需重启服务。
+#
+# 3 个场景：质量问题鉴定 / 平台介入资格 / 举报假货流程。
+# 所有 key 静态枚举，缺失时 yaml_impl 用 .get() 取默认值。
+
+# =============================================================
+# 质量问题鉴定规则
+# burden_of_proof_by_value: 按金额决定举证责任方
+#   high_value_threshold: 高价值门槛
+#   low_value_burden: 低价值举证方
+# evidence_deadline_hours: 举证时限（小时）
+# process_steps: 处理步骤（通用）
+# appeal_channels: 上诉渠道
+# =============================================================
+QUALITY_DISPUTE_RULES:
+  burden_of_proof_by_value:
+    high_value_threshold: 1000.0
+    low_value_burden: "buyer"
+  evidence_deadline_hours: 48
+  process_steps:
+    - "买家提交问题描述 + 证据"
+    - "卖家举证（48 小时内）"
+    - "平台审核（3-5 工作日）"
+    - "判定结果通知双方"
+  appeal_channels:
+    - "客服热线"
+    - "在线申诉入口"
+    - "12315 消费者协会"
+
+
+# =============================================================
+# 平台介入规则
+# min_communication_rounds: 至少沟通 N 轮
+# must_have_chat_log: 必须有聊天记录
+# deadline_hours: 订单完成后 N 小时内可介入
+# dispute_type_requirements: 不同纠纷类型的条件
+# consequences: 介入后果（按方分组）
+# =============================================================
+PLATFORM_INTERVENE_RULES:
+  min_communication_rounds: 3
+  must_have_chat_log: true
+  deadline_hours: 168
+  dispute_type_requirements:
+    refund_rejected:
+      - "已申请退款被拒绝"
+      - "有聊天记录证明已沟通"
+    no_response:
+      - "卖家 48 小时未回应"
+      - "有 2 次及以上沟通记录"
+    partial_refund:
+      - "已收到部分退款但金额不符"
+      - "有沟通记录"
+  consequences:
+    buyer_side:
+      - "若举证不足，可能败诉"
+      - "影响后续维权"
+    seller_side:
+      - "若举证不足，可能被处罚"
+      - "影响店铺评分"
+
+
+# =============================================================
+# 举报假货规则
+# report_channels: 举报渠道
+# evidence_required: 需要的证据
+# possible_penalties: 卖家可能处罚
+# processing_days: 处理时限（工作日）
+# =============================================================
+REPORT_FAKE_GOODS_RULES:
+  report_channels:
+    - "平台举报入口"
+    - "客服协助举报"
+    - "12315 平台"
+  evidence_required:
+    - "商品对比图（真品 vs 收到的）"
+    - "权威鉴定报告（可选但加分）"
+    - "购买凭证"
+    - "聊天记录"
+  possible_penalties:
+    - "商品下架"
+    - "店铺扣分"
+    - "店铺封禁"
+    - "消费者退款 + 赔偿"
+  processing_days: 7

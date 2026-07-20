@@ -1,0 +1,85 @@
+# 售前+售中补完业务规则 — Sprint 20 通用客服中台（spec §2.3）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("supplement")
+# 启动期一次加载；改完需重启服务。
+#
+# 5 个场景：运费规则 / 限购规则 / 催发货 / 延长收货 / 上门取件预约。
+# 所有 key 静态枚举，缺失时 yaml_impl 用 .get() 取默认值（不抛 KeyError）。
+
+# =============================================================
+# 运费规则
+# free_shipping_threshold: 满 X 元包邮
+# base_fee_per_region: 各地区首件运费
+# additional_fee_per_item: 续件每件加价
+# cod_surcharge: 货到付款额外加价
+# remote_area_keywords: 偏远地区识别（地区名含这些关键词视为偏远）
+# =============================================================
+SHIPPING_RULES:
+  free_shipping_threshold: 99.0       # 满 99 包邮
+  base_fee_per_region:
+    华北: 10.0
+    华东: 8.0
+    华南: 12.0
+    西部: 15.0
+    东北: 12.0
+    偏远: 25.0
+  additional_fee_per_item: 2.0       # 续件每件 2 元
+  cod_surcharge: 5.0                  # 货到付款加 5 元
+  remote_area_keywords:
+    - "新疆"
+    - "西藏"
+    - "内蒙古"
+
+
+# =============================================================
+# 限购规则
+# default_max_per_user: 默认每人限购件数
+# activity_limited_skus: 活动期间限购 SKU 列表
+# activity_max_per_user: 活动期间每人限购件数
+# =============================================================
+PURCHASE_LIMITS:
+  default_max_per_user: 5
+  activity_limited_skus:
+    - "PROMO_2026_D11_001"
+    - "PROMO_2026_D11_002"
+  activity_max_per_user: 1
+
+
+# =============================================================
+# 催发货规则
+# promised_ship_hours: 商家承诺发货时间（小时）
+# max_urge_per_day: 每天最多催 N 次
+# next_urge_interval_hours: 两次催发货最小间隔（小时）
+# =============================================================
+URGE_SHIPMENT_RULES:
+  promised_ship_hours: 48
+  max_urge_per_day: 2
+  next_urge_interval_hours: 12
+
+
+# =============================================================
+# 延长收货规则
+# eligible_statuses: 哪些订单状态可延长（仅"shipped"）
+# max_days_per_extension: 单次最长延长天数
+# max_days_total: 累计最多延长天数
+# =============================================================
+EXTEND_RECEIPT_RULES:
+  eligible_statuses:
+    - "shipped"
+  max_days_per_extension: 7
+  max_days_total: 15
+
+
+# =============================================================
+# 上门取件预约规则
+# available_time_slots: 可预约时段
+# pickup_fee: 上门取件费
+# advance_booking_hours: 至少提前 N 小时预约
+# =============================================================
+SCHEDULE_PICKUP_RULES:
+  available_time_slots:
+    - "morning"
+    - "afternoon"
+    - "evening"
+  pickup_fee: 0.0
+  advance_booking_hours: 24

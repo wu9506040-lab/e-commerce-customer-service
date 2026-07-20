@@ -229,3 +229,127 @@ class OrderNotFoundError(ModifyError):
 
 class MergeConditionError(ModifyError):
     """合并订单条件不满足（跨店/已发货/超过 5 分钟等）"""
+
+
+# =============================================================
+# Sprint 20 · SupplementRuleService DTO（spec §2.2）
+# 售前+售中补完：运费 / 限购 / 催发货 / 延长收货 / 上门取件
+# =============================================================
+class ShippingFeeInfo(BaseModel):
+    """运费计算结果"""
+    base_fee: float                         # 首件运费
+    additional_fee: float                   # 续件运费
+    total_fee: float                        # 合计运费
+    free_shipping_threshold: float          # 包邮门槛
+    is_free_shipping: bool                  # 是否包邮
+    remote_area_surcharge: float            # 偏远地区加价
+    notes: List[str]                        # 备注
+
+
+class PurchaseLimitInfo(BaseModel):
+    """限购规则"""
+    sku: str
+    limited: bool                           # 是否限购
+    max_quantity: Optional[int] = None      # 限购数量
+    activity_limited: bool                  # 活动期间限购
+    user_purchase_count: Optional[int] = None  # 用户已购次数
+    remaining_quota: Optional[int] = None  # 剩余可购
+
+
+class UrgeShipmentResult(BaseModel):
+    """催发货结果（V2 仅规则说明）"""
+    order_no: str
+    order_status: str                       # 订单当前状态
+    promised_ship_time: Optional[datetime] = None  # 商家承诺发货时间
+    urged_count: int = 0                    # 已催次数
+    next_urge_available: Optional[datetime] = None  # 下次可催时间
+    tips: List[str] = Field(default_factory=list)   # 催发货技巧
+
+
+class ExtendReceiptResult(BaseModel):
+    """延长收货结果（V2 仅资格检查）"""
+    eligible: bool                          # 是否可延长
+    max_extension_days: int                 # 单次最长可延长
+    remaining_extension_days: int           # 剩余可延长天数
+    current_status: str                     # 订单当前状态
+    reason: str                             # 中文原因（不可延长时填）
+
+
+class SchedulePickupResult(BaseModel):
+    """上门取件预约结果"""
+    available: bool
+    available_time_slots: List[str] = Field(default_factory=list)  # 可预约时段
+    pickup_fee: float                       # 上门取件费
+    notes: List[str] = Field(default_factory=list)                  # 注意事项
+
+
+# =============================================================
+# Sprint 20 · DisputeService DTO（spec §3.2）
+# 售后纠纷：质量问题鉴定 / 平台介入 / 举报假货
+# =============================================================
+class QualityDisputeProcess(BaseModel):
+    """质量问题鉴定流程"""
+    order_no: str
+    burden_of_proof: str                    # "buyer" / "seller"
+    evidence_required: List[str] = Field(default_factory=list)
+    evidence_deadline_hours: int
+    process_steps: List[str] = Field(default_factory=list)
+    appeal_channels: List[str] = Field(default_factory=list)
+
+
+class PlatformInterveneCheck(BaseModel):
+    """平台介入条件检查"""
+    eligible: bool
+    order_no: str
+    dispute_type: str
+    reason: str                             # 中文原因
+    required_conditions: List[str] = Field(default_factory=list)
+    consequences: List[str] = Field(default_factory=list)
+
+
+class ReportFakeGoodsProcess(BaseModel):
+    """举报假货流程"""
+    order_no: str
+    report_channels: List[str] = Field(default_factory=list)
+    evidence_required: List[str] = Field(default_factory=list)
+    possible_penalties: List[str] = Field(default_factory=list)
+    processing_days: int
+    notes: List[str] = Field(default_factory=list)
+
+
+# =============================================================
+# Sprint 20 · InvoiceService DTO（spec §4.2）
+# 发票：申请资格检查
+# =============================================================
+class InvoiceEligibility(BaseModel):
+    """发票申请资格"""
+    eligible: bool
+    order_no: str
+    invoice_type: str
+    invoice_title_required: bool            # 是否需要填抬头
+    tax_id_required: bool                  # 是否需要税号
+    amount_threshold_met: bool             # 是否满足满额条件
+    minimum_amount: float                  # 最低开票金额
+    current_order_amount: float            # 当前订单金额
+    eligible_amount: float                 # 可开票金额
+    application_url: str                   # 申请入口 URL
+    notes: List[str] = Field(default_factory=list)
+
+
+# =============================================================
+# Sprint 20 · 异常类（CLAUDE.md §9.3.1 五件套之「异常处理」）
+# =============================================================
+class SupplementError(Exception):
+    """售前+售中补完规则服务基类异常"""
+
+
+class DisputeError(Exception):
+    """售后纠纷服务基类异常"""
+
+
+class InvoiceError(Exception):
+    """发票服务基类异常"""
+
+
+class InvoiceNotEligibleError(InvoiceError):
+    """发票申请资格不满足（金额不足/订单状态不符等）"""
