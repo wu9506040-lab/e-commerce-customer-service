@@ -69,3 +69,20 @@ def require_admin(
             detail="需要管理员权限",
         )
     return user
+
+
+def require_super_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    """要求 super_admin 角色（仅 P4-3 replay 等高权限操作）
+
+    与 require_admin 的区别：
+    - admin：可读 + 不可写破坏性操作（export / list / get_messages）
+    - super_admin：可触发 replay（会调 LLM，成本 + 副作用）
+    """
+    if user.role != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要超级管理员权限（super_admin）",
+        )
+    return user
