@@ -1,5 +1,5 @@
 """
-退款 Tool - 纯 DB 查询 + 可退规则判断
+退款 Tool - 可退规则判断 + 退款查询（走 RefundService Protocol）
 
 按 PROJECT_DESIGN.md §3：refund_query 复合路径 = tool（订单状态）+ policy RAG。
 本文件只做 tool 部分；policy RAG 在 services/refund_service.py 编排。
@@ -7,19 +7,22 @@
 import datetime
 from typing import Optional
 
-from app.clients.mysql_client import with_safe_session
-from app.models.order import Order, OrderStatus
-from app.models.refund import Refund
+from app.models.order import OrderStatus
 from app.services.config_loader import get_config_loader
 from app.services.order.factory import get_order_service_factory, run_sync
+from app.services.refund.factory import get_refund_service_factory
 
 # 业务规则（启动期加载一次，来自 config/business_rules/refund.yaml）
 # 单一真相源：与 refund_graph / order_lifecycle 共享同一份 YAML
 _REFUND_RULES = get_config_loader().load("refund")
 
+# Sprint 16：退款读取改走 RefundService Protocol（CLAUDE.md §9.3.2）。
+# 越权防护 / 软删过滤 / 状态过滤 / 分页 cursor 等语义下沉到 MySQLRefundService，
+# Tool 层只做 DTO→dict 适配。check_refundable 已在 Sprint 15 走 OrderService，不重复走 RefundService。
+
 
 class RefundTool:
-    """退款查询工具"""
+    """退款查询工具（静态方法集合；DB 访问经 RefundService Protocol）"""
 
     # 7 天无理由：已签收后超过 7 天不可退（来自 refund.yaml）
     REFUND_WINDOW_DAYS: int = _REFUND_RULES["REFUND_WINDOW_DAYS"]
@@ -27,46 +30,16 @@ class RefundTool:
     @staticmethod
     def list_user_refunds(user_id: int, limit: int = 20) -> list[dict]:
         """查某用户的所有退款记录"""
-        with with_safe_session(commit=False) as db:
-            refunds = db.query(Refund).filter(
-                Refund.user_id == user_id,
-                Refund.deleted == 0,
-            ).order_by(Refund.create_time.desc()).limit(limit).all()
-
-            # 批量拿 order_no（避免 N+1）
-            order_ids = [r.order_id for r in refunds]
-            if order_ids:
-                order_no_map = {
-                    o.id: o.order_no
-                    for o in db.query(Order).filter(Order.id.in_(order_ids)).all()
-                }
-            else:
-                order_no_map = {}
-
-            return [
-                {
-                    **RefundTool._to_dict(r),
-                    "order_no": order_no_map.get(r.order_id),
-                }
-                for r in refunds
-            ]
+        svc = get_refund_service_factory().get_refund_service()
+        refunds, _ = run_sync(svc.list_user_refunds(user_id, limit=limit))
+        return [RefundTool._refund_dto_to_dict(r) for r in refunds]
 
     @staticmethod
     def get_refund_by_no(user_id: int, refund_no: str) -> Optional[dict]:
         """按退款号查（强制 user_id 防越权）"""
-        with with_safe_session(commit=False) as db:
-            refund = db.query(Refund).filter(
-                Refund.refund_no == refund_no,
-                Refund.user_id == user_id,
-                Refund.deleted == 0,
-            ).first()
-            if not refund:
-                return None
-            order = db.query(Order).filter(Order.id == refund.order_id).first()
-            return {
-                **RefundTool._to_dict(refund),
-                "order_no": order.order_no if order else None,
-            }
+        svc = get_refund_service_factory().get_refund_service()
+        refund = run_sync(svc.get_refund(user_id, refund_no))
+        return RefundTool._refund_dto_to_dict(refund) if refund else None
 
     @staticmethod
     def check_refundable(user_id: int, order_no: str) -> dict:
@@ -139,11 +112,13 @@ class RefundTool:
         }
 
     @staticmethod
-    def _to_dict(r: Refund) -> dict:
+    def _refund_dto_to_dict(r) -> dict:
+        """RefundService.Refund (DTO) → dict（与旧 _to_dict 字段/格式一致）"""
         return {
             "refund_no": r.refund_no,
             "reason": r.reason,
             "status": r.status,
             "amount": float(r.amount),
             "create_time": r.create_time.isoformat() if r.create_time else None,
+            "order_no": r.order_no,
         }

@@ -1,0 +1,1 @@
+"""services/logistics 模块 — LogisticsService Protocol 抽象（Sprint 16）"""
