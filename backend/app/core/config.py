@@ -215,6 +215,11 @@ class Settings(BaseSettings):
         "product": 0.9,
     }
 
+    # ---- Sprint 17: KnowledgeSource 抽象 ----
+    # 知识库接入类型（默认 qdrant；预留 elasticsearch / filesystem 等）
+    # 当前实现：固定 QdrantKnowledgeSource（YAGNI：等真实接入方出现再扩展）
+    KNOWLEDGE_SOURCE_TYPE: str = "qdrant"
+
     # ---- LLM 客户端：retry + 指数退避 + 断路器 ----
     # 解决现网抖动：DashScope 5xx / 网络超时 / 偶发 429 时不直接降级到兜底文本
     # 而是重试 N 次（指数退避 + 抖动），仍失败则断路器开路避免雪崩
