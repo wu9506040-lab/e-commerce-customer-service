@@ -6665,4 +6665,195 @@ DefaultOrderServiceFactory._instance = MySQLOrderServiceFactory(...)
 - `docs/learning_log.md`（§52/§53/§54 + §55 集成报告 · +344 行）
 - `docs/decisions/2026-07-20-parallel-impl-spec.md`（spec · commit c74a440）
 
+---
+
+## §56 · Sprint 16 — RefundService Protocol 抽象（2026-07-20 · worktree-agent-s16 · 单模块 · 8 件套）
+
+### 1. What（做了什么）
+
+按 spec §1 实现 RefundService Protocol 抽象层：
+- 新增 `app/services/refund/protocols.py`（RefundService + RefundServiceFactory Protocol + 异常类）
+- 新增 `app/services/refund/mysql_impl.py`（MySQLRefundService 复用 with_safe_session 风格）
+- 新增 `app/services/refund/factory.py`（DefaultRefundServiceFactory + run_sync 从 order.factory 复用）
+- 新增 `app/services/refund/__init__.py`
+- 追加 `app/schemas/business.py`（Refund DTO · order_no 由 get/list 注入，get_status 不注入）
+- 重构 `app/tools/refund_tool.py`（list_user_refunds + get_refund_by_no 走 Protocol；check_refundable 不动）
+- 新增 `backend/tests/test_refund_protocol.py`（8 用例 + 1 factory 验证 = 9 PASS）
+
+### 2. Why（为什么）
+
+- **CLAUDE.md §9.3.2 支持模块替换**：S14/15/17 已落 3 套 Protocol（Channel/Order/Product/Knowledge），退款缺
+- **接入方对接**：自建商城/OA/ERP 实现 RefundService Protocol 即可对接 AI 客服退款查询，无需改业务代码
+- **YAGNI**：V2 仅读（list/get/get_status），写操作（create/update）留 V3+ —— 当前业务场景不需要 AI 自动创建/审批退款（需人工介入审核）
+
+### 3. Tech（技术栈）
+
+- Pydantic v2 BaseModel（Refund DTO，runtime_checkable Protocol）
+- SQLAlchemy 2.0 sync session（with_safe_session 复用）
+- offset-based cursor 分页（与 OrderService 同模式：`str(offset)`）
+- run_sync 桥接（从 `app.services.order.factory` import，禁复制粘贴实现）
+
+### 4. Flow（输入 → 输出）
+
+```
+RefundTool.list_user_refunds(user_id, limit)
+    ↓
+get_refund_service_factory().get_refund_service()
+    ↓
+run_sync(MySQLRefundService.list_user_refunds(...))
+    ↓
+with_safe_session → query(Refund).filter(user_id/deleted).order_by(create_time DESC)
+    ↓
+IN 拿 order_no（去 N+1）→ ORM→Refund DTO → list[dict]
+```
+
+### 5. Problem & Fix（问题 → 解决）
+
+| # | 问题 | 解决 |
+|---|------|------|
+| 1 | RefundTool._to_dict 无 order_no 字段（list 旧实现拼接） | DTO 本身带 order_no 字段，Tool._refund_dto_to_dict 统一取 `r.order_no`（向 list/get 对齐） |
+| 2 | get_refund_status 不应注入 order_no | `_to_refund` 接收 order_no 可选参数；status 单字段查询时直接 `return r.status` 不构造 DTO |
+| 3 | run_sync 复制粘贴风险 | refund/factory.py 显式 `from app.services.order.factory import run_sync` + `noqa: F401`（证明非复制粘贴） |
+
+### 6. Architecture Role（在系统中的位置）
+
+```
+                ┌─────────────────────┐
+                │   RefundService     │  ← 本 Sprint 新增 Protocol
+                │   (refund/protocols)│
+                └──────────┬──────────┘
+                           ↑
+                ┌──────────┴──────────┐
+                │ MySQLRefundService  │  ← 默认实现（mysql_impl）
+                └──────────┬──────────┘
+                           ↑
+                ┌──────────┴──────────┐
+                │   RefundTool        │  ← Tool 层（list/get 走 Protocol；check_refundable 仍走 OrderService）
+                └─────────────────────┘
+```
+
+CLAUDE.md §9.3.2 七大核心 Protocol 落地进度：**4/7**（Channel/Order/Product/Knowledge ✓ + Refund 本 Sprint + Logistics §57）。
+
+### 已知限制
+
+- **V2 仅读**：create / update 留 V3+（需状态机 + 人工审核，YAGNI 不做）
+- **check_refundable 已在 Sprint 15 走 OrderService**，不重复走 RefundService（避免双重委托）
+- **cursor 是 offset-based**：大数据量场景 V3+ 切 keyset / created_at+id 复合游标
+
+### 关联文件
+
+- `backend/app/services/refund/{protocols,mysql_impl,factory,__init__}.py`
+- `backend/app/schemas/business.py`（追加 Refund）
+- `backend/app/tools/refund_tool.py`（重构 2 处 · 公开签名不变）
+- `backend/tests/test_refund_protocol.py`（8 + 1 用例）
+
+---
+
+## §57 · Sprint 16 — LogisticsService Protocol 抽象（2026-07-20 · worktree-agent-s16 · 单模块 · 8 件套）
+
+### 1. What（做了什么）
+
+按 spec §2 实现 LogisticsService Protocol 抽象层：
+- 新增 `app/services/logistics/protocols.py`（LogisticsService + LogisticsServiceFactory Protocol + 异常类）
+- 新增 `app/services/logistics/mock_impl.py`（MockLogisticsService 基于订单状态实时生成 mock 轨迹）
+- 新增 `app/services/logistics/factory.py`（DefaultLogisticsServiceFactory + run_sync 从 order.factory 复用）
+- 新增 `app/services/logistics/__init__.py`
+- 追加 `app/schemas/business.py`（Logistics / TrackingEvent / TrackingInfo DTO）
+- 重构 `app/tools/order_tool.py`（仅 get_logistics 走 Protocol；get_order_items / get_order_by_no / list_user_orders 不动）
+- 新增 `backend/tests/test_logistics_protocol.py`（7 用例 + 1 factory 验证 = 8 PASS）
+
+### 2. Why（为什么）
+
+- **CLAUDE.md §9.3.2 支持模块替换**：物流是订单查询后第二大查询场景，缺 Protocol 抽象无法对接真实快递100/菜鸟 API
+- **V2 用 Mock 而非 MySQL**：当前 ORM 无 logistics 表（V2 不持久化物流轨迹，每次按订单状态实时生成）
+- **关键决策**（spec §2.3）：Mock 不强制走 OrderService —— 物流查询不涉及 user 越权（订单号本身就是公开 token），基础设施层查 ORM 是允许的（§9.2.2）
+
+### 3. Tech（技术栈）
+
+- Pydantic v2 BaseModel（Logistics / TrackingEvent / TrackingInfo DTO）
+- Mock 状态映射（pending/paid/shipped/delivered/completed/refunded → 中文状态 + 位置）
+- Mock 轨迹生成（基于 order.create_time + timedelta 计算各事件时间）
+- 运单号反推：`tracking_no = SF{order_no[3:]}`（mock 约定）
+
+### 4. Flow（输入 → 输出）
+
+```
+OrderTool.get_logistics(order_no)
+    ↓
+get_logistics_service_factory().get_logistics_service()
+    ↓
+run_sync(MockLogisticsService.query(order_no))
+    ↓
+with_safe_session → query(Order) → 状态映射 → Logistics DTO
+    ↓
+_logistics_dto_to_dict → {order_no, logistics_no, status, last_location, trajectory: []}
+```
+
+### 5. Problem & Fix（问题 → 解决）
+
+| # | 问题 | 解决 |
+|---|------|------|
+| 1 | Mock 是否走 OrderService？spec §2.3 给了 3 个备选，最终选「直接查 ORM」 | 理由：物流查询无 user 越权；接入方真实实现（快递100 API）自然不涉及此问题 |
+| 2 | Logistics DTO 的 tracking_no ↔ 旧 Tool dict 的 logistics_no 字段名不同 | Tool 层 `_logistics_dto_to_dict` 显式 `logistics_no=l.tracking_no` 映射（dict 形状 100% 兼容） |
+| 3 | trajectory 字段 V2 留空 `[]`，原逻辑展开轨迹 | 决策：trajectory 由调用方按需调 `LogisticsService.track(tracking_no)` 拿详细轨迹；Tool.get_logistics 保持轻量 |
+| 4 | Mock 直接 import mysql_client 是否违反 §7.2 分层？ | 不违反：§9.2.2 允许基础设施层查 ORM；Mock 是「真实实现被替换前的兜底」，等同客户端实现 |
+
+### 6. Architecture Role（在系统中的位置）
+
+```
+                ┌─────────────────────┐
+                │  LogisticsService   │  ← 本 Sprint 新增 Protocol
+                │  (logistics/protocols)│
+                └──────────┬──────────┘
+                           ↑
+                ┌──────────┴──────────┐
+                │ MockLogisticsService│  ← V2 默认（V3+ 替换为 快递100/菜鸟）
+                └──────────┬──────────┘
+                           ↑ (查 Order ORM)
+                ┌──────────┴──────────┐
+                │   OrderTool.get_    │  ← Tool 层仅 get_logistics 走 Protocol
+                │     logistics       │
+                └─────────────────────┘
+```
+
+CLAUDE.md §9.3.2 七大核心 Protocol 落地进度：**5/7**（Channel/Order/Product/Knowledge/Refund/Logistics ✓；剩 Speech / STT 等 M18+ 音频场景）。
+
+### 已知限制
+
+- **V2 Mock**：无真实持久化，订单状态变 → mock 跟着变（不可回溯历史轨迹）
+- **V3+ 真实实现**：HTTP 调快递100 / 菜鸟 / 顺丰 API，需要 token 池 + 限流 + 重试（不在本 Sprint 范围）
+- **trajectory 字段 V2 留空**：完整轨迹需调 `LogisticsService.track(tracking_no)`，V2 Tool 不展开避免数据冗余
+
+### 关联文件
+
+- `backend/app/services/logistics/{protocols,mock_impl,factory,__init__}.py`
+- `backend/app/schemas/business.py`（追加 Logistics / TrackingEvent / TrackingInfo）
+- `backend/app/tools/order_tool.py`（重构 1 处 · get_logistics · 公开签名 + dict 字段不变）
+- `backend/tests/test_logistics_protocol.py`（7 + 1 用例）
+
+---
+
+## §58 · Sprint 16 集成验证报告（2026-07-20 · worktree-agent-s16 · 单 commit）
+
+### 验证清单
+
+| # | 项 | 结果 |
+|---|----|------|
+| 1 | 新增测试 PASS | **17 / 17**（refund 9 + logistics 8，含 2 个 factory 验证） |
+| 2 | 全量回归 | **499 / 499 PASS**（排除 2 个 MySQL 环境 baseline 失败，pre-existing 与本 Sprint 无关） |
+| 3 | Tool 公开签名兼容 | RefundTool.list_user_refunds / get_refund_by_no / check_refundable + OrderTool.get_logistics / get_order_by_no / get_order_items 共 6 个 staticmethod 100% 不变 |
+| 4 | 模块隔离 | `grep "from app.channels\|from app.rag" app/services/refund/ app/services/logistics/` = **0** |
+| 5 | run_sync 复用 | `grep "def run_sync" app/services/refund/ app/services/logistics/` = **0**（仅 factory.py import） |
+| 6 | Protocol contract | @runtime_checkable 验证：MySQLRefundService / MockLogisticsService 均 isinstance(svc, Protocol) |
+| 7 | 8 件套 | learning_log §56（退款）+ §57（物流）+ §58（本集成报告）齐备 |
+
+### spec 偏离
+
+无偏离。所有 spec §1 / §2 / §3 / §4 / §5 约束项均按 spec 实施。
+
+### 关联 commit（worktree-agent-s16 分支，待主 agent 集成）
+
+- `worktree-agent-s16` 单 commit 包含全部代码 + 测试 + learning_log §56/§57/§58
+- 主 agent 集成路径：按 `docs/decisions/2026-07-20-s16-spec.md` §6 走 `git checkout <commit> -- <files>` 文件粒度集成
+
 

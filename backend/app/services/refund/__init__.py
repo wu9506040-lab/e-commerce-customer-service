@@ -1,0 +1,1 @@
+"""services/refund 模块 — RefundService Protocol 抽象（Sprint 16）"""

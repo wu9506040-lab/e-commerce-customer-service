@@ -1,5 +1,5 @@
 """
-订单 Tool - 纯 DB 查询 + 物流 mock
+订单 Tool - 纯 DB 查询 + 物流 mock（走 Protocol）
 
 按 CLAUDE.md §6：tool 层只做 DB 查询 / 外部 API，不调 LLM 不做 RAG。
 按 PROJECT_DESIGN.md §6：所有订单查询必须显式收 user_id，防越权。
@@ -9,9 +9,11 @@ from typing import Optional
 
 from app.clients.mysql_client import with_safe_session
 from app.models.order import Order, OrderItem
+from app.services.logistics.factory import get_logistics_service_factory
 from app.services.order.factory import get_order_service_factory, run_sync
 
 # Sprint 15：订单/商品读取改走 OrderService Protocol（CLAUDE.md §9.3.2）。
+# Sprint 16：物流查询改走 LogisticsService Protocol。
 # 越权防护 / 状态过滤 / 软删过滤等语义下沉到 MySQLOrderService，Tool 层只做 DTO→dict 适配。
 
 
@@ -81,59 +83,28 @@ class OrderTool:
 
         V3+ 替换为真实 API 调用（顺丰/菜鸟）
         """
-        # 先查 order 拿 status
-        with with_safe_session(commit=False) as db:
-            order = db.query(Order).filter(
-                Order.order_no == order_no,
-                Order.deleted == 0,
-            ).first()
-            if not order:
-                return {
-                    "order_no": order_no,
-                    "logistics_no": None,
-                    "status": "订单不存在",
-                    "last_location": None,
-                    "trajectory": [],
-                }
-
-            logistics_no = f"SF{order_no[3:]}"  # 简化：从订单号生成 mock 单号
-            status_map = {
-                "pending":   ("待发货",   "仓库"),
-                "paid":      ("待发货",   "仓库"),
-                "shipped":   ("运输中",   "深圳转运中心"),
-                "delivered": ("已签收",   "北京海淀"),
-                "completed": ("已签收",   "北京海淀"),
-                "refunded":  ("已退回",   "深圳售后部"),
-            }
-            logistics_status, location = status_map.get(order.status, ("未知", "未知"))
-
-            trajectory = []
-            if order.status in ("shipped", "delivered", "completed", "refunded"):
-                trajectory = [
-                    {"time": order.create_time.isoformat(), "event": "已下单"},
-                    {"time": (order.create_time + datetime.timedelta(hours=2)).isoformat(), "event": "已发货", "location": "深圳仓库"},
-                    {"time": (order.create_time + datetime.timedelta(days=1)).isoformat(), "event": "运输中", "location": "广州转运中心"},
-                ]
-            if order.status in ("delivered", "completed"):
-                trajectory.append({
-                    "time": (order.create_time + datetime.timedelta(days=2)).isoformat(),
-                    "event": "已签收",
-                    "location": "北京海淀",
-                })
-            if order.status == "refunded":
-                trajectory.append({
-                    "time": (order.create_time + datetime.timedelta(days=3)).isoformat(),
-                    "event": "已退回",
-                    "location": "深圳售后部",
-                })
-
+        svc = get_logistics_service_factory().get_logistics_service()
+        logistics = run_sync(svc.query(order_no))
+        if logistics is None:
             return {
                 "order_no": order_no,
-                "logistics_no": logistics_no,
-                "status": logistics_status,
-                "last_location": location,
-                "trajectory": trajectory,
+                "logistics_no": None,
+                "status": "订单不存在",
+                "last_location": None,
+                "trajectory": [],
             }
+        return OrderTool._logistics_dto_to_dict(logistics)
+
+    @staticmethod
+    def _logistics_dto_to_dict(l) -> dict:
+        """LogisticsService.Logistics (DTO) → dict（与旧 get_logistics 字段/格式一致）"""
+        return {
+            "order_no": l.order_no,
+            "logistics_no": l.tracking_no,
+            "status": l.status,
+            "last_location": l.last_location,
+            "trajectory": [],  # V2 Tool 层不展开轨迹；如需轨迹，调用方调 LogisticsService.track
+        }
 
     # ---------- 私有 ----------
 
