@@ -1,24 +1,29 @@
 """
-admin_conversations HTTP 接口层（P4-1 · 全局会话审计）
+admin_conversations HTTP 接口层（P4-1 全局会话审计 + P4-3 export/replay）
 
 按 §6 规则：
 - api/ 只负责路由 + 参数解析 + 调 ORM（admin 视角直接走 conversations/message join）
 - 不改 api/conversations.py（用户级接口保持隔离；CLAUDE.md §9.2.2）
 
 RBAC：
-- 全部端点 require_admin（deps.py:62，非 admin 返 403）
+- list / get_messages / export → require_admin（admin 即可）
+- replay → require_super_admin（会调 LLM，成本 + 副作用）
 - 用户 PII（邮箱/手机）必须脱敏（CLAUDE.md §9.5 安全）
 
 性能约束：
-- 强制时间窗 start_date + end_date（无 → 400，防止全表扫）
+- 强制时间窗 start_date + end_date（无 → 400，防止全表扫；list 端点）
 - 优化索引 idx_conversations_status_time (status, last_message_at DESC)
 - cursor 分页：last_message_at ISO8601 + session_id 复合 cursor（避免同时间戳漏页）
+- export 单对话消息上限 1000（防 payload 过大）
 
 实现：
-    GET  /admin/conversations                       全局会话列表（按时间倒序）
-    GET  /admin/conversations/{session_id}/messages 单会话完整消息
+    GET    /admin/conversations                       全局会话列表（按时间倒序）
+    GET    /admin/conversations/{session_id}/messages 单会话完整消息
+    GET    /admin/conversations/{session_id}/export   单对话 export JSON（admin）
+    POST   /admin/conversations/{session_id}/replay   单对话 replay（super_admin only）
 """
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -27,8 +32,9 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import require_admin, require_super_admin
 from app.clients.mysql_client import get_db
+from app.core.config import settings
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
@@ -37,8 +43,14 @@ from app.schemas.admin_conversations import (
     AdminConversationListResponse,
     AdminMessageItem,
     AdminMessagesResponse,
+    ConversationExport,
+    ConversationExportItem,
+    ConversationReplayRequest,
+    ConversationReplayResponse,
+    SystemSnapshot,
 )
 from app.services.audit_service import try_log_action
+from app.services.session_service import ANONYMOUS_USER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -358,4 +370,281 @@ def get_admin_messages(
         has_more=has_more,
         next_cursor=next_cursor,
         limit=limit,
+    )
+
+
+# =============================================================
+# P4-3：单对话 export + replay（admin 审计 / SRE 排障 / CI 回归）
+# =============================================================
+# 单对话消息上限（防 payload 过大 / export 失败）
+EXPORT_MAX_MESSAGES = 1000
+
+
+def _mask_phone(phone: Optional[str]) -> Optional[str]:
+    """手机号脱敏：138****1234（admin 看到可追溯但不暴露全 PII）
+
+    仅中国大陆 11 位手机号脱敏；其他格式（座机 / 海外）原样返回。
+    与 _mask_email 配对：CLAUDE.md §9.5.1 防敏感内容。
+    """
+    if not phone:
+        return phone
+    phone_clean = phone.strip()
+    if len(phone_clean) == 11 and phone_clean.isdigit() and phone_clean.startswith("1"):
+        return f"{phone_clean[:3]}****{phone_clean[-4:]}"
+    return phone
+
+
+def _collect_system_snapshot() -> SystemSnapshot:
+    """捕获「当下」系统快照（用于 export / replay 时记录配置差异）
+
+    关键灰度开关全量捕获，便于 A/B 对比：
+    "同一对话在不同时间跑出不同结果" → diff system_snapshot 找根因。
+    """
+    return SystemSnapshot(
+        model=settings.LLM_MODEL if hasattr(settings, "LLM_MODEL") else "qwen-plus",
+        prompt_version=f"agent.yaml@v{getattr(settings, 'PROMPT_VERSION', '?')}",
+        feature_flags={
+            "ENABLE_CONTEXT_STORE": settings.ENABLE_CONTEXT_STORE,
+            "ENABLE_ORDER_RESOLVER": settings.ENABLE_ORDER_RESOLVER,
+            "ENABLE_BUSINESS_FLOW": settings.ENABLE_BUSINESS_FLOW,
+            "ENABLE_ESCALATION_HANDOFF": settings.ENABLE_ESCALATION_HANDOFF,
+            "ENABLE_AGENT_FC": settings.ENABLE_AGENT_FC,
+            "ENABLE_MULTI_QUERY": settings.ENABLE_MULTI_QUERY,
+            "ENABLE_USER_PROFILE": settings.ENABLE_USER_PROFILE,
+        },
+        captured_at=datetime.utcnow(),
+    )
+
+
+def _build_export_payload(
+    conv: Conversation,
+    messages: list[Message],
+    admin: User,
+    truncated: bool,
+) -> dict:
+    """组装 export payload（dict 形式，路由层包成 ConversationExport）
+
+    字段选择原则：
+    - 完整保留 contexts / scores / token / latency / intent / tool_calls（replay 复现关键）
+    - phone / email 全脱敏（CLAUDE.md §9.5.1）
+    - messages 按 id 升序（与 create_time 升序等价；id 索引更稳）
+    """
+    msg_items = []
+    for idx, m in enumerate(messages):
+        msg_items.append(
+            ConversationExportItem(
+                id=m.id,
+                index=idx,
+                role=m.role,
+                content=m.content,
+                contexts=m.contexts,
+                scores=m.scores,
+                token_count=m.token_count,
+                latency_ms=m.latency_ms,
+                create_time=m.create_time,
+            )
+        )
+
+    return {
+        "schema_version": "1.0",
+        "exported_at": datetime.utcnow(),
+        "exported_by": admin.username,
+        "conversation": {
+            "session_id": conv.session_id,
+            "user_id": conv.user_id,
+            "title": conv.title,
+            "first_query": conv.first_query,
+            "status": conv.status,
+            "message_count": conv.message_count,
+            "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
+            "create_time": conv.create_time.isoformat() if conv.create_time else None,
+            "truncated": truncated,
+        },
+        "messages": msg_items,
+        "system_snapshot": _collect_system_snapshot(),
+    }
+
+
+# =============================================================
+# GET /admin/conversations/{session_id}/export - 单对话 export JSON
+# =============================================================
+@router.get(
+    "/{session_id}/export",
+    response_model=ConversationExport,
+    summary="[admin] 单对话 export JSON",
+    description=(
+        "返回某 session 的完整 export JSON（含消息 + RAG 召回原文 + 系统快照）。\n\n"
+        "用途：\n"
+        "- admin 审计：抽样 review 对话质量\n"
+        "- SRE 排障：监控告警后拉异常对话\n"
+        "- CI 回归 fixture：把历史对话当自动回归样本\n\n"
+        "**消息上限 1000**（超出截断 + truncated=true 标记）。\n"
+        "需要 admin 角色（403 if not）。"
+    ),
+)
+def export_conversation(
+    request: Request,
+    session_id: str = Path(..., min_length=1, max_length=64, description="会话 ID"),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """admin 单对话 export（只读 · 不调 LLM · 不写 DB）"""
+    # 1. 取会话（admin 全局可读）
+    conv = db.execute(
+        select(Conversation).where(
+            Conversation.session_id == session_id,
+            Conversation.deleted == 0,
+        )
+    ).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已删除")
+
+    # 2. 拉消息（id 升序 + 上限 +1 检测截断）
+    msgs = db.execute(
+        select(Message).where(
+            Message.session_id == session_id,
+            Message.deleted == 0,
+        ).order_by(Message.id.asc()).limit(EXPORT_MAX_MESSAGES + 1)
+    ).scalars().all()
+
+    truncated = len(msgs) > EXPORT_MAX_MESSAGES
+    msgs = msgs[:EXPORT_MAX_MESSAGES]
+
+    # 3. 组装 payload
+    payload = _build_export_payload(
+        conv=conv,
+        messages=msgs,
+        admin=admin,
+        truncated=truncated,
+    )
+
+    # 4. audit 上报
+    try_log_action(
+        user=admin,
+        action="admin_export_conversation",
+        target_type="conversation",
+        target_id=session_id,
+        ip=_client_ip(request),
+        user_agent=_user_agent(request),
+        detail={"msg_count": len(msgs), "truncated": truncated},
+    )
+
+    logger.info(
+        f"admin_export_conversation: admin={admin.username}(id={admin.id}) "
+        f"session={session_id[:12]}... msgs={len(msgs)} truncated={truncated}"
+    )
+
+    return ConversationExport(**payload)
+
+
+# =============================================================
+# POST /admin/conversations/{session_id}/replay - 单对话 replay（super_admin only）
+# =============================================================
+@router.post(
+    "/{session_id}/replay",
+    response_model=ConversationReplayResponse,
+    summary="[super_admin] 单对话 replay",
+    description=(
+        "调 Synthesizer.run_stream 跑用户问题，**不写 conversations/messages**。\n\n"
+        "用途：\n"
+        "- CI 回归：把 export JSON 当 fixture 自动跑\n"
+        "- A/B 对比：用同一 query 在 V9 / V10 系统下 diff 结果\n\n"
+        "安全护栏：\n"
+        "- **super_admin only**（普通 admin 不可触发；避免 LLM 成本失控）\n"
+        "- sandbox user_id = 0（不维护 profile，不查真实订单）\n"
+        "- 不传 session_id（不与真实会话关联）\n"
+        "- 不写 conversations / messages / context（仅 metrics）"
+    ),
+)
+def replay_conversation(
+    request: Request,
+    session_id: str = Path(..., min_length=1, max_length=64, description="会话 ID（仅用于 audit + 路由一致性，不参与 replay 业务）"),
+    body: ConversationReplayRequest = ...,
+    super_admin: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """super_admin 单对话 replay（沙箱化 · 不持久化）
+
+    复用 FastAPI Depends(get_db) 标准依赖注入（与 export 端点一致），
+    避免自己写 db session generator 破坏测试 fixture。
+    """
+    # 0. 延迟导入避免循环依赖（orchestrator 内部可能反向引用 admin 模块）
+    from app.services.chat.orchestrator import Synthesizer
+
+    # 1. 验证会话存在（仅 audit / 404 路径，复用 export 查询）
+    conv = db.execute(
+        select(Conversation).where(
+            Conversation.session_id == session_id,
+            Conversation.deleted == 0,
+        )
+    ).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已删除")
+
+    # 2. 跑 run_stream（sandbox 化：user_id=0 + 不传 session_id）
+    start = time.monotonic()
+    answer = ""
+    intent = None
+    entities = None
+    try:
+        for event_type, data in Synthesizer.run_stream(
+            query=body.query,
+            user_id=ANONYMOUS_USER_ID,  # sandbox：跳过 profile / 不查真实订单
+            history=body.history,
+            sku=body.sku,
+            order_no=body.order_no,
+            session_id=None,  # 不与真实会话关联
+        ):
+            if event_type == "done":
+                answer = data.get("answer", "") if isinstance(data, dict) else ""
+            elif event_type == "meta":
+                if isinstance(data, dict):
+                    intent = data.get("intent")
+                    entities = data.get("entities")
+    except Exception as e:
+        logger.exception(f"admin_replay_conversation 失败: sid={session_id}, {e}")
+        try_log_action(
+            user=super_admin,
+            action="admin_replay_conversation",
+            target_type="conversation",
+            target_id=session_id,
+            ip=_client_ip(request),
+            user_agent=_user_agent(request),
+            detail={"query": body.query[:200], "history_len": len(body.history) if body.history else 0},
+            result="fail",
+            error_msg=str(e)[:500],
+        )
+        raise HTTPException(status_code=500, detail=f"replay 失败: {str(e)[:200]}")
+
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    # 3. audit 上报（best-effort）
+    try_log_action(
+        user=super_admin,
+        action="admin_replay_conversation",
+        target_type="conversation",
+        target_id=session_id,
+        ip=_client_ip(request),
+        user_agent=_user_agent(request),
+        detail={
+            "query": body.query[:200],
+            "history_len": len(body.history) if body.history else 0,
+            "intent": intent,
+            "latency_ms": latency_ms,
+        },
+    )
+
+    logger.info(
+        f"admin_replay_conversation: super_admin={super_admin.username}(id={super_admin.id}) "
+        f"sid={session_id[:12]}... intent={intent} latency_ms={latency_ms}"
+    )
+
+    return ConversationReplayResponse(
+        answer=answer,
+        intent=intent,
+        entities=entities,
+        latency_ms=latency_ms,
+        replayed_at=datetime.utcnow(),
+        replayed_by=super_admin.username,
+        system_snapshot=_collect_system_snapshot(),
     )
