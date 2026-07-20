@@ -103,3 +103,35 @@ class TrackingInfo(BaseModel):
     carrier: str
     status: str
     events: List[TrackingEvent] = Field(default_factory=list)
+
+
+# =============================================================
+# Sprint 18 场景组 A · AfterSalesRuleService DTO
+# （CLAUDE.md §9.3.1 五件套之「输入/输出模型」；DTO 不暴露 ORM）
+# =============================================================
+class RefundReasonAdvice(BaseModel):
+    """退款原因填写指导"""
+    order_no: str
+    reason_category: str
+    suggested_reason_text: str          # 建议填写的具体文字
+    success_rate_hint: str              # "高" / "中" / "低"（基于 reason_category）
+    evidence_required: List[str]        # 需要的凭证（照片/视频/聊天截图）
+    additional_tips: List[str]          # 额外提示（如"不要写'不想要了'"）
+
+
+class ShippingInsuranceInfo(BaseModel):
+    """运费险规则"""
+    order_no: str
+    insured: bool                       # 该订单是否购买运费险
+    coverage_amount: Optional[float] = None     # 赔付额度（最高 X 元）
+    eligible: bool                      # 当前情况是否符合理赔条件
+    estimated_payout_days: Optional[int] = None  # 预计到账天数
+    notes: List[str]                    # 注意事项
+
+
+class RefundTypeAdvice(BaseModel):
+    """仅退款 vs 退货退款建议"""
+    order_no: str
+    recommended_type: str               # "refund_only" / "return_and_refund"
+    reasoning: str                      # 推荐理由（中文）
+    conditions: List[str]               # 适用条件列表
