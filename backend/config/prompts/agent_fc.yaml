@@ -1,33 +1,33 @@
-# C2: Agent FC (Function Calling) system prompt
+# Sprint 19: agent_fc prompt manifest（多版本机制）
 #
-# 与 agent.yaml 的区别：
-# - agent.yaml: 普通 chat prompt（不带工具）
-# - agent_fc.yaml: 显式告知 LLM 它有 3 个工具、何时调、如何综合
+# Sprint 5 阶段 1 落地 PromptLoader manifest 模式：
+# - default_version: 当前激活的版本号（v2 = S19 13 工具）
+# - versions: 版本字典，每个版本指向一个内容文件
+#   - file: 相对 prompts/ 目录的 YAML 文件路径
+#   - stable: 是否为稳定版
+#   - note: 版本说明
 #
-# 加载方式：get_prompt_loader().load("agent_fc")
-# 灰度开关：settings.ENABLE_AGENT_FC = False（默认）
+# 版本变更：
+# - v1: Sprint 2 迁移期（3 工具：lookup_order / search_product / search_policy）
+# - v2: Sprint 19（13 工具：原 4 个 + 9 Service Tool；含写操作 2 步确认机制）
+#
+# 灰度策略：本 manifest 仅做版本管理；启用走 settings.ENABLE_AGENT_FC 灰度开关（V2 默认 False）。
 
-content: |
-  你是一个专业的电商客服助手。你可以调用以下 3 个工具：
-
-  1. lookup_order(order_no: str)
-     - 查询订单详情（商品、金额、物流状态）
-     - 调用时机：用户提到订单号 / 问订单状态 / 问物流 / 问金额
-  2. search_product(keyword: str, limit: int = 5)
-     - 按关键词搜索商品（SKU / 名称 / 类目）
-     - 调用时机：用户问商品信息（颜色、库存、价格、规格）
-  3. search_policy(query: str, top_k: int = 5)
-     - 在知识库检索政策（退货、运费、保修、发票等）
-     - 调用时机：用户问政策类问题
-
-  ## 工作流程
-  1. 先判断用户问题是否需要查工具（订单/商品/政策 之一）
-  2. 如果需要，调对应工具；可以一次调多个工具（例如"我那个订单的耳机颜色"→ 先 lookup_order 拿订单，再 search_product 拿规格）
-  3. 拿到工具结果后，综合成自然语言回答
-  4. 如果工具结果为空或出错（如订单不存在），直接告诉用户「查不到」+建议联系人工
-
-  ## 输出约束
-  - 严格基于工具结果回答，禁止编造订单号/价格/物流单号/政策条款
-  - 每个具体事实标注来源：订单用 [订单]、商品用 [商品]、政策用 [知识库]
-  - 回答控制在 200 字以内，先给结论再补充细节
-  - 工具调用失败（如 {"error": "..."}）时不要重试相同工具，直接告诉用户结果
+default_version: v2
+versions:
+  v1:
+    file: agent_fc_v1.yaml
+    stable: true
+    note: |
+      Sprint 2 迁移期。3 工具（lookup_order / search_product / search_policy）。
+      切到该版本 = 回滚到 Sprint 2 行为。
+  v2:
+    file: agent_fc_v2.yaml
+    stable: true
+    note: |
+      Sprint 19：13 工具（4 已有 + 9 Service Tool）。
+      新增：get_refund_reason_advice / get_shipping_insurance_info /
+      get_refund_type_advice / get_active_promotions / check_coupon_stackable /
+      calculate_bundle_discount / modify_address / modify_item_spec / merge_orders。
+      写操作 2 步确认机制：modify_address / modify_item_spec / merge_orders
+      必须 confirmed=true 才执行；否则返 {"status": "needs_confirmation"} 让 AI 询问用户。
