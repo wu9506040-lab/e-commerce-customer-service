@@ -1,0 +1,44 @@
+# 发票业务规则 — Sprint 20 通用客服中台（spec §4.3）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("invoice")
+# 启动期一次加载；改完需重启服务。
+#
+# 1 个场景：发票申请资格检查（满额 + 普通 vs 电子 vs 公司专票）。
+# V2 范围：仅资格检查 + 流程说明，不实际开具发票。
+
+# =============================================================
+# 发票规则
+# minimum_amount: 订单最低开票金额（元）
+# invoice_type_requirements: 各类型发票要求
+#   title_required: 是否需要填抬头
+#   tax_id_required: 是否需要填税号
+#   shipping_fee_borne_by: 邮费由谁承担 (buyer/seller/none)
+#   processing_days: 处理时限（天）
+#   additional_requirements: 附加要求（如公司专票需要资质证明）
+# notes: 通用说明
+# =============================================================
+INVOICE_RULES:
+  minimum_amount: 50.0
+  invoice_type_requirements:
+    personal_paper:
+      title_required: false
+      tax_id_required: false
+      shipping_fee_borne_by: "buyer"
+      processing_days: 7
+    personal_electronic:
+      title_required: false
+      tax_id_required: false
+      shipping_fee_borne_by: "none"
+      processing_days: 1
+    company_special:
+      title_required: true
+      tax_id_required: true
+      shipping_fee_borne_by: "buyer"
+      processing_days: 10
+      additional_requirements:
+        - "公司资质证明"
+        - "开户许可证"
+  notes:
+    - "发票申请需在订单完成后 30 天内"
+    - "纸质发票邮费由买家承担"
+    - "电子发票发送至用户邮箱"
