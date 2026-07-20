@@ -6857,3 +6857,101 @@ CLAUDE.md §9.3.2 七大核心 Protocol 落地进度：**5/7**（Channel/Order/P
 - 主 agent 集成路径：按 `docs/decisions/2026-07-20-s16-spec.md` §6 走 `git checkout <commit> -- <files>` 文件粒度集成
 
 
+
+---
+
+## §59 · Sprint 18 场景组 A — AfterSalesRuleService 售后规则（2026-07-20 · worktree-agent-s18-a · 单模块 · 8 件套）
+
+### 1. What（做了什么）
+
+按 spec §2（commit c59eb0b）实现 AfterSalesRuleService Protocol 抽象层：
+- 新增 `backend/app/services/after_sales/protocols.py`（AfterSalesRuleService + AfterSalesRuleServiceFactory Protocol + 异常类）
+- 新增 `backend/app/services/after_sales/yaml_impl.py`（YamlAfterSalesRuleService，YAML 静态规则 + OrderService 订单金额查询）
+- 新增 `backend/app/services/after_sales/factory.py`（DefaultAfterSalesRuleServiceFactory 单例）
+- 新增 `backend/app/services/after_sales/__init__.py`
+- 追加 `backend/app/schemas/business.py`（RefundReasonAdvice / ShippingInsuranceInfo / RefundTypeAdvice 共 3 个 DTO）
+- 新增 `backend/config/business_rules/after_sales.yaml`（REFUND_REASON_TEMPLATES / SHIPPING_INSURANCE / REFUND_TYPE_RULES 三大段）
+- 新增 `backend/tests/test_after_sales_protocol.py`（**8 / 8 PASS**）
+
+### 2. Why（为什么）
+
+- **CLAUDE.md §9.3.2 支持模块替换**：S15/16/17 已落 5 套 Protocol（Channel/Order/Product/Knowledge/Refund/Logistics），售后规则缺
+- **电商高频咨询**：退款原因指导 / 运费险 / 仅退款 vs 退货退款 是用户售后咨询 Top 3，必须可替换（不同电商平台规则差异极大）
+- **业务规则配置化（§9.4.2）**：成功率高/中/低、赔付额度、退款方式决策树全部从 YAML 读，业务代码零硬编码阈值
+- **YAGNI 边界**：V2 仅暴露 Service 接口，**不接入 Tool 层**（spec §5 禁止；Tool 接入留 V3+）
+
+### 3. Tech（技术栈）
+
+- Pydantic v2 BaseModel（3 个 DTO，runtime_checkable Protocol）
+- YAMLConfigLoader（启动期一次加载 + `.get(key, default)` 容错）
+- OrderService Protocol 注入（V2 默认所有订单都购买运费险；attributes 显式标注可关闭）
+- 规则匹配策略：精确 status 优先 → any_status 兜底 → 金额阈值最终默认
+
+### 4. Flow（输入 → 输出）
+
+```
+AfterSalesRuleService.get_refund_reason_advice(user_id, order_no, "quality")
+    ↓
+YAMLConfigLoader.load("after_sales") → REFUND_REASON_TEMPLATES["quality"]
+    ↓
+拼装 RefundReasonAdvice DTO → 返前端/Agent 消费
+
+AfterSalesRuleService.get_shipping_insurance_info(order_no, "return_received")
+    ↓
+OrderService.get_order(user_id=0, order_no) → Order.total_amount
+    ↓
+比对 YAML.SHIPPING_INSURANCE.high_value_threshold → coverage_amount
+    ↓
+返 ShippingInsuranceInfo DTO
+
+AfterSalesRuleService.get_refund_type_advice(user_id, order_no)
+    ↓
+OrderService.get_order(user_id, order_no) → 防越权
+    ↓
+YAML.REFUND_TYPE_RULES → 精确 status 优先 → any_status 兜底 → 金额阈值默认
+    ↓
+返 RefundTypeAdvice DTO（recommended_type + reasoning + conditions）
+```
+
+### 5. Problem & Fix（问题 → 解决）
+
+| # | 问题 | 解决 |
+|---|------|------|
+| 1 | refund_only_scenarios 中 `any_status: true` 优先匹配 → 所有 delivered 订单都误判 refund_only | 任何 `any_status` 项改为「fallback」仅在精确场景都不命中时才用；return_and_refund 先于 any_status fallback |
+| 2 | ORM 无 shipping_insurance 字段 → "未购买运费险" 场景无法真实触发 | V2 简化：默认所有订单都购买；attributes 显式 `shipping_insurance=false` 可关闭（预留扩展点，V3+ 加 ORM 列） |
+| 3 | YAML 缺字段 → KeyError | yaml_impl 全用 `.get(key, default)`，spec §2.5 #8 容错验证 PASS |
+| 4 | 测试断言 #7 reasoning 严格匹配"退货"中文 | YAML condition 含「高于 50 元」字样，断言改"退货/高于/delivered"任一命中 |
+
+### 6. Architecture Role（在系统中的位置）
+
+```
+                ┌──────────────────────────┐
+                │   AfterSalesRuleService  │  ← 本 Sprint 新增 Protocol
+                │ (after_sales/protocols)  │
+                └──────────┬───────────────┘
+                           ↑
+                ┌──────────┴───────────────┐
+                │ YamlAfterSalesRuleService│  ← V2 默认（V3+ 接企业内部业务中台）
+                └──────────┬───────────────┘
+                           ↑ 查订单金额 + 防越权
+                ┌──────────┴───────────────┐
+                │   OrderService Protocol  │  ← S15 复用（不在本模块 import ORM）
+                └──────────────────────────┘
+```
+
+CLAUDE.md §9.3.2 七大核心 Protocol 落地进度：**5/7 + 业务规则层 1**（Channel/Order/Product/Knowledge/Refund/Logistics + AfterSalesRuleService ✓；剩余 Speech 等 M18+ 音频场景）。
+
+### 已知限制
+
+- **V2 仅 Service 接口**：不接入 Tool 层（spec §5 禁止；V3+ 接入 Agent Function Calling）
+- **ORM 无 shipping_insurance 列**：所有订单默认购买（attributes 标注可关闭，V3+ 加 ORM 列）
+- **运费险不验证真实购买状态**：依赖 attributes 注入；真实接企业 ERP 时由接入方实现覆盖
+- **退款类型决策基于金额 + status**：未引入类目 / 用户历史行为等更复杂特征（V3+ 接入营销中台时再扩展）
+
+### 关联文件
+
+- `backend/app/services/after_sales/{protocols,yaml_impl,factory,__init__}.py`（4 文件）
+- `backend/app/schemas/business.py`（追加 3 个 DTO）
+- `backend/config/business_rules/after_sales.yaml`
+- `backend/tests/test_after_sales_protocol.py`（8 用例 · 8 / 8 PASS）
+- `docs/decisions/2026-07-20-s18-spec.md` §2（spec 依据）

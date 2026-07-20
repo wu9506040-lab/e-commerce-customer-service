@@ -1,0 +1,101 @@
+# 售后规则业务规则 — Sprint 18 场景组 A（spec §2.4）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("after_sales")
+# 启动期一次加载；改完需重启服务（roadmap §3.5）
+#
+# ⚠️ 单一真相源：3 个模块共享同一份 YAML
+#   - app/services/after_sales/yaml_impl.py（退款原因指导 / 运费险 / 仅退款vs退货退款）
+#
+# 风格：所有 key 静态枚举，缺失时 yaml_impl 用 .get() 取默认值（不抛 KeyError），
+#       符合 spec §2.5 #8「缺字段返默认值」。
+
+# =============================================================
+# 退款原因模板（5 类 + other 兜底）
+# success_rate: 高 / 中 / 低 — 基于 reason_category 历史通过率
+# =============================================================
+REFUND_REASON_TEMPLATES:
+  quality:
+    suggested_text: "商品存在质量问题（具体：XXX），请看附件照片/视频"
+    success_rate: "高"
+    evidence_required:
+      - "商品问题照片"
+      - "商品问题视频"
+      - "聊天记录截图（可选）"
+    additional_tips:
+      - "拍照时包含商品整体 + 问题特写"
+      - "视频带上时间戳 + 声音说明"
+      - "不要使用'与描述不符'，直接写'质量问题'"
+  no_reason:
+    suggested_text: "不想要了"
+    success_rate: "中"
+    evidence_required: []
+    additional_tips:
+      - "7 天无理由退货需要在签收后 7 天内申请"
+      - "需保证商品不影响二次销售"
+      - "建议优先选择'拍多/不想要'，避免'质量问题'"
+  size:
+    suggested_text: "尺码不合适，需要换货或退款"
+    success_rate: "中"
+    evidence_required:
+      - "尺码对比图（可选）"
+    additional_tips:
+      - "如商品有质量问题建议优先选质量问题"
+  not_as_described:
+    suggested_text: "商品与店铺描述不符（具体差异：XXX）"
+    success_rate: "中"
+    evidence_required:
+      - "商品实拍图"
+      - "店铺描述截图"
+    additional_tips: []
+  late:
+    suggested_text: "快递时效超时（承诺 X 天，实际 Y 天）"
+    success_rate: "低"
+    evidence_required:
+      - "快递物流截图"
+    additional_tips:
+      - "建议先联系卖家延长收货时间"
+      - "超 7 天仍未到可申请仅退款"
+  other:
+    suggested_text: "其他原因"
+    success_rate: "低"
+    evidence_required: []
+    additional_tips:
+      - "建议尽量选具体原因，成功率更高"
+
+# =============================================================
+# 运费险规则
+# default_coverage: 默认最高赔付 25 元
+# high_value_threshold: 订单金额超过此值，按 high_value_coverage 赔付
+# eligible_statuses: 哪些退货阶段可触发理赔
+# estimated_payout_days: 预计到账天数
+# =============================================================
+SHIPPING_INSURANCE:
+  default_coverage: 25.0
+  high_value_threshold: 200.0
+  high_value_coverage: 50.0
+  eligible_statuses:
+    - "return_received"
+    - "refunded"
+  estimated_payout_days: 3
+
+# =============================================================
+# 仅退款 vs 退货退款推荐规则
+# 匹配优先级：先按 order_status + condition 精确匹配；否则返默认
+# 默认值：refund_only_scenarios 命中 → refund_only；
+#        return_and_refund_scenarios 命中 → return_and_refund；
+#        否则按 LOW_VALUE_THRESHOLD 决定
+# =============================================================
+REFUND_TYPE_RULES:
+  low_value_threshold: 50.0   # 商品价值低于此值默认推荐仅退款
+  refund_only_scenarios:
+    - order_status: "shipped"
+      condition: "快递一直不更新"
+    - order_status: "delivered"
+      condition: "商品价值低于 50 元"
+    - any_status: true
+      condition: "卖家责任（发错货/漏发）"
+  return_and_refund_scenarios:
+    - order_status: "delivered"
+      condition: "商品价值高于 50 元 + 不想要/尺码问题"
+    - order_status: "delivered"
+      condition: "质量问题"
