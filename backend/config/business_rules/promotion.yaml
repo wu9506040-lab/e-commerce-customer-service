@@ -1,0 +1,103 @@
+# 售前优惠活动规则（Sprint 18 场景组 B）
+#
+# 加载入口：app.services.config_loader.get_config_loader().load("promotion")
+# 启动期一次加载；改完需重启服务（roadmap §3.5）
+#
+# ⚠️ 业务规则单一真相源：
+#   - 优惠活动（promotions）：双 11 大促样例，含时间窗 / 适用店铺 / 适用类目
+#   - 优惠券叠加规则（coupon_rules）：同类型互斥 + 单订单上限 + 冲突矩阵
+#   - 跨店满减规则（bundle_rules）：三档阶梯 + 凑单建议生成依据
+
+# =============================================================
+# 1. 优惠活动（promotions）
+# =============================================================
+promotions:
+  # 双 11 全店满减（多档）
+  - promotion_id: "PROMO_2026_D11_001"
+    name: "双 11 满 300 减 50"
+    type: "full_reduction"
+    threshold: 300.0
+    benefit: 50.0
+    applicable_stores: []              # 空 = 全店通用
+    applicable_categories: []          # 空 = 全部类目
+    start_time: "2026-11-01T00:00:00"
+    end_time: "2026-11-11T23:59:59"
+    stackable: true
+
+  - promotion_id: "PROMO_2026_D11_002"
+    name: "双 11 满 500 减 100"
+    type: "full_reduction"
+    threshold: 500.0
+    benefit: 100.0
+    applicable_stores: []
+    applicable_categories: []
+    start_time: "2026-11-01T00:00:00"
+    end_time: "2026-11-11T23:59:59"
+    stackable: false                   # 满 500 档与满 300 档互斥
+
+  # 类目专属折扣（仅美妆类目 9 折）
+  - promotion_id: "PROMO_2026_BEAUTY_001"
+    name: "美妆类目 9 折"
+    type: "discount"
+    threshold: 0.0
+    benefit: 0.9                       # 9 折
+    applicable_stores: []
+    applicable_categories: ["美妆", "个护"]
+    start_time: "2026-07-01T00:00:00"
+    end_time: "2026-12-31T23:59:59"
+    stackable: true
+
+  # 店铺专属（仅 storeA）
+  - promotion_id: "PROMO_2026_STOREA_001"
+    name: "storeA 满 200 减 30"
+    type: "full_reduction"
+    threshold: 200.0
+    benefit: 30.0
+    applicable_stores: ["storeA"]
+    applicable_categories: []
+    start_time: "2026-07-01T00:00:00"
+    end_time: "2026-09-30T23:59:59"
+    stackable: true
+
+  # 已过期（用于测试时间窗过滤）
+  - promotion_id: "PROMO_2025_EXPIRED"
+    name: "去年双 11 满 200 减 30"
+    type: "full_reduction"
+    threshold: 200.0
+    benefit: 30.0
+    applicable_stores: []
+    applicable_categories: []
+    start_time: "2025-11-01T00:00:00"
+    end_time: "2025-11-11T23:59:59"
+    stackable: true
+
+
+# =============================================================
+# 2. 优惠券叠加规则（coupon_rules）
+# =============================================================
+coupon_rules:
+  # V2 简化的券定义表（coupon_id → 类型），让 check_coupon_stackable 能基于规则判定冲突
+  # 真实场景接券系统时，coupon_definitions 替换为券系统的查询调用
+  coupon_definitions:
+    - {coupon_id: "C_FULL_50",  type: "full_reduction", name: "满 100 减 50"}
+    - {coupon_id: "C_FULL_30",  type: "full_reduction", name: "满 50 减 30"}
+    - {coupon_id: "C_DISC_9",   type: "discount",       name: "全场 9 折"}
+    - {coupon_id: "C_DISC_85",  type: "discount",       name: "全场 8.5 折"}
+    - {coupon_id: "C_GIFT_X",   type: "gift",           name: "赠品券"}
+
+  same_type_mutual_exclusive: true     # 同类型券（如 2 张满减券）不可叠加
+  max_stack_per_order: 3              # 单订单最多叠加 3 张
+  conflict_rules:
+    - {a_type: "full_reduction", b_type: "full_reduction", reason: "同类型满减券不可叠加"}
+    - {a_type: "discount", b_type: "discount", reason: "同类型折扣券不可叠加"}
+    - {a_type: "full_reduction", b_type: "discount", reason: "满减券与折扣券不可叠加（互斥规则）"}
+
+
+# =============================================================
+# 3. 跨店满减规则（bundle_rules）
+# =============================================================
+bundle_rules:
+  tiers:
+    - {threshold: 200.0, benefit: 20.0, name: "跨店满 200 减 20"}
+    - {threshold: 400.0, benefit: 50.0, name: "跨店满 400 减 50"}
+    - {threshold: 800.0, benefit: 120.0, name: "跨店满 800 减 120"}
