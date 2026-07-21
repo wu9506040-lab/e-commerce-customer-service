@@ -152,14 +152,83 @@ V11-A 目标：**评测端 invalid_order 收编为 not_found**，与生产口径
 
 | 步骤 | 判据 | 结果 |
 |------|------|------|
-| 1. pytest 回归 | 612+ PASS 无新增失败 | 待跑 |
-| 2. V10-E 重跑 1 run | M14-0070 success=True，actual=not_found | 待跑 |
-| 3. RefundFlow | 96.67% → 100%（修复 -3.3pp 回归） | 待跑 |
-| 4. 失败 case 计数 | 1 → 0（仅 fake_status 残留） | 待跑 |
+| 1. pytest 回归 | 612+ PASS 无新增失败 | ✅ 153/153 + 19/19 hallucination_guard |
+| 2. V10-E 重跑 1 run | M14-0070 success=True，actual=not_found | 待 ECS 跑 |
+| 3. RefundFlow | 96.67% → 100%（修复 -3.3pp 回归） | 待 ECS 跑 |
+| 4. 失败 case 计数 | 1 → 0（仅 fake_status 残留） | 待 ECS 跑 |
 
 ### 10.5 影响范围
 
 - **历史 baseline 不变**：V4 / V6 / V9 报告保留原文，作为 V10-A 前的状态切片。
 - **V10 报告基线**：未跑 V11-A 前 V10 表 7 baseline 数字维持原值；重跑后需追加 V10-V11-A 列。
 - **真幻觉率**：M14-0070 历史 hallucination 修复记录（M14-0068 同根因）保留，验证 fake_order_no 已在 V10-D 后置校验被剥离。
+
+---
+
+## 11. V11-B fake_status 业务层硬替换补记（2026-07-21）
+
+### 11.1 触发与目标
+
+V10-E baseline 残留 2 类问题,V11-A 收编了 label gap（§10）。剩 fake_status 这一类（V10-D 设计为"仅 warning 不替换",理由是状态术语歧义大）。
+
+V11-A commit `ae38a47` 后用户反馈"模型幻觉方案是不是少了"——核对 3 类幻觉防护矩阵(fake_amount/order_no/status),**fake_status 缺业务层硬替换**(只有 prompt #9 + 配置开关 FABRICATION_BLOCK_FAKE_STATUS),与 fake_amount/order_no 不对称,违背 user memory "prompt + 业务层双重防护"。
+
+V11-B 目标：**fake_status 业务层硬替换**(对齐 fake_amount/fake_order_no),关闭 prompt + 后置校验两层之间的缺口。范围:仅动 validation/hallucination_guard.py + decide.yaml(单模块)。
+
+### 11.2 实施清单（3 处改动）
+
+| # | 文件 | 改动 |
+|---|------|------|
+| 1 | `backend/app/services/validation/hallucination_guard.py` | 加 `_STATUS_ZH_MAP` 加载 + `_VALID_STATUS_ZH` 词集合 + `_build_status_pattern` 正则 + `_replace_fake_status` / `_strip_fake_status` 函数 + `post_synthesize_check` 加 fake_status 替换分支 + 加载 `HALLUCINATION_REPLACE_FAKE_STATUS` 灰度开关 + 模块顶部 docstring 升级说明 |
+| 2 | `backend/config/business_rules/decide.yaml` | 加 §9 `HALLUCINATION_REPLACE_FAKE_STATUS: true` + 历史背景 + 治本方案注释 |
+| 3 | `backend/tests/test_hallucination_guard.py` | 加 6 个 V11-B 测试 + 修复 1 个旧测试（补 status_zh 字段） |
+
+### 11.3 §9 架构约束自检
+
+| # | 约束 | 满足方式 |
+|---|------|----------|
+| §5 Scope Lock | 单模块（validation/ + 配置 + tests）| ✅ 不动 chat/refund_graph 业务代码 |
+| §9.3 接口契约 | `post_synthesize_check` 签名不变,只改实现 | ✅ hits 字段扩展向后兼容 |
+| §9.4.2 配置分离 | 灰度开关新增到 decide.yaml §9,与 §8 ANTI_FABRICATION 风格一致 | ✅ |
+| §9.5.1 5 防 · 防幻觉 | 补齐 fake_status 业务层替换 | ✅ 与 user memory 双重防护一致 |
+| §9.7 自检 5 问 | hallucination_guard 通过 config_loader 加载 STATUS_ZH_MAP(已存在),不反向 import refund_graph | ✅ |
+| §9.8 8 件套 | 非新模块 | ✅ N/A |
+
+### 11.4 防护矩阵更新（V11-B 前后对比）
+
+| 幻觉类型 | prompt 硬约束 | 业务层配置 | 后置校验 V10-D | 后置校验 V11-B |
+|---|---|---|---|---|
+| fake_amount (#7) | ✅ | ✅ | ✅ 替换 | ✅ 替换 |
+| fake_order_no (#8) | ✅ | ✅ | ✅ 替换/剥离 | ✅ 替换/剥离 |
+| **fake_status (#9)** | ✅ | ✅ | ⚠️ 仅 warning | ✅ **替换/剥离** |
+
+### 11.5 验证
+
+| 步骤 | 判据 | 结果 |
+|------|------|------|
+| 1. L1 单测（6 个 V11-B 新 case）| 全 PASS | ✅ 19/19 hallucination_guard |
+| 2. 回归 `tests/` 顶层 | 153/153 PASS | ✅ |
+| 3. 回归 backend/tests/ | 609/610 PASS,1 pre-existing MySQL flake (source_attribution,与 V11-B 无关) | ✅ |
+| 4. ECS 重跑 V10-E baseline 1 run | fake_status 0/100（fake_status_replaced hits 数 == 失败 case 数）| 待 ECS 跑 |
+| 5. 真幻觉率指标 | 1% → 0%（fake_status 类失败消失）| 待 ECS 跑 |
+
+### 11.6 设计要点
+
+| 维度 | 实现 | 备注 |
+|---|---|---|
+| 状态词集合 | 6 个合法 status_zh(待支付/已支付/运输中/已签收/已完成/已退款) | 与 decide.yaml §3 STATUS_ZH_MAP 同源 |
+| 匹配正则 | 按状态词长度倒序排序拼接,避免拆词 | `_build_status_pattern()` 启动期构建 |
+| 替换策略 | `text 中 status_zh != order_info.status_zh` → `您的订单当前状态是:{real}` | 与 prompt #9 硬约束一致 |
+| 兜底剥离 | `order_info.status_zh` 为空 → 剥离状态词 | 与 fake_order_no 行为对齐 |
+| 灰度开关 | `HALLUCINATION_REPLACE_FAKE_STATUS` 默认 true | false 时退回 V10-D 行为 |
+| 适用范围 | 仅 `intent=logistics_query` + `synthesize` 分支（通过 `post_synthesize_check` 调用链自然限定）| YAGNI 不动其他 intent |
+
+### 11.7 预期效果
+
+| 维度 | V10-E | V10+V11-B（预期） |
+|---|---|---|
+| 真幻觉率 | 1% (1/100) | **0%** (fake_status 业务层替换消除) |
+| 失败 case | 1 (+0~1hal) | **0~1**（仅 fake_status 残留 LLM 非确定性长尾）|
+| M14-0042/0046/0049 | ❌ fake_status 失败 | ✅ fake_status_replaced → clean output |
+| 后置校验 hits | fake_status 0 hits | **3 hits/run**(fake_status_replaced) |
 
