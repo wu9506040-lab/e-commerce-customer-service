@@ -162,30 +162,45 @@ class Synthesizer:
                 extra={"intent": "context"},
             )
 
-        # 1. 意图分类
+        # 1. 意图分类（V12 多意图：primary 走 4 类分派；secondary 注入 prompt）
         intent_result = IntentService.classify(query)
-        intent = intent_result["intent"]
+        primary = intent_result["primary"]  # V12：主意图（替代 V11 的 intent_result["intent"]）
         entities = intent_result["entities"]
+        # V12：构造 secondary_intent_block（让 LLM 知道用户可能还想问 X 类问题）
+        # 取 intents 中除 primary 外的全部作为 secondary（intents 已按 confidence 降序）
+        all_intents = intent_result.get("intents", [])
+        secondary_intents = [i for i in all_intents if i["intent"] != primary]
+        secondary_intent_block = ""
+        if secondary_intents:
+            secondary_lines = [
+                f"- {i['intent']}（置信度 {i['confidence']:.2f}）"
+                for i in secondary_intents
+            ]
+            secondary_intent_block = (
+                "用户问题可能还涉及以下意图，请在回答 primary 意图时一并简要覆盖：\n"
+                + "\n".join(secondary_lines)
+            )
         # M8：intent 用 extra 显式带（避免 ContextVar 跨 thread context 不可 reset 的问题）
         logger.info(
-            f"synth.start: intent={intent} method={intent_result['method']} "
-            f"conf={intent_result['confidence']:.2f} user_id={user_id}",
-            extra={"intent": intent},
+            f"synth.start: primary={primary} secondary={[i['intent'] for i in secondary_intents]} "
+            f"method={intent_result['method']} conf={intent_result['confidence']:.2f} user_id={user_id}",
+            extra={"intent": primary},
         )
 
-        # 2. 分派（按 intent 调用对应 service/tool）
+        # 2. 分派（按 primary intent 调用对应 service/tool · V12 多意图）
         try:
-            if intent == "order_query":
-                metrics.inc_chat(intent, v3_engine="-")  # M8
+            if primary == "order_query":
+                metrics.inc_chat(primary, v3_engine="-")  # M8
                 # M9.5：传 order_no 让 order_query 优先用跳转来的订单
                 # M14：传 session_id 让 OrderContextResolver 加载会话上下文
+                # V12：传 secondary_intent_block 注入 prompt
                 yield from Synthesizer._handle_order(
                     query, user_id, intent_result,
                     order_no=order_no, context_block=context_block,
-                    session_id=session_id,
+                    session_id=session_id, secondary_intent_block=secondary_intent_block,
                 )
                 return
-            elif intent == "refund_query":
+            elif primary == "refund_query":
                 # M14 Stage 3：BusinessFlow 抽象（灰度 ENABLE_BUSINESS_FLOW=True 时走 RefundFlow）
                 # RefundFlow 包装 V3 LangGraph + yield flow_stage meta；与 handle_refund_v3 行为兼容
                 flow = create_business_flow(
@@ -200,33 +215,35 @@ class Synthesizer:
                 if flow is not None:
                     logger.info(
                         f"refund_query → {flow.name}",
-                        extra={"intent": intent, "flow": flow.name},
+                        extra={"intent": primary, "flow": flow.name},
                     )
-                    metrics.inc_chat(intent, v3_engine="flow")  # M8：Flow 路径独立计数
+                    metrics.inc_chat(primary, v3_engine="flow")  # M8：Flow 路径独立计数
                     yield from flow.run()
                     return
                 # 灰度关闭 / 不参与 Flow 抽象 → 走原有 V3/V2 路径
                 if settings.USE_LANGGRAPH_REFUND:
-                    logger.info("refund_query → LangGraph V3", extra={"intent": intent})
-                    metrics.inc_chat(intent, v3_engine="v3")  # M8
-                    yield from handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block, history=history)
+                    logger.info("refund_query → LangGraph V3", extra={"intent": primary})
+                    metrics.inc_chat(primary, v3_engine="v3")  # M8
+                    yield from handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block, history=history, secondary_intent_block=secondary_intent_block)
                 else:
-                    metrics.inc_chat(intent, v3_engine="v2")  # M8
-                    yield from handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block)
+                    metrics.inc_chat(primary, v3_engine="v2")  # M8
+                    yield from handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block, secondary_intent_block=secondary_intent_block)
                 return
-            elif intent == "product_query":
-                metrics.inc_chat(intent, v3_engine="-")  # M8
-                yield from Synthesizer._handle_product(query, intent_result, history, sku=sku, context_block=context_block, search_queries=search_queries)
+            elif primary == "product_query":
+                metrics.inc_chat(primary, v3_engine="-")  # M8
+                # V12：传 secondary_intent_block 注入 prompt
+                yield from Synthesizer._handle_product(query, intent_result, history, sku=sku, context_block=context_block, search_queries=search_queries, secondary_intent_block=secondary_intent_block)
                 return
             else:  # policy_query
-                metrics.inc_chat(intent, v3_engine="-")  # M8
-                yield from Synthesizer._handle_policy(query, intent_result, history, context_block=context_block, search_queries=search_queries)
+                metrics.inc_chat(primary, v3_engine="-")  # M8
+                # V12：传 secondary_intent_block 注入 prompt
+                yield from Synthesizer._handle_policy(query, intent_result, history, context_block=context_block, search_queries=search_queries, secondary_intent_block=secondary_intent_block)
                 return
         except Exception as e:
             # 任何分派路径异常 → fallback 到 V1.2 统一 RAG
             logger.exception(
-                f"synth.dispatch 异常，fallback 到 V1.2 RAG: intent={intent}, err={e}",
-                extra={"intent": intent},
+                f"synth.dispatch 异常，fallback 到 V1.2 RAG: primary={primary}, err={e}",
+                extra={"intent": primary},
             )
             # 注意：fallback 不带 user_id（V1.2 pipeline 不接收 user_id）
             for event_type, data in v12_rag_run_stream(query, 5, history):
@@ -309,6 +326,7 @@ class Synthesizer:
         order_no: Optional[str] = None,
         context_block: str = "",
         session_id: Optional[str] = None,
+        secondary_intent_block: str = "",  # V12：多意图 secondary 提示
     ) -> Generator[Tuple[str, Any], None, None]:
         """order_query：M14 接入 OrderContextResolver 做 0/1/N 决策
 
@@ -547,6 +565,7 @@ class Synthesizer:
             history_block="",
             query=query,
             context_block=context_block,
+            secondary_intent_block=secondary_intent_block,  # V12
         )
         yield from stream_dispatcher.stream_llm(prompt)
 
@@ -648,6 +667,7 @@ class Synthesizer:
         sku: Optional[str] = None,
         context_block: str = "",
         search_queries: Optional[list[str]] = None,
+        secondary_intent_block: str = "",  # V12：多意图 secondary 提示
     ) -> Generator[Tuple[str, Any], None, None]:
         """product_query：调 ProductTool + 补 policy
 
@@ -730,6 +750,7 @@ class Synthesizer:
             history_block=prompt_assembler._format_history(history),
             query=query,
             context_block=context_block,
+            secondary_intent_block=secondary_intent_block,  # V12
         )
         yield from stream_dispatcher.stream_llm(prompt)
 
@@ -738,6 +759,7 @@ class Synthesizer:
         query: str, intent_result: dict, history: Optional[list[dict]],
         context_block: str = "",
         search_queries: Optional[list[str]] = None,
+        secondary_intent_block: str = "",  # V12：多意图 secondary 提示
     ) -> Generator[Tuple[str, Any], None, None]:
         """policy_query：纯 PolicyService RAG（最接近 V1.2 行为）
 
@@ -776,5 +798,6 @@ class Synthesizer:
             history_block=prompt_assembler._format_history(history),
             query=query,
             context_block=context_block,
+            secondary_intent_block=secondary_intent_block,  # V12
         )
         yield from stream_dispatcher.stream_llm(prompt)
