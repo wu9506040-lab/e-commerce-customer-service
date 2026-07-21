@@ -130,3 +130,15 @@ FABRICATION_BLOCK_FAKE_STATUS: true
 #   修 M14-0070 fake_order_no（剥离或替换为真实 order_no）
 #   关闭 → 退回 V9 行为（仅 prompt 层防御）
 POST_SYNTHESIZE_HALLUCINATION_CHECK: true
+
+# === 9. fake_status 业务层硬替换开关（V11-B · M14-0042/0046/0049 真实话术根因）===
+# 历史背景：
+#   - V10-D 后置校验对 fake_status 设计为"仅 warning 不替换"，理由是状态术语歧义大、误伤风险高
+#   - V10-E baseline 残留 0~1/100 fake_status 失败（M14-0042/0046/0049 物流类"已签收"礼貌收尾）
+#   - 用户 memory "LLM 反幻觉必须 prompt + 业务层双重防护"：fake_amount/order_no 已有双层，fake_status 缺业务层
+# V11-B 治本：在 hallucination_guard.py post_synthesize_check 加 fake_status 业务层硬替换分支
+#   - 状态词正则匹配 STATUS_ZH_MAP 6 个合法中文状态(待支付/已支付/运输中/已签收/已完成/已退款)
+#   - 文本中状态词 != order_info["status_zh"] → 替换为「您的订单当前状态是:{real}」
+#   - 真实状态缺失时降级为剥离（兜底,与 fake_order_no 行为一致）
+# 关闭此开关 → 退回 V10-D "仅 warning" 行为（仅 logger.warning,不改文本）
+HALLUCINATION_REPLACE_FAKE_STATUS: true
