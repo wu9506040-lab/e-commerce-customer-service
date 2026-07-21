@@ -7641,3 +7641,124 @@ S20 完成后，"通用客服中台"对淘宝/京东/拼多多三家共有客服
 - spec：`docs/decisions/2026-07-21-s20-common-scenarios-spec.md`（commit 009e462）
 - worktree 分支：`feat/s20-common-scenarios`（在 `E:\智能客服-worktree-s20`）
 
+---
+
+## V12 多意图识别（2026-07-22）
+
+### 1. What（做了什么）
+
+V12 cycle 闭环 4 commit（已 push 双 remote）：
+- **V12-A** `6f6019f` · `intent_service.py` 核心：`classify()` 返新结构 `{"intents": [...], "primary": str, "method": str, "entities": {...}}` + 保留 `intent`/`confidence` 别名（=primary）→ 12 个测试 fixture + 6 个消费方零修改。加 `_llm_classify_multi()` 多意图 LLM 路径 + `_find_outermost_json()` 括号配对解析嵌套 JSON + `_wrap_with_intent_alias()` top-K 截断 + backward-compat 别名 helper。
+- **V12-B** `79a47cd` · schema + 灰度开关：`IntentResponse` 扩 `intents: list[IntentItem]` + `primary: IntentType`（保留 `intent`/`confidence` 字段）；`decide.yaml §10` 加 `ENABLE_MULTI_INTENT: true` 灰度开关。
+- **V12-C** `7dee57e` · 4 处消费方 primary 化 + secondary 注入：orchestrator 5 处 `intent_result["intent"]` → `intent_result["primary"]`；构造 `secondary_intent_block`（除 primary 外的 intents 按 confidence 降序）；`_build_chat_prompt` 加 `secondary_intent_block` 参数（context > secondary > tool 优先级）。`handle_refund_v3` 接收参数但**不传 RefundFlow**（M14 V3 5 commit 核心模块，V12 范围聚焦）。
+- **V12-D** `48ae6f9` · 25 个新测试：`backend/tests/test_intent_multi.py` 7 个 TestClass（new structure / rule single / gray switch / LLM parse / top-K / secondary block / schema）；autouse fixture 隔离 `_MULTI_INTENT_ENABLED` / `TOP_K` 防污染下游。
+
+### 2. Why（为什么）
+
+| 业务原因 | 设计原因 |
+|----------|----------|
+| V3-M11 阶段一直单意图（IntentType Literal），真实 query 20-30% 含多意图 | 单意图强行分派要么答不全、要么 LLM 串答；多意图识别让 LLM 知道"用户可能还想问 X" |
+| 真实 case："订单怎么退款，运费谁出"=refund+policy；"这台电脑续航怎么样，能分期吗"=product+policy | 阶段 1 验证多意图识别基础设施；阶段 2 V13 扩完整意图（chitchat / complaint / K=全）|
+| 用户反馈"AI 答不全" | 减少 LLM 单方面答 primary 漏掉 secondary 的概率 |
+
+**两阶段策略**：V12 范围收窄（4 类不变 + K=2 + 默认 true 灰度）；V13 在 V12 基础设施上扩完整意图种类与 K=全（不动 V12 分类器主体）。
+
+### 3. Tech（技术栈）
+
+| 维度 | 实现 |
+|------|------|
+| 数据结构 | `intents: list[IntentItem]` + `primary: IntentType` + `entities: IntentEntities`（Pydantic v2）|
+| LLM prompt | 多意图 JSON 数组 `{"intents": [{"intent", "confidence"}, ...]}`（V11 单意图 `{"intent", "confidence"}` 升级）|
+| JSON 解析 | `_find_outermost_json()` 括号配对（V11 `re.search(r"\{[^{}]+\}", reply)` 升级为处理嵌套）|
+| 灰度开关 | `ENABLE_MULTI_INTENT: true`（decide.yaml §10，启动期加载，失败 fallback 默认 true）|
+| top-K 截断 | 模块常量 `TOP_K = 2`（V13 扩 K=全时改这里即可）|
+| backward-compat | `intent`/`confidence` 别名 = primary；前端 / API / 12 个测试 fixture 零修改 |
+| secondary 注入 | `_build_chat_prompt` 新参数 `secondary_intent_block`，orchestrator 拼好传入各 handler |
+
+### 4. Flow（输入 → 输出）
+
+```
+user query
+    ↓
+IntentService.classify(query)  ← ENABLE_MULTI_INTENT 灰度开关
+    ├─ 规则层（INTENT_RULES 81 条）
+    │   └─ 命中 → intents=[{matched, 1.0}], primary=matched
+    ├─ LLM 兜底（_llm_classify_multi · 灰度开 / _llm_classify · 灰度关）
+    │   └─ JSON 解析（_find_outermost_json）→ intents=[1-2 个]
+    └─ 默认 fallback → intents=[{policy_query, 0.5}]
+    ↓
+orchestrator.run_stream：
+    primary = intent_result["primary"]
+    secondary_intent_block = "用户问题可能还涉及以下意图：\n- xxx (置信度 0.xx)"
+    ↓
+    按 primary 走 4 类分派（order/refund/product/policy）
+    ↓
+    _build_chat_prompt(intent=primary, ..., secondary_intent_block=block)
+    ↓
+    LLM 看到：
+      【当前场景】M9.5 context（最高优先级）
+      【用户可能的次要问题】V12 secondary（次高）
+      【事实陈述】tool 结果
+      ...
+    ↓
+SSE meta.intent = primary string（前端零修改）
+SSE meta.intents = [...]（V12 新增，前端可选消费）
+```
+
+### 5. Problem & Fix（问题 → 解决）
+
+| # | 问题 | 根因 | 解决 |
+|---|------|------|------|
+| 1 | V12-D 5 个 LLM 解析测试 fail | 原 `re.search(r"\{[^{}]+\}", reply)` 非贪婪模式匹配嵌套 JSON 时只截到内层 `}` | 加 `_find_outermost_json()` 括号配对（处理字符串字面量避免误计数），保证最外层完整 `{...}` |
+| 2 | backward-compat 风险（12 个测试 fixture 直接读 `intent`/`confidence`）| 直接改返回结构会破现有测试 | 保留 `intent`/`confidence` 别名 = primary；消费方用 `.get("primary", .get("intent"))` 双轨 |
+| 3 | RefundFlow 改造风险（5 commit 重构核心）| V12 范围聚焦；改 RefundFlow 4 节点会让 V12 范围膨胀 | `handle_refund_v3` 接收 `secondary_intent_block` 但**不传 RefundFlow**；TODO 留 V13 一起处理 |
+| 4 | LLM 输出格式不可控（可能多句话包裹 JSON）| LLM 非确定性 | 严格 JSON 优先 `json.loads(reply)`；失败 fallback 宽松正则 + 括号配对；非意图过滤 + confidence 截断 |
+| 5 | 测试污染（_MULTI_INTENT_ENABLED / TOP_K 模块常量）| fail-fast 测试改模块常量会污染下游 | autouse fixture 备份/恢复 + `reset_config_loader()`（与 test_intent_config 同模式）|
+
+### 6. Architecture Role（在系统中的位置）
+
+V12 在 M14 阶段 1 多意图识别层的位置：
+
+```
+用户输入
+  ↓
+[chat.py 入口]
+  ↓ IntentService.classify() ← V12 多意图（intents[] + primary）
+  ↓
+[orchestrator 分派]  ← V12 primary 走 4 类；secondary 拼 prompt context
+  ↓
+  ├─ order_query → Resolver → OrderService
+  ├─ refund_query → RefundFlow / V2 → LangGraph / RefundService
+  ├─ product_query → ProductTool + KB RAG
+  └─ policy_query → KB RAG
+  ↓
+  [LLM 综合]  ← V12 secondary 注入 prompt（context > secondary > tool）
+  ↓
+  [SSE 流式输出]  ← V12 meta.intent = primary string（前端零修改）
+                  ← V12 meta.intents = [...]（前端可选消费）
+```
+
+**架构影响**：
+- §5 Scope Lock：跨 4 模块（intent_service + schema + 配置 + 5 消费方），§4.2 4 要素已列
+- §9.3 接口契约：classify() 签名不变，返回 dict 字段扩展（backward-compat 别名）✅
+- §9.4.2 配置分离：ENABLE_MULTI_INTENT 放 decide.yaml §10（与 HALLUCINATION_REPLACE_FAKE_STATUS 风格一致）✅
+- §9.7 自检 5 问：不引入跨模块耦合；orchestrator 仍是单一编排者 ✅
+- §9.8 8 件套：非新模块（仅扩展现有 intent_service + schema）✅ N/A
+
+**V13 衔接**：V12 阶段 1 闭环；V13 阶段 2 在 V12 基础设施上扩完整意图种类（chitchat / complaint / K=全），不动 V12 分类器主体。
+
+### 7. 验证
+
+- ✅ **V12 相关测试**：55/55 PASS（14 intent_config + 10 synthesizer_refund + 6 chat_policy_v10a + 25 intent_multi）
+- ✅ **Backend 全量**：632/635 PASS（3 fail = MySQL 容器环境问题，与 V12 无关：test_agent_fc / test_prompt_loader_version / test_source_attribution）
+- ✅ **backward-compat 验证**：12 个测试 fixture + 6 个消费方零修改
+- ✅ **§4.5 AI Review 五项检查单**：CLAUDE.md §2 禁止行为 / 跨模块耦合 / YAGNI / 安全 / 接口影响 全部通过
+- ✅ **双 remote push**：Gitee origin + GitHub github 已推（`0fad520..48ae6f9`）
+
+### 8. 关联 commit / 报告
+
+- V12-A `6f6019f` · V12-B `79a47cd` · V12-C `7dee57e` · V12-D `48ae6f9`
+- 报告：`docs/reports/m14_v12_intent_multi/README.md`
+- V11 报告：`docs/reports/m14_v10_baseline_real/README.md`（§10/§11 V11-A/V11-B 补记）
+- V13 待办：任务 #14（完整意图扩写：chitchat / complaint / K=全）
+
