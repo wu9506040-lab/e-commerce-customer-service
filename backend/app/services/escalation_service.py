@@ -299,10 +299,11 @@ class EscalationService:
             recent_messages = list(history[-5:]) if len(history) > 5 else list(history)
 
         # 3. 当前意图 + 实体
+        # V12：classify() 新结构用 primary；兼容旧 intent 别名
         current_intent: Optional[str] = None
         current_entities: Optional[dict] = None
         if intent_result:
-            current_intent = intent_result.get("intent")
+            current_intent = intent_result.get("primary") or intent_result.get("intent")
             current_entities = intent_result.get("entities", {})
 
         # 4. 一句话摘要（拼装，不调 LLM）

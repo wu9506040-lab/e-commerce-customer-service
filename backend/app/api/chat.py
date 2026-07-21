@@ -311,7 +311,8 @@ async def chat(
         # M13.1：refund_query 不进缓存（meta refundable/reason 是 order 相关的，不能复用）
         try:
             pre_intent = await asyncio.to_thread(IntentService.classify, payload.query)
-            intent_for_cache = pre_intent.get("intent", "policy_query")
+            # V12：classify() 新结构有 primary；兼容旧 intent 别名（=primary）
+            intent_for_cache = pre_intent.get("primary", pre_intent.get("intent", "policy_query"))
         except Exception:
             pre_intent = None
             intent_for_cache = "policy_query"

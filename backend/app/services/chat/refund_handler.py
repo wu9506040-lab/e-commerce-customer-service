@@ -62,7 +62,8 @@ def _yield_handoff(
     """
     if not settings.ENABLE_ESCALATION_HANDOFF:
         yield ("meta", {
-            "intent": intent_result.get("intent", "refund_query") if intent_result else "refund_query",
+            # V12：meta.intent 仍 = primary（向后兼容，前端只读 string）
+            "intent": intent_result.get("primary", intent_result.get("intent", "refund_query")) if intent_result else "refund_query",
             "entities": intent_result.get("entities", {}) if intent_result else {},
             "contexts": [],
             "scores": [],
@@ -81,7 +82,8 @@ def _yield_handoff(
         failure_context=failure_context,
     )
     yield ("meta", {
-        "intent": intent_result.get("intent", "refund_query") if intent_result else "refund_query",
+        # V12：meta.intent 仍 = primary（向后兼容，前端只读 string）
+        "intent": intent_result.get("primary", intent_result.get("intent", "refund_query")) if intent_result else "refund_query",
         "entities": intent_result.get("entities", {}) if intent_result else {},
         "contexts": [],
         "scores": [],
@@ -100,6 +102,7 @@ def handle_refund_v2(
     query: str, user_id: int, intent_result: dict,
     order_no: Optional[str] = None,
     context_block: str = "",
+    secondary_intent_block: str = "",  # V12：多意图 secondary 提示
 ) -> Generator[Tuple[str, Any], None, None]:
     """refund_query V2.x：调 RefundService（复合 tool + policy）
 
@@ -203,6 +206,7 @@ def handle_refund_v2(
         history_block="",
         query=query,
         context_block=context_block,
+        secondary_intent_block=secondary_intent_block,  # V12
     )
     yield from stream_dispatcher.stream_llm(prompt)
 
@@ -212,6 +216,7 @@ def handle_refund_v3(
     order_no: Optional[str] = None,
     context_block: str = "",
     history: Optional[list[dict]] = None,
+    secondary_intent_block: str = "",  # V12：V3 路径暂不注入（RefundFlow 改造留 V13）
 ) -> Generator[Tuple[str, Any], None, None]:
     """refund_query V3：委托 RefundFlow.run()（M14 V3 重构）。
 

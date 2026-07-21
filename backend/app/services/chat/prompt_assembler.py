@@ -109,15 +109,22 @@ def _build_chat_prompt(
     history_block: str,
     query: str,
     context_block: str = "",
+    secondary_intent_block: str = "",
 ) -> str:
     """组装 chat 模板（按 §7 优先级硬约束）
 
     M9.5：context_block（来自 sku/order_no 跳转）作为最高优先级注入
+    V12：secondary_intent_block（多意图 secondary 提示）作为次高优先级注入
+       - 位于 context_block 之后，tool_block 之前
+       - 让 LLM 知道用户可能还想问 X 类问题，避免 LLM 单方面回答 primary
     """
     sections = []
     if context_block:
         # M9.5：context（用户当前在看的商品/订单）放在最前面，LLM 第一时间知道是哪款/哪个订单
         sections.append(f"【当前场景】(M9.5 用户跳转 context)\n{context_block}")
+    if secondary_intent_block:
+        # V12：多意图 secondary 提示（V13 扩 chitchat/complaint 时同步扩展）
+        sections.append(f"【用户可能的次要问题】(V12 多意图识别)\n{secondary_intent_block}")
     if tool_block:
         sections.append(f"【事实陈述】(最高优先级)\n{tool_block}")
     if policy_block:
