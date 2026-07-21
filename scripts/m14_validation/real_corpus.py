@@ -19,7 +19,7 @@ real_corpus.py - 真实电商客服话术库加载器
   "query": "真实用户提问表述",
   "reference_answer": "真实客服标准回复模板",
   "expected_resolver_action": "direct_answer|show_picker|not_found|ask_login|ask_login_or_list",
-  "expected_flow_branch": "synthesize|escalate|ask_order_no|invalid_order",
+  "expected_flow_branch": "synthesize|escalate|ask_order_no|not_found（V11-A 起;invalid_order 收编）",
   "escalate_trigger": "quality_no_proof|emotion_high|amount_high|manual_request|none",
   "source": "来源标注",
   "platform_ref": "京东|淘宝|拼多多",

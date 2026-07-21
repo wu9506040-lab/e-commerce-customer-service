@@ -13,7 +13,7 @@
 | 部署版本 | `bdcceb6`（V10-D 后置校验） + `6a97f67`（V10-A 验证脚本同步） |
 | 验证用例 | 100 case · 138-139s/轮 · real_corpus.json（gitignored，V3 起封存） |
 | V10 cycle 闭环 | 5 commit（V10-A~E）· 7 测试 / 13 测试 / 5 测试 · 双 remote 已 push |
-| M14-0045/0070 修复 | ✅ 验证脚本与生产口径一致；M14-0070 标签语义残留 1 条（`actual=not_found` vs `expected=invalid_order`） |
+| M14-0045/0070 修复 | ✅ 验证脚本与生产口径一致；M14-0070 标签语义 **V11-A 已统一**(invalid_order → not_found,见 §10) |
 | M14-0096/0099 修复 | ✅ `chat.py` 与 `run_validation.py` 同步归属校验；V10-B 已固化 query 中订单号 |
 
 ---
@@ -33,7 +33,7 @@
 - **Resolver +4pp 提升**：V10-A chat.py 归属校验落地，policy_query 路径不再误判为 `direct_answer`。
 - **真幻觉率 -1pp 持续**：V10-D 后置校验替换 fake_amount / 剥离 fake_order_no；M14-0045/0070 全部消失，仅 fake_status 残留（设计上仅 warning 不自动替换）。
 - **政策覆盖率回升 +14.3pp**：V10-C 关键词归一化 + V10 整体话术稳定性；M14-0041/0049 的政策术语重新命中。
-- **RefundFlow -3.3pp 回归解释**：M14-0070（invalid_order）由 V9 pass → V10 fail（actual=not_found）。这是 V10-A 新增归属校验触发的"标签语义 gap"——`OrderTool.get_order_by_no` 对未持有的 order_no 返回 None，run_validation 的 not_found 分支比 invalid_order 更早兜底，是预期行为而非回归。
+- **RefundFlow -3.3pp 回归解释**：M14-0070（invalid_order）由 V9 pass → V10 fail（actual=not_found）。这是 V10-A 新增归属校验触发的"标签语义 gap"——`OrderTool.get_order_by_no` 对未持有的 order_no 返回 None，run_validation 的 not_found 分支比 invalid_order 更早兜底。**V11-A 已将 invalid_order 评测口径收编为 not_found（见 §10）**，重跑后 M14-0070 应 PASS，RefundFlow 回到 100%。
 
 ---
 
@@ -53,7 +53,7 @@
 
 **残留 2 类问题**：
 
-1. **M14-0070 标签语义**：评测 `expected=invalid_order`，但生产 `actual=not_found`（V10-A 归属校验）。下一轮 V11 应统一 action 标签：把 invalid_order 收编为 not_found 的一种，并在 RefundFlow 上把"无效单号" 视为 prompt 端 ask_order_no 之前的拦截。
+1. ~~**M14-0070 标签语义**：评测 `expected=invalid_order`，但生产 `actual=not_found`（V10-A 归属校验）。下一轮 V11 应统一 action 标签：把 invalid_order 收编为 not_found 的一种，并在 RefundFlow 上把"无效单号" 视为 prompt 端 ask_order_no 之前的拦截。~~ → **V11-A 已收编**（见 §10）
 2. **fake_status 残留**（设计取舍）：V10-D 文档明确 status 术语歧义大、不自动替换；只能通过 #9 反幻觉硬约束（V8 已加）+ 业务层 ANTI_FABRICATION_FAKE_STATUS 开关配置（V8 已配）双保险。LLM 偶发把"已签收"当作礼貌收尾是已知非确定性，长期靠 prompt + 后置 warning。
 
 ---
@@ -99,7 +99,7 @@
 | V9 | 96% | 100% | 100% | 2% | 14.29% | 4 |
 | **V10** | **100%** | **96.67%** | **100%** | **1%** | **28.57%** | **1(+0~1hal)** |
 
-V10 关键拐点：Resolver 达 100%；真幻觉率降至历史最低 1%；失败 case 收敛到 1 条（M14-0070 待标签语义统一）。
+V10 关键拐点：Resolver 达 100%；真幻觉率降至历史最低 1%；失败 case 收敛到 1 条（M14-0070 · V11-A 收编后 → 0 条）。
 
 ---
 
@@ -117,3 +117,49 @@ sleep 15
 docker exec customer-service-api bash -c 'cd /app/scripts/m14_validation && PYTHONPATH=/app python run_validation.py'
 # 耗时 ~138s · 100 case · 拉 raw.json / failed_cases.json / m14_validation_report.md
 ```
+
+---
+
+## 9. 附录
+
+## 10. V11-A 收编补记（2026-07-21）
+
+### 10.1 触发与目标
+
+V10-E 3 run baseline 中 M14-0070 全部 fail，根因是 V10-A 新增 `OrderTool.get_order_by_no` 归属校验后，invalid_order 这个 action 在生产代码里已被 not_found 吸收——所有"用户没这单"的情况都走 not_found 分支。V10-E 的 expected/actual 分叉本质是**评测口径 vs 生产口径粒度不一致**，不是业务回归。
+
+V11-A 目标：**评测端 invalid_order 收编为 not_found**，与生产口径对齐；不动 RefundFlow 接口（§9.3 Interface First）。
+
+### 10.2 实施清单（4 处最小修改）
+
+| # | 文件 | 行 | 修改 |
+|---|------|---|------|
+| 1 | `scripts/m14_validation/run_validation.py` | 450-454 | `_classify_refund_branch` invalid_order 分支返回 `not_found`（+ 注释） |
+| 2 | `scripts/m14_validation/query_pool.py` | 324 | 3 个 invalid_order scenario 的 `expected` 改为 `not_found`（+ note 同步） |
+| 3 | `scripts/m14_validation/real_corpus.py` | 22 | schema 注释加 `invalid_order→not_found（V11-A 收编）` |
+| 4 | `docs/reports/m14_v10_baseline_real/README.md` | 16, 36, 56, 102, §10 | 4 处标注更新 + 新增本节 |
+
+### 10.3 §9 架构约束自检
+
+| # | 约束 | 满足方式 |
+|---|------|----------|
+| §5 Scope Lock | 单模块（`scripts/m14_validation/` + 1 个报告 README）| ✅ 不动 `backend/app/` 任何业务代码 |
+| §9.3 接口契约 | 不改 RefundFlow 4 分支 action 名 | ✅ invalid_order 在生产端已无实例，仅评测端口径调整 |
+| §9.7 自检 5 问 | 不引入跨模块耦合 / 不破坏接口签名 | ✅ |
+| §9.8 8 件套 | 非新模块 | ✅ N/A |
+
+### 10.4 验证
+
+| 步骤 | 判据 | 结果 |
+|------|------|------|
+| 1. pytest 回归 | 612+ PASS 无新增失败 | 待跑 |
+| 2. V10-E 重跑 1 run | M14-0070 success=True，actual=not_found | 待跑 |
+| 3. RefundFlow | 96.67% → 100%（修复 -3.3pp 回归） | 待跑 |
+| 4. 失败 case 计数 | 1 → 0（仅 fake_status 残留） | 待跑 |
+
+### 10.5 影响范围
+
+- **历史 baseline 不变**：V4 / V6 / V9 报告保留原文，作为 V10-A 前的状态切片。
+- **V10 报告基线**：未跑 V11-A 前 V10 表 7 baseline 数字维持原值；重跑后需追加 V10-V11-A 列。
+- **真幻觉率**：M14-0070 历史 hallucination 修复记录（M14-0068 同根因）保留，验证 fake_order_no 已在 V10-D 后置校验被剥离。
+
