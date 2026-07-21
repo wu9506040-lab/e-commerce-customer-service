@@ -448,7 +448,10 @@ def _classify_refund_branch(flow_stages: List[str], scenario, final_meta: Option
             return "ask_order_no"
         return "ask_order_no"
     if scenario.expected == "invalid_order":
-        return "invalid_order"
+        # V11-A 收编:生产侧 invalid_order action 已被 V10-A 归属校验吸收为 not_found,
+        # 评测口径统一到 not_found,避免 label gap(M14-0070 评测 expected 与生产 actual 分叉)。
+        # 历史 baseline 报告中 invalid_order 分支计数会归零(预期行为,非回归)。
+        return "not_found"
     if scenario.expected == "synthesize":
         if "synthesize" in flow_stages:
             return "synthesize"
@@ -579,6 +582,7 @@ def _compute_metrics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     # V6: 仅评 expected="synthesize" 的 case（其他分支无政策输出）
     #     ask_order_no / escalate / invalid_order 分支不输出政策文本
     #     → 强行评估会稀释真实数据（如 V5 12 个有效 case 全部为 0）
+    # V11-A: invalid_order 评测口径已收编为 not_found,见 §10 报告补记
     coverage_results = [
         r for r in results
         if r.get("coverage") is not None
@@ -625,7 +629,7 @@ def _compute_metrics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
             "numerator": coverage_sum,
             "denominator": len(coverage_results),
             "definition": "Agent 输出中关键词数 / ref_answer 关键词数（real_corpus.json 来源 · 仅评 synthesize 分支）",
-            "note": "V6 metric: only synthesize branch produces policy text; ask_order_no/escalate/invalid_order skipped",
+            "note": "V6 metric: only synthesize branch produces policy text; ask_order_no/escalate/invalid_order skipped（V11-A 后 invalid_order 评测口径收编为 not_found,该分支在生产侧已无实例）",
             "skipped_v6_gate": coverage_skipped_v6,
         },
     }

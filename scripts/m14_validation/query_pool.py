@@ -321,8 +321,8 @@ def _build_refund_scenarios() -> List[Scenario]:
             query=q,
             corpus_id="",
             entities={"order_no": "ORD99999999XXX", "sku": None},
-            expected="invalid_order",
-            note="边界扩展: 无效 order_no（不符合正则）→ fetch_order 失败 / fallback V2",
+            expected="not_found",
+            note="边界扩展: 无效 order_no → V10-A 归属校验后被生产吸收为 not_found 分支（V11-A 评测口径统一）",
         ))
         counter += 1
 
