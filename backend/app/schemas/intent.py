@@ -1,9 +1,10 @@
 """
-Intent Classifier Schema（M3 新增）
+Intent Classifier Schema（M3 新增 · V12 多意图识别升级）
 
 按 PROJECT_DESIGN.md §3 + §7：
 - 4 类意图：order_query / refund_query / product_query / policy_query
 - 返回 intent + confidence + entities + method（rule / llm / default）
+- V12：多意图结构（intents[] + primary），保留 intent/confidence 别名（向后兼容）
 """
 from typing import Literal, Optional
 
@@ -37,14 +38,38 @@ class IntentEntities(BaseModel):
     keywords: list[str] = Field(default_factory=list, description="关键词")
 
 
-class IntentResponse(BaseModel):
-    """Intent Classifier 响应"""
-    intent: IntentType = Field(..., description="分类结果")
+class IntentItem(BaseModel):
+    """V12：单条意图（intents[] 数组元素）"""
+    intent: IntentType = Field(..., description="意图类别")
     confidence: float = Field(
         ...,
         ge=0.0,
         le=1.0,
-        description="置信度（规则匹配=1.0，LLM 兜底=LLM 自评，默认=0.5）",
+        description="置信度（规则匹配=1.0，LLM 自评，默认=0.5）",
+    )
+
+
+class IntentResponse(BaseModel):
+    """Intent Classifier 响应（V12 多意图结构）"""
+    # V12 新结构
+    intents: list[IntentItem] = Field(
+        default_factory=list,
+        description="top-K 多意图列表（按 confidence 降序）",
+    )
+    primary: IntentType = Field(
+        ...,
+        description="主意图（intents 中 confidence 最高的）",
+    )
+    # 向后兼容别名（V11 行为不变 → 测试 fixture 零修改）
+    intent: IntentType = Field(
+        ...,
+        description="= primary（向后兼容别名，前端可直接读）",
+    )
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="= primary 的 confidence（向后兼容别名）",
     )
     method: Literal["rule", "llm", "default"] = Field(
         ..., description="分类方式"

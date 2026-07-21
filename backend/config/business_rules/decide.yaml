@@ -142,3 +142,16 @@ POST_SYNTHESIZE_HALLUCINATION_CHECK: true
 #   - 真实状态缺失时降级为剥离（兜底,与 fake_order_no 行为一致）
 # 关闭此开关 → 退回 V10-D "仅 warning" 行为（仅 logger.warning,不改文本）
 HALLUCINATION_REPLACE_FAKE_STATUS: true
+
+# === 10. 多意图识别灰度开关（V12 · 阶段 1 多意图识别 / 阶段 2 V13 完整意图扩写）===
+# 历史背景：
+#   - V3-M11 阶段一直为单意图分类（IntentType Literal，classify() 返 {"intent": str, ...}）
+#   - 真实 query 约 20-30% 含多意图（"订单怎么退款，运费谁出"=refund+policy；"这台电脑续航怎么样，能分期吗"=product+policy）
+#   - 单意图强行分派要么答不全、要么 LLM 串答
+# V12 阶段 1 治本：classify() 改返新结构 {"intents": [...], "primary": str, "method": str, "entities": {...}}
+#   - 规则层天然单意图（intents=[1 个]）；LLM 兜底层可识别多意图（top-K=2）
+#   - 保留 "intent"/"confidence" 别名（= primary）→ 12 个测试 fixture + 6 个消费方零修改
+#   - secondary intents 由 orchestrator 拼到 prompt context（V12-C 实施）
+# V13 阶段 2 计划：扩 chitchat / complaint / 等 + K=全（不动 V12 基础设施）
+# 关闭此开关 → 退回 V11 单意图行为（intents 长度仍为 1，行为完全一致）
+ENABLE_MULTI_INTENT: true
