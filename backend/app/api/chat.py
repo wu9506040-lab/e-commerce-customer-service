@@ -233,6 +233,7 @@ async def chat(
             handoff_payload = escalation.handoff(
                 reason=EscalationReason.USER_REQUESTED,
                 user_id=user_id,
+                session_id=session_id,
                 history=history,
                 intent_result=None,
                 failure_context=None,

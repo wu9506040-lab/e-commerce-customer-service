@@ -248,6 +248,7 @@ class EscalationService:
         self,
         reason: EscalationReason,
         user_id: int,
+        session_id: Optional[str] = None,
         history: Optional[list[dict]] = None,
         intent_result: Optional[dict] = None,
         failure_context: Optional[dict] = None,
@@ -319,7 +320,7 @@ class EscalationService:
         handoff_id = f"H{uuid.uuid4().hex[:8].upper()}"
         created_at = datetime.now(timezone.utc).isoformat()
 
-        return HandoffPayload(
+        payload = HandoffPayload(
             handoff_id=handoff_id,
             reason=reason.value,
             reason_label=_REASON_LABEL[reason.value],
@@ -337,6 +338,25 @@ class EscalationService:
             matched_keyword=matched_keyword,
             detected_category=detected_category,
         )
+
+        # 6. M15 人工介入闭环：best-effort 落工单（独立 session，失败不阻断聊天主链路）
+        try:
+            from app.services.handoff_ticket_service import persist_handoff
+            ticket_id = persist_handoff(
+                user_id=user_id,
+                session_id=session_id or "",
+                reason=reason.value,
+                payload_dict=payload.to_dict(),
+                category=category,
+                priority=priority,
+                matched_keyword=matched_keyword,
+            )
+            if ticket_id:
+                logger.info(f"handoff persisted: ticket_id={ticket_id} handoff_id={handoff_id}")
+        except Exception as e:
+            logger.warning(f"handoff persist failed (non-blocking): {e}")
+
+        return payload
 
     # ---------- 私有 ----------
 

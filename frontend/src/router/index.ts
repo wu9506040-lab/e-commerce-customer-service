@@ -87,6 +87,14 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '运营数据驾驶舱', requiresAuth: true, requiresAdmin: true },
   },
 
+  // M15 人工介入坐席工作台（仅 admin）
+  {
+    path: '/admin/handoff',
+    name: 'admin-handoff',
+    component: () => import('../views/HandoffWorkbench.vue'),
+    meta: { title: '人工介入工作台', requiresAuth: true, requiresAdmin: true },
+  },
+
   // 个人中心（需登录）
   {
     path: '/profile',

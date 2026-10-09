@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.admin import router as admin_router
 from app.api.admin_analytics import router as admin_analytics_router  # P4-2 admin 运营聚合
 from app.api.admin_conversations import router as admin_conversations_router  # P4-1 admin 全局会话查询
+from app.api.admin_handoff import router as admin_handoff_router  # M15 人工介入工单坐席工作台
 from app.api.auth import router as auth_router
 from app.api.channels import router as channels_router  # S14 ChannelAdapter Webhook
 from app.api.chat import router as chat_router
@@ -156,6 +157,7 @@ app.include_router(chat_router)
 app.include_router(admin_router)
 app.include_router(admin_analytics_router)  # P4-2 admin 运营聚合
 app.include_router(admin_conversations_router)  # P4-1 admin 全局会话查询
+app.include_router(admin_handoff_router)  # M15 人工介入工单坐席工作台
 app.include_router(auth_router)
 app.include_router(conversations_router)  # §12
 app.include_router(intent_router)  # M3

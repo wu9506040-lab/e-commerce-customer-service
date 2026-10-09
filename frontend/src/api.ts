@@ -496,3 +496,81 @@ export async function* resumeChat(
     reader.releaseLock();
   }
 }
+
+// =============================================================
+// M15 人工介入坐席工作台（admin）
+// =============================================================
+export interface HandoffTicketBrief {
+  id: number;
+  ticket_no: string;
+  session_id: string;
+  user_id: number;
+  reason: string;
+  category?: string | null;
+  priority: string;
+  matched_keyword?: string | null;
+  status: string;
+  assignee?: string | null;
+  create_time?: string | null;
+  update_time?: string | null;
+}
+
+export interface HandoffTicketDetail extends HandoffTicketBrief {
+  summary?: Record<string, unknown> | null;
+  reply?: string | null;
+  messages: {
+    id: number;
+    role: string;
+    content: string;
+    create_time?: string | null;
+    is_human_agent: boolean;
+  }[];
+}
+
+export interface HandoffListResp {
+  total: number;
+  page: number;
+  page_size: number;
+  items: HandoffTicketBrief[];
+}
+
+/** 工单队列（status 可选 pending/taken/resolved/closed） */
+export async function getHandoffTickets(
+  status?: string,
+  page = 1,
+): Promise<HandoffListResp> {
+  const params = new URLSearchParams({ page: String(page), page_size: '20' });
+  if (status) params.set('status', status);
+  return http(`/admin/handoff/tickets?${params}`);
+}
+
+/** 工单详情 + 会话上下文 */
+export async function getHandoffTicket(id: number): Promise<HandoffTicketDetail> {
+  return http(`/admin/handoff/tickets/${id}`);
+}
+
+/** 认领 */
+export async function takeHandoffTicket(
+  id: number,
+): Promise<{ ok: boolean; ticket: HandoffTicketBrief }> {
+  return http(`/admin/handoff/tickets/${id}/take`, { method: 'POST' });
+}
+
+/** 人工回复并结单（回复注入用户会话） */
+export async function resolveHandoffTicket(
+  id: number,
+  reply: string,
+): Promise<{ ok: boolean; ticket: HandoffTicketBrief }> {
+  return http(`/admin/handoff/tickets/${id}/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reply }),
+  });
+}
+
+/** 直接关闭（误触发/用户离开） */
+export async function closeHandoffTicket(
+  id: number,
+): Promise<{ ok: boolean; ticket: HandoffTicketBrief }> {
+  return http(`/admin/handoff/tickets/${id}/close`, { method: 'POST' });
+}

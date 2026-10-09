@@ -10,32 +10,39 @@
 [![Docker](https://img.shields.io/badge/Docker_Compose-5_services-2496ED?logo=docker)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml/badge.svg)](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml)
-<!-- Status badge: 填入真实 healthcheck.io UUID 后会显示实时 ECS 健康状态 -->
-<!-- 注册地址：https://healthcheck.io → 新建 check → Period=5min → 复制 UUID 替换下方 YOUR-UUID-HERE -->
-<!-- 文档：docs/HEALTHCHECK.md -->
-![Status](https://img.shields.io/endpoint?url=https%3A%2F%2Fhealthchecks.io%2Fapi%2Fv3%2Fchecks%2FYOUR-UUID-HERE%2Fbadge&style=flat-square&label=ECS%20%E5%81%A5%E5%BA%B7%E7%8A%B6%E6%80%81)
+![Tests](https://img.shields.io/badge/pytest-632%20passed-4c1?logo=pytest)
+![Coverage](https://img.shields.io/badge/coverage-67%25-yellowgreen)
+![Eval](https://img.shields.io/badge/hit%405-0.703%E2%86%920.806%20(%2B10.3pp)-blue?logo=dataflow)
 
 ---
 
-## 🌐 在线演示（公网 ECS，已部署）
+## 📊 实测战绩（2026-10-09 本机复跑，全部可一键复现）
 
-> 任何人可直接访问，无需注册即可体验客服 AI
+| 维度 | 实测值 | 复现命令 |
+|------|--------|----------|
+| **检索质量** | 330 题分层评测集四级同日连跑（2026-10-09）：dense 0.703 → +BM25/RRF **0.755（+5.2pp）** → +LLM Rerank **0.806（累计 +10.3pp）**；hit@10 0.806→0.882 | `cd deploy && docker compose up -d qdrant redis mysql api`，根目录 `PYTHONPATH=backend python scripts/eval_hitk.py`（逐级加 `--bm25`、`--bm25 --rerank`） |
+| **人工介入闭环（M15）** | 转自动落工单（P0 优先队列/认领/回复注入会话/结单），坐席工作台 `/admin/handoff` | 对触发词说"转人工"→ admin 登录看队列 → 回复 → 用户侧会话可见 |
+| **测试资产** | **638 passed**（单元 + E2E，含 M15 工单 6 例），覆盖率 **67%** | `cd backend && python -m pytest tests --cov=app` |
+| **知识库** | 18 个结构化源文件 → 67 篇文档 → 202 chunks，chunk_id 内容哈希 uuid5 **幂等入库**（重跑/重排零重复） | `PYTHONPATH=backend python scripts/ingest_ecommerce_kb.py` |
+| **服务编排** | api / frontend / qdrant / mysql / redis 5 服务 Docker Compose + SSE 流式 + JWT 鉴权 | `deploy/docker-compose.yml` |
 
-| 入口 | 地址 | 用途 |
-|------|------|------|
-| **前端 Web UI** | http://120.79.27.124:5173 | 主入口，点「体验」一键登录 |
-| **Swagger API 文档** | http://120.79.27.124:8000/docs | 在线调 API、看 Pydantic schema |
-| **健康检查** | http://120.79.27.124:8000/health | mysql/redis/qdrant 三件套状态 |
-| **测试账号** | `demotest` / `demotest123` | 含 7 个真实订单（覆盖 pending/paid/shipped/delivered/completed/refunded 全 6 种状态）可演示退款 LangGraph |
-| **订单状态分布** | pending×2, paid×1, shipped×1, delivered×1, completed×1, refunded×1 | 7 笔覆盖全状态 |
+> **数据说明**：知识库与评测集为**基于电商售后业务规则构建的合成数据集**（LLM 生成 + 人工抽检校准），
+> 评测价值在方法层：二值相关 + hit@K + per-source 分层 + miss 案例落盘，脚本与结果均在仓库内。
 
-Qdrant 控制台 (`6333/dashboard`) 内网-only（按需开安全组）。
+## ⚗️ 消融实验与数据诚实声明
 
-> **首页 4 个数字锚点说明**（避免"0 token Guard"被误读为"没做"）：
-> - `385 pytest`：项目 pytest 总数（单元 + E2E），参见 `docs/test_coverage.md`
-> - `0 token Guard`：演示数据下三层 Guard 拦截统计为 0——并非"没做"，而是 L1 规则 / L2 embedding / L3 行为监控 全部不消耗 LLM token 即可拦 99% 滥用，详见 `docs/learning_log.md` M11 章节
-> - `LangGraph 4 节点`：退款状态机节点数（`backend/app/services/refund_graph.py`，M14 V3 重构）
-> - `5 服务部署`：api / frontend / qdrant / mysql / redis 5 个 Docker 容器（`deploy/docker-compose.yml`）
+- 7 月存档的 0.842 / 0.897 在**当前知识库上不可复现**（KB 内容与配置自 7 月后演进；评测 doc_id 与现库匹配率 109/110，排除 ID 漂移，确认是库变化）——本 README 只采同日同口径连跑值，跨期高点一律不采用
+- **更正声明**：本 README 早前版本以 7 月 hybrid(0.842) 对比当日 hybrid_rerank(0.806)，误称"Rerank 负增益 -3.6pp"——跨口径对比本身就是错误读法；同口径下 Rerank 为**正增益（0.755→0.806，+5.1pp）**。此更正正是本项目"数据诚实声明"该防的错误模式，公开留档
+- 早期文档中「385 pytest」口径已过时（现为 630+ passed），不再采用——**只写能当场跑出来的数字**
+- 公网 ECS 演示已随服务器到期下线；本地 Docker 五服务即为完整运行形态
+
+## 🚧 已知局限（主动交代）
+
+1. 合成 query 与被检索文档同源，存在自匹配偏置；v3 方向为真实对话日志脱敏回流（`operation_log` 全量审计字段已预留）
+2. 评测集二值相关 + 单正例设定，hit@K 为保守下界
+3. 知识库 202 chunks 小规模，RRF/HNSW 参数结论未在大规模数据验证
+4. `scripts/eval_refund_accuracy.py` 存在**双重时间炸弹**：用例硬编码订单号 + seed 订单按日期生成且 7 天退款时效窗口会过期——当前环境跑出 5/22 属数据时序问题非逻辑回归（订单解析/状态机单测全绿）；修法见 backlog：用例运行时从库取号 + seed 滚动日期
+5. L3 限流为 INCR+过期 的**固定窗口**计数（边界突发用 ZSET 时间戳实现真滑动，在 backlog）
 
 ---
 
@@ -84,7 +91,7 @@ Qdrant 控制台 (`6333/dashboard`) 内网-only（按需开安全组）。
 `pending` → `paid` → `shipped` → `delivered` → `refunded`（6 张状态截图）：
 [`loop-01-product-detail.png`](frontend/_screenshots/loop-01-product-detail.png) → [`loop-06-profile-refunded.png`](frontend/_screenshots/loop-06-profile-refunded.png)
 
-> 截图由 `scripts/verify_demo_public.py` + Playwright 在公网 ECS 自动生成（120.79.27.124）。
+> 截图由 `scripts/verify_demo_public.py` + Playwright 曾在公网 ECS 自动生成（该服务器已到期下线，截图为历史运行存档）。
 
 ---
 
@@ -195,15 +202,16 @@ curl http://localhost:8000/health
 # → {"status":"ok","components":{"mysql":"up","redis":"up","qdrant":"up"}}
 ```
 
-### 访问入口（公网 ECS：http://120.79.27.124）
+### 访问入口（本地 Docker 形态）
 
-| 地址 | 说明 | 可用 |
-|------|------|------|
-| http://120.79.27.124:5173 | 前端 Web UI（主入口） | ✅ |
-| http://120.79.27.124:8000/docs | Swagger API 文档（FastAPI 自动生成） | ✅ |
-| http://120.79.27.124:8000/health | 健康检查（mysql/redis/qdrant 三件套） | ✅ |
-| http://120.79.27.124:6333/dashboard | Qdrant 控制台 | ❌ 安全组未开放（按需开启） |
-| http://120.79.27.124:8000 | API 根路径（返回服务自描述 JSON） | ✅ |
+> 公网 ECS 演示已随服务器到期下线；项目曾完整经历云上部署（安全组 / Nginx 反代 / 健康监控），运行形态以下列本地入口为准。
+
+| 地址 | 说明 | 启动方式 |
+|------|------|----------|
+| http://localhost:5173 | 前端 Web UI（主入口） | `cd deploy && docker compose up -d` |
+| http://localhost:8000/docs | Swagger API 文档（FastAPI 自动生成） | 同上 |
+| http://localhost:8000/health | mysql/redis/qdrant 三件套健康检查 | 同上 |
+| http://localhost:6333/dashboard | Qdrant 控制台 | 同上 |
 
 ### 初始化账号
 
