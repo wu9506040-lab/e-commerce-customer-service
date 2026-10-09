@@ -13,6 +13,7 @@ from app.models.operation_log import OperationLog
 from app.models.product import Product
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.refund import Refund, RefundStatus
+from app.models.handoff_ticket import HandoffTicket, HandoffStatus
 
 __all__ = [
     "Base",
@@ -24,6 +25,8 @@ __all__ = [
     "Product",
     "Order",
     "OrderItem",
+    "HandoffTicket",
+    "HandoffStatus",
     "OrderStatus",
     "Refund",
     "RefundStatus",
