@@ -78,53 +78,62 @@ def _build_orders() -> list[dict]:
     return [
         # 1. 待支付（最近）
         {
-            "order_no": f"ORD{today.strftime('%Y%m%d')}001",
+            "order_no": "ORD20260628001",
             "status": OrderStatus.PENDING.value,
             "days_ago": 0,
             "items": [("SKU005", 1), ("SKU009", 1)],  # BP1 耳机 + KB1 键盘
         },
         # 2. 已支付
         {
-            "order_no": f"ORD{today.strftime('%Y%m%d')}002",
+            "order_no": "ORD20260628002",
             "status": OrderStatus.PAID.value,
             "days_ago": 1,
             "items": [("SKU002", 1)],  # ZP2 Pro
         },
         # 3. 运输中
         {
-            "order_no": f"ORD{today.strftime('%Y%m%d')}003",
+            "order_no": "ORD20260628003",
             "status": OrderStatus.SHIPPED.value,
             "days_ago": 2,
             "items": [("SKU006", 1), ("SKU010", 1)],  # WS1 手表 + MS1 鼠标
         },
         # 4. 已签收
         {
-            "order_no": f"ORD{today.strftime('%Y%m%d')}004",
+            "order_no": "ORD20260628004",
             "status": OrderStatus.DELIVERED.value,
             "days_ago": 5,
             "items": [("SKU007", 1)],  # PT1 平板
         },
         # 5. 已完成
         {
-            "order_no": f"ORD{today.strftime('%Y%m%d')}005",
+            "order_no": "ORD20260628005",
             "status": OrderStatus.COMPLETED.value,
             "days_ago": 15,
             "items": [("SKU001", 1)],  # ZP1
         },
         # 6. 已退款（演示退款对话）
         {
-            "order_no": f"ORD{today.strftime('%Y%m%d')}006",
+            "order_no": "ORD20260628006",
             "status": OrderStatus.REFUNDED.value,
             "days_ago": 7,
             "items": [("SKU008", 1)],  # LB1 笔记本
         },
         # 7. 待支付（更早）
+                # 7. 待支付-3天前（C2 用例）
         {
-            "order_no": f"ORD{today.strftime('%Y%m%d')}007",
+            "order_no": "ORD20260620001",
             "status": OrderStatus.PENDING.value,
             "days_ago": 3,
-            "items": [("SKU003", 2)],  # ZN1 x2
+            "items": [("SKU005", 1)],
         },
+        # 8. 已签收-超期（10 天前，超 7 天时效窗口 → eval A5 期望不可退）
+        {
+            "order_no": "ORD20260615004",
+            "status": OrderStatus.DELIVERED.value,
+            "days_ago": 10,
+            "items": [("SKU002", 1)],
+        },
+        
     ]
 
 
