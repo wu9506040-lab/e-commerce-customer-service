@@ -12,6 +12,7 @@ from app.models.user import User
 from app.schemas.admin_analytics import AdminAnalyticsResponse
 from app.services.analytics_service import AnalyticsService
 from app.services.audit_service import try_log_action
+from app.services import kpi_service  # WP1 业务 KPI
 
 logger = logging.getLogger(__name__)
 
@@ -90,3 +91,24 @@ def get_admin_analytics(
         f"window={start_date}~{end_date} cache_hit={result.get('cache_hit')}"
     )
     return result
+
+
+@router.get("/kpi", summary="业务 KPI 大盘（WP1：deflection/CSAT/拦截率）")
+def get_kpi(
+    days: int = Query(14, ge=1, le=90),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """客服域业务指标窗口聚合（指标定义见 kpi_service 模块注释）。"""
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    return kpi_service.compute_kpi(db, start, end)
+
+
+@router.get("/kpi/trend", summary="业务 KPI 按日趋势（自助解决率折线）")
+def get_kpi_trend(
+    days: int = Query(14, ge=1, le=60),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return kpi_service.compute_trend(db, days=days)
