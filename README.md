@@ -23,7 +23,7 @@
 | **检索质量** | 330 题分层评测集四级同日连跑（2026-10-09）：dense 0.703 → +BM25/RRF **0.755（+5.2pp）** → +LLM Rerank **0.806（累计 +10.3pp）**；hit@10 0.806→0.882 | `cd deploy && docker compose up -d qdrant redis mysql api`，根目录 `PYTHONPATH=backend python scripts/eval_hitk.py`（逐级加 `--bm25`、`--bm25 --rerank`） |
 | **人工介入闭环（M15）** | 转自动落工单（P0 优先队列/认领/回复注入会话/结单），坐席工作台 `/admin/handoff` | 对触发词说"转人工"→ admin 登录看队列 → 回复 → 用户侧会话可见 |
 | **业务 KPI 大盘（WP1）** | AI 自助解决率 / 转人工率 / CSAT / 拦截率 / 平均轮次 / **LLM 成本估算 + Guard 省钱额** + 按日趋势，含指标公式定义 | admin 登录看 `/admin/kpi`；口径 `backend/app/services/kpi_service.py` 模块注释（成本为估算口径，note 显式标注） |
-| **测试资产** | **638 passed**（单元 + E2E，含 M15 工单 6 例），覆盖率 **67%** | `cd backend && python -m pytest tests --cov=app` |
+| **测试资产** | **643 passed**（单元 + E2E，含 M15 工单 6 例 + WP1 指标 6 例），覆盖率 **67%** | `cd backend && python -m pytest tests --cov=app` |
 | **知识库** | 18 个结构化源文件 → 67 篇文档 → 202 chunks，chunk_id 内容哈希 uuid5 **幂等入库**（重跑/重排零重复） | `PYTHONPATH=backend python scripts/ingest_ecommerce_kb.py` |
 | **服务编排** | api / frontend / qdrant / mysql / redis 5 服务 Docker Compose + SSE 流式 + JWT 鉴权 | `deploy/docker-compose.yml` |
 
