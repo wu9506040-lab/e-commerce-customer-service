@@ -15,6 +15,7 @@ message_ratings（评价）、operation_log chat_guard_blocked（拦截）。
 from __future__ import annotations
 
 import datetime as dt
+import os
 from typing import Dict, Optional
 
 from sqlalchemy import func, select
@@ -25,9 +26,62 @@ from app.models.message import Message
 from app.models.message_rating import MessageRating
 from app.models.operation_log import OperationLog
 
+# LLM 计价（元/1K tokens）——默认对齐 qwen-plus 公开价，可用 env 覆盖，价格随官方调整
+# ⚠️ 成本为「估算」：token 优先取消息真实 token_count，缺失时按中文 1字≈1.5token 折算，非账单级精度
+_PRICE_IN_PER_1K = float(os.getenv("LLM_PRICE_IN_PER_1K", "0.0008"))
+_PRICE_OUT_PER_1K = float(os.getenv("LLM_PRICE_OUT_PER_1K", "0.002"))
+_CHAR_PER_TOKEN = 1.5  # 中文经验比，仅用于无 token_count 的估算
+
 
 def _safe_div(a: float, b: float) -> Optional[float]:
     return round(a / b, 4) if b else None
+
+
+def _estimate_tokens(text_len: int, token_count: Optional[int]) -> int:
+    """token 估算：真实 token_count 优先，缺失按中文 1字≈1.5token 折算。"""
+    if token_count and token_count > 0:
+        return int(token_count)
+    return int((text_len or 0) / _CHAR_PER_TOKEN) + 1
+
+
+def _compute_cost(db: Session, start: dt.datetime, end: dt.datetime,
+                  sessions_total: int, guard_blocked: int) -> Dict:
+    """窗口内 LLM 成本估算（老板视角账单）。
+
+    口径诚实性：
+    - prompt tokens = user 消息；completion tokens = assistant 消息（system 固定开销并入 prompt）
+    - token_count 列有值用真值，否则字符数/1.5 折算 → 结果是「估算」不是账单，note 字段标注
+    - Guard 省钱估算 = 拦截次数 × 平均单会话成本（被拦请求若放行将产生的 LLM 开销）
+    """
+    in_win = (Message.create_time >= start, Message.create_time < end, Message.deleted == 0)
+    in_tokens = out_tokens = 0
+    rows = db.execute(
+        select(Message.role, func.coalesce(func.sum(Message.token_count), 0),
+               func.coalesce(func.sum(func.length(Message.content)), 0))
+        .where(*in_win).group_by(Message.role)
+    ).all()
+    for role, tok_sum, char_sum in rows:
+        # 聚合里 token_count 可能混 NULL：用 (真值合计 + 缺失按字符) 的保守近似
+        est = int(tok_sum) if tok_sum else int(char_sum / _CHAR_PER_TOKEN)
+        if est == 0:
+            est = int(char_sum / _CHAR_PER_TOKEN)
+        if role == "assistant":
+            out_tokens += est
+        else:
+            in_tokens += est
+    cost_in = in_tokens / 1000 * _PRICE_IN_PER_1K
+    cost_out = out_tokens / 1000 * _PRICE_OUT_PER_1K
+    total = round(cost_in + cost_out, 4)
+    avg_per_session = _safe_div(total, sessions_total)
+    return {
+        "input_tokens": in_tokens,
+        "output_tokens": out_tokens,
+        "total_cost_cny": total,
+        "avg_cost_per_session_cny": avg_per_session,
+        "guard_savings_cny": round(guard_blocked * (avg_per_session or 0), 4) if guard_blocked else 0.0,
+        "pricing": {"model": "qwen-plus", "in_per_1k": _PRICE_IN_PER_1K, "out_per_1k": _PRICE_OUT_PER_1K},
+        "note": "估算口径（token 真值优先、缺失按 1字≈0.67token 折算），非账单精度",
+    }
 
 
 def upsert_rating(
@@ -122,6 +176,7 @@ def compute_kpi(db: Session, start: dt.datetime, end: dt.datetime) -> Dict:
         "guard_block_rate": _safe_div(guard_blocked, sessions_total),
         "avg_rounds": _safe_div(user_msgs, sessions_total),
         "p0_ratio": _safe_div(p0_total, handoff_total),
+        "cost": _compute_cost(db, start, end, sessions_total, guard_blocked),
     }
     return kpi
 

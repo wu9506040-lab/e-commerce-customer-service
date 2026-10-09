@@ -73,6 +73,18 @@ onMounted(load);
           <div class="val">{{ kpi.avg_rounds ?? '—' }}</div>
           <div class="sub">用户消息 {{ kpi.messages_user }} 条</div>
         </div>
+        <div class="card hl2">
+          <div class="label">LLM 成本（估算 ¥）</div>
+          <div class="val">{{ kpi.cost.total_cost_cny.toFixed(4) }}</div>
+          <div class="sub">
+            单会话 {{ kpi.cost.avg_cost_per_session_cny ?? '—' }} · in {{ kpi.cost.input_tokens }} / out {{ kpi.cost.output_tokens }} tok
+          </div>
+        </div>
+        <div class="card">
+          <div class="label">Guard 拦截省钱（估）</div>
+          <div class="val">¥{{ kpi.cost.guard_savings_cny.toFixed(4) }}</div>
+          <div class="sub">拦截 {{ kpi.guard_blocked }} 次未消耗 token · {{ kpi.cost.pricing.model }} 计价 {{ kpi.cost.pricing.in_per_1k }}/{{ kpi.cost.pricing.out_per_1k }} 每 1k</div>
+        </div>
       </section>
 
       <section v-if="trend" class="trend">
@@ -113,6 +125,7 @@ select, header button { padding: 4px 10px; border: 1px solid #d9d9d9; border-rad
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0; }
 .card { border: 1px solid #eee; border-radius: 10px; padding: 14px; background: #fafbfe; }
 .card.hl { background: #eef6ee; border-color: #bfdcbf; }
+.card.hl2 { background: #f4f0ff; border-color: #d6c9f2; }
 .label { color: #667; font-size: 12px; }
 .val { font-size: 26px; font-weight: 700; margin: 4px 0; }
 .sub { color: #99a; font-size: 12px; }

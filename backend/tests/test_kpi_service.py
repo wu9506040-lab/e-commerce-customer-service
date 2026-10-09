@@ -99,6 +99,27 @@ class TestTrendAndApi:
         assert today["sessions"] >= 1
         assert today["handoffs"] >= 1
 
+    def test_kpi_cost_with_real_tokens(self, db_session):
+        # 显式 token_count → 不走字符折算，账单可精确断言
+        m1 = Message(session_id="sc1", user_id=1, role="user", content="问", token_count=1000)
+        m2 = Message(session_id="sc1", user_id=1, role="assistant", content="答", token_count=500)
+        m1.create_time = dt.datetime.now()
+        m2.create_time = dt.datetime.now()
+        db_session.add_all([m1, m2])
+        db_session.commit()
+        k = kpi_service.compute_kpi(
+            db_session,
+            dt.datetime.now() - dt.timedelta(hours=1),
+            dt.datetime.now() + dt.timedelta(hours=1),
+        )
+        c = k["cost"]
+        assert c["input_tokens"] == 1000
+        assert c["output_tokens"] == 500
+        # qwen-plus 默认价：in 0.0008/1k, out 0.002/1k → 1*0.0008 + 0.5*0.002 = 0.0018
+        assert c["total_cost_cny"] == round(0.0008 + 0.001, 4)
+        assert c["avg_cost_per_session_cny"] == c["total_cost_cny"]  # 1 会话
+        assert c["note"]  # 估算口径必须显式标注
+
     def test_kpi5_api_handler_anonymous(self, db_session):
         resp = rate_handler(
             RatePayload(session_id="s5", rating="up", comment="有用"),

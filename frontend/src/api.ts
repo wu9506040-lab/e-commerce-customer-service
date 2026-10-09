@@ -592,6 +592,15 @@ export interface KpiSnapshot {
   guard_block_rate: number | null;
   avg_rounds: number | null;
   p0_ratio: number | null;
+  cost: {
+    input_tokens: number;
+    output_tokens: number;
+    total_cost_cny: number;
+    avg_cost_per_session_cny: number | null;
+    guard_savings_cny: number;
+    pricing: { model: string; in_per_1k: number; out_per_1k: number };
+    note: string;
+  };
 }
 
 export interface KpiTrendResp {
