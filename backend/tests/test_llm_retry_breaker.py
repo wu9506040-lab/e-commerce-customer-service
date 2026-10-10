@@ -298,9 +298,14 @@ def test_stream_chat_retry_on_create():
     print("PASS: stream_chat create 阶段重试生效")
 
 
-def test_stream_chat_mid_stream_disconnect_no_raise():
-    """场景 11：流式中途断连不抛（让上游自然结束）"""
+def test_stream_chat_mid_stream_disconnect_raises_truncated():
+    """场景 11（V13 1.2 契约变更）：流式中途断连必须抛 StreamTruncatedError
+
+    旧断言"断连不抛、partial 自然结束"把 bug 写成了规范——上游无法区分残答与
+    完整答案，半截回答会进语义缓存被反复供应。现在显式抛错，消费方打标隔离。
+    """
     from app.core import qwen
+    from app.core.qwen import StreamTruncatedError
     qwen.reset_breaker()
 
     def fake_create(**kwargs):
@@ -314,13 +319,17 @@ def test_stream_chat_mid_stream_disconnect_no_raise():
     mock_client = MagicMock()
     mock_client.chat.completions.create = fake_create
 
-    with patch.object(qwen, "get_client", return_value=mock_client), \
+    got = []
+    with pytest.raises(StreamTruncatedError) as ei, \
+         patch.object(qwen, "get_client", return_value=mock_client), \
          patch.object(qwen.time, "sleep"):
-        chunks = list(qwen.stream_chat([{"role": "user", "content": "hi"}]))
+        for c in qwen.stream_chat([{"role": "user", "content": "hi"}]):
+            got.append(c)
 
-    # 应只收到 c1，后续断连不抛
-    assert chunks == ["c1"], f"中途断连应只 yield 已收到的 chunks，实际 {chunks}"
-    print("PASS: 流式中途断连不抛，partial response 自然结束")
+    # 断连前已收到的 c1 正常下发；断连点显式抛错并携带 partial_chunks
+    assert got == ["c1"], f"断连前应正常 yield，实际 {got}"
+    assert ei.value.partial_chunks == 1
+    print("PASS: 流式中途断连显式抛 StreamTruncatedError（partial 信息可观测）")
 
 
 if __name__ == "__main__":
@@ -336,5 +345,5 @@ if __name__ == "__main__":
     test_chat_circuit_breaker_opens_after_threshold()
     test_chat_circuit_open_skips_retry()
     test_stream_chat_retry_on_create()
-    test_stream_chat_mid_stream_disconnect_no_raise()
+    test_stream_chat_mid_stream_disconnect_raises_truncated()
     print("\nALL 11 SCENARIOS PASSED")
