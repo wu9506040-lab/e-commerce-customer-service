@@ -46,7 +46,7 @@ try:
 except ImportError:
     logging.warning("python-dotenv 未安装，跳过 .env 加载（依赖系统环境变量）")
 
-from app.services.rag.ingest import ingest_text  # noqa: E402
+from app.services.rag.ingest import ingest_text, normalize_doc_type  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,7 +97,9 @@ def main() -> int:
         for item in items:
             source = item.get("source")
             text = item.get("text")
-            doc_type = item.get("doc_type", "manual")
+            # V13（2.1'）：doc_type 词表归一（13 种原始值 → policy/faq/product/promo），
+            # 让 P3-3 RRF 类型加权真实生效（审计发现原词表错位、boost 全部落空）
+            doc_type = normalize_doc_type(item.get("doc_type", "manual"), source)
 
             if not source or not text:
                 logger.warning(f"  跳过无效 item: source={source!r}")
