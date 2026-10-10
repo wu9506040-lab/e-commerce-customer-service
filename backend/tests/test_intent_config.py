@@ -68,16 +68,18 @@ class TestIntentModuleLoadsYAML:
         assert yaml_intents == {"refund_query", "policy_query", "order_query", "product_query"}
 
     def test_intent_yaml_pattern_counts_preserved(self):
-        """YAML pattern 数量与原硬编码完全一致（21 + 30 + 12 + 18 = 81）。"""
+        """pattern 数量守卫：基线 21+30+12+18=81；V13（2026-10-10 I2 修复）
+        policy 段 +3 条时效 pattern（退款.*到账/工作日/多久）→ 84。
+        改数量必须是有意的（防误删/误加），同步更新此断言。"""
         from app.services.config_loader import get_config_loader
 
         yaml_data = get_config_loader().load("intent")
         yaml_counts = {k: len(v) for k, v in yaml_data["INTENT_RULES"].items()}
         assert yaml_counts["refund_query"] == 21
-        assert yaml_counts["policy_query"] == 30
+        assert yaml_counts["policy_query"] == 33
         assert yaml_counts["order_query"] == 12
         assert yaml_counts["product_query"] == 18
-        assert sum(yaml_counts.values()) == 81
+        assert sum(yaml_counts.values()) == 84
 
     def test_intent_rules_constants_match_yaml(self):
         """intent_service.INTENT_RULES 与 YAML 字段一一对应（防偏移）。"""
