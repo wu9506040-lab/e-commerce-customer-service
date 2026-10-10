@@ -167,8 +167,21 @@ class QwenRerankProvider:
             )
             scores = _parse_batch_scores(result["reply"], len(batch))
         except Exception as e:
-            logger.warning(f"rerank 调用失败，降级到原始排序: {e}")
+            # V13（降级显形，2026-10-10 模型快照炸弹教训）：配置/端点类错误曾被
+            # 本分支以"降原序"静默吃掉——rerank 整级空转而评测数字看似正常，
+            # 只有两次结果逐项全等才暴露。升级为 error 级 + 计数上报 /metrics。
+            from app.services.metrics import metrics as _metrics
+            logger.error(f"rerank 调用失败，本级降级为原始排序（该级未生效！）: {e}")
+            _metrics.record_rerank(ok=False)
             scores = [0] * len(batch)
+        else:
+            from app.services.metrics import metrics as _metrics
+            # 全 0 分 = 解析失败的静默降级同型故障，一并显形
+            if batch and all(s == 0 for s in scores):
+                logger.error("rerank 全候选 0 分（疑似解析失败），按降级处理（该级未生效！）")
+                _metrics.record_rerank(ok=False)
+            else:
+                _metrics.record_rerank(ok=True)
 
         # 合并分数
         for c, s in zip(batch, scores):

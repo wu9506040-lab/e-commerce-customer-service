@@ -159,30 +159,50 @@ ESCALATE_P0_KEYWORDS: dict[str, tuple[str, ...]] = {
         "质量问题", "破损", "坏点", "开胶", "假货", "二手商品",
         "质量这么差", "质量差", "质量不行",
     ),
-    # 主动要人工类（P0 = 用户明确要求升级）
+    # 法律行动类（P0：起诉/律师 = 诉讼风险，保持最高优先级）
+    # V13（1.5）：原"user_requested 含转人工/机器人"拆分为两类——
+    # 纯要人工是路由诉求不是风险事件，霸占 P0 稀释坐席队列（审计实锤：
+    # 随口一句"你是不是机器人"也升 P0）。拆出 user_transfer → P1。
     "user_requested": (
-        "转人工", "转主管", "机器人", "起诉", "律师",
+        "起诉", "律师",
+    ),
+    # 主动要人工类（V13 新类：升级转接但按 P1 排队）
+    "user_transfer": (
+        "转人工", "转主管", "机器人", "人工客服", "真人客服", "找人工", "转接人工",
     ),
 }
 
-# 4 类别默认优先级与中文标签（与 config/business_rules/decide.yaml ESCALATE_CATEGORIES 对齐）
+# 类别默认优先级与中文标签（V13 1.5：可被 guard.yaml ESCALATE_P0_* 覆盖，代码值为兜底）
 _P0_CATEGORY_PRIORITY: dict[str, str] = {
     "complaint": "P0",
     "compensation": "P0",
     "quality": "P0",
     "user_requested": "P0",
+    "user_transfer": "P1",  # V13(1.5)：纯要人工不再霸占 P0
 }
 _P0_CATEGORY_LABEL: dict[str, str] = {
     "complaint": "投诉",
     "compensation": "补偿诉求",
     "quality": "质量问题",
     "user_requested": "用户要求",
+    "user_transfer": "主动要求人工",
 }
+
+
+# V13（1.5）：guard.yaml 可覆盖词表与优先级（启动期一次加载，与 guard 其余规则
+# 同方案；加载失败/缺段 → 保留代码内置默认，行为不回退到不可用）
+try:
+    from app.services.config_loader import get_config_loader as _get_loader
+    _GUARD_OVR = _get_loader().load("guard") or {}
+    for _cat, _kws in (_GUARD_OVR.get("ESCALATE_P0_KEYWORDS") or {}).items():
+        ESCALATE_P0_KEYWORDS[_cat] = tuple(_kws)
+    _P0_CATEGORY_PRIORITY.update(_GUARD_OVR.get("ESCALATE_P0_PRIORITY") or {})
+except Exception as _e:
+    logger.warning(f"escalate 词表 guard.yaml 覆盖失败，用内置默认: {_e}")
 
 
 def detect_p0_escalate(query: str) -> Optional[tuple[str, str]]:
     """检测用户 query 是否含 P0 高风险关键词。
-
     命中 → 返回 (category, matched_keyword)；
     不命中 → 返回 None。
 
@@ -209,8 +229,9 @@ def detect_p0_escalate(query: str) -> Optional[tuple[str, str]]:
     q = query.strip()
     if not q:
         return None
-    # 按优先级遍历：COMPLAINT → COMPENSATION → QUALITY → USER_REQUESTED
-    for category in ("complaint", "compensation", "quality", "user_requested"):
+    # 按词表插入序遍历（高风险在前）；V13(1.5)：改由 dict 键驱动，
+    # guard.yaml 新增类目自动生效（complaint→compensation→quality→user_requested→user_transfer）
+    for category in ESCALATE_P0_KEYWORDS:
         for kw in ESCALATE_P0_KEYWORDS[category]:
             if kw in q:
                 # P2-5 结构化日志：用于 audit + 运营看 100 case 真实话术命中分布
