@@ -24,13 +24,26 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+class _FrozenDatetime(datetime.datetime):
+    """把时钟钉在 2026-08-15 12:00（美妆 + storeA 两条促销的共存窗口中点）。"""
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 8, 15, 12, 0, 0)
+
+
 # =============================================================
 # #1-#2 get_active_promotions（时间窗 + 店铺/类目过滤）
 # =============================================================
 def test_get_active_promotions_within_window():
-    """#1 当前时间窗内的优惠全部命中（已知 active = 2：美妆 + storeA）"""
+    """#1 时间窗内的优惠全部命中（冻结 2026-08-15：active = 美妆 + storeA）
+
+    【2026-10-10 CI 修复时间炸弹】storeA 窗口 2026-07-01→09-30 随真实时钟过期，
+    本用例语义只测"窗内命中"，与"今天几号"无关 → 钉住 yaml_impl 的 datetime.now。
+    """
     svc = YamlPromotionRuleService()
-    promos = _run(svc.get_active_promotions(1001, []))
+    with patch("app.services.promotion.yaml_impl.datetime", _FrozenDatetime):
+        promos = _run(svc.get_active_promotions(1001, []))
     assert len(promos) >= 2
     promo_ids = {p.promotion_id for p in promos}
     # 已过期 PROMO_2025_EXPIRED 不在
