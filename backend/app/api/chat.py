@@ -29,6 +29,7 @@ from fastapi.responses import StreamingResponse
 from app.api.deps import get_current_user_optional
 from app.core.config import settings
 from app.core.context import set_session_id, set_user_id  # M8
+from app.core.embedding import begin_embed_memo  # V13(2.2) 请求级 embedding 复用
 from app.models.user import User
 from app.schemas.chat import ChatRequest, ResumeRequest
 from app.services.audit_service import try_log_action
@@ -181,6 +182,11 @@ async def chat(
 
     # 3. 异步 SSE 生成器（M7：async generator + heartbeat + 断开检测）
     async def event_generator():
+        # V13（2.2）：请求级 embedding 复用起点——guard L2 / 语义缓存读写 /
+        # 检索共享同一 query 向量（此前同请求同文本最多真实调 4 次 API）。
+        # contextvar 随本 Task 结束自然消亡，无需显式 reset。
+        begin_embed_memo()
+
         # M11.5 P2：异常行为监控（在最早期记一次，含被 guard 拦的）
         # — 不阻塞业务（Redis 异常放行），只告警
         behavior_monitor.record_request(
@@ -381,12 +387,14 @@ async def chat(
             # policy_query 才进缓存（refund_query 已在前置分类跳过）
             cached_entities = pre_intent.get("entities", {"order_no": None, "sku": None, "keywords": []})
             # P0-H：cache_hit 也暴露检索 contexts（复用 PolicyService 检索，不调 LLM）
-            # LLM 跳过是因为答案命中缓存，RAG 检索是 cheap 操作值得仍跑
+            # V13（2.2）修订：原注释称"RAG 检索是 cheap 操作"在 USE_RERANK=True 下
+            # 不成立——那次检索含一整次 LLM rerank 调用。缓存命中路径改 skip_rerank：
+            # contexts 只为展示来源，粗排足够，不值得再花一次精排钱和 1.2s
             cache_contexts: list = []
             cache_scores: list = []
             try:
                 cache_policy_docs = await asyncio.to_thread(
-                    PolicyService.search_policy, payload.query, 5
+                    PolicyService.search_policy, payload.query, 5, skip_rerank=True
                 )
                 cache_contexts, cache_scores = _build_meta_contexts(policy_docs=cache_policy_docs)
             except Exception as e:
@@ -437,6 +445,9 @@ async def chat(
             payload.query, user_id, history,
             sku=payload.sku, order_no=payload.order_no,
             session_id=session_id,
+            # V13（2.2）：透传预分类结果，消除同请求双分类（此前规则 miss 时
+            # chat.py 与 orchestrator 各调一次 LLM classify，且输入版本不同）
+            pre_intent=pre_intent,
         ))
 
         try:

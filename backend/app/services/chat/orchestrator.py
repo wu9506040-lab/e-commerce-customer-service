@@ -68,6 +68,7 @@ class Synthesizer:
         sku: Optional[str] = None,
         order_no: Optional[str] = None,
         session_id: Optional[str] = None,
+        pre_intent: Optional[dict] = None,
     ) -> Generator[Tuple[str, Any], None, None]:
         """
         主入口：分类 → 分派 → 融合 → LLM 流式输出
@@ -163,7 +164,14 @@ class Synthesizer:
             )
 
         # 1. 意图分类（V12 多意图：primary 走 4 类分派；secondary 注入 prompt）
-        intent_result = IntentService.classify(query)
+        # V13（2.2）：消除双分类——chat.py 入口为缓存决策/V10-A 已 classify(raw query)
+        # 一次，规则 miss 时此前同一请求会再调一次 LLM 分类（且输入版本可能不同）。
+        # 复用条件严格：pre_intent 存在 且 本轮改写未改变 query——改写过的必须重分。
+        if pre_intent is not None and not was_rewritten:
+            intent_result = pre_intent
+            logger.debug("synth.intent: 复用 chat 预分类（省一次 LLM 调用）")
+        else:
+            intent_result = IntentService.classify(query)
         primary = intent_result["primary"]  # V12：主意图（替代 V11 的 intent_result["intent"]）
         entities = intent_result["entities"]
         # V12：构造 secondary_intent_block（让 LLM 知道用户可能还想问 X 类问题）
