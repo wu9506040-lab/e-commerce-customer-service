@@ -53,7 +53,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest==9.1.1 pytest-asyncio==1.4.0
+          pip install -r requirements-dev.txt
+
+      - name: Wait for Qdrant ready（qdrant 镜像无 curl/wget/bash，容器内 healthcheck 不可用，改 runner 侧轮询 /readyz）
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:6333/readyz && exit 0
+            echo "qdrant not ready ($i/30)"; sleep 2
+          done
+          echo "qdrant failed to become ready" >&2; exit 1
 
       - name: Run pytest
         working-directory: backend
@@ -65,8 +73,26 @@ jobs:
           QWEN_API_KEY: ci-fake-key-not-real
           MYSQL_HOST: 127.0.0.1
         run: |
-          python -m pytest tests/ -v --tb=short
+          # 覆盖率门禁：阈值 = 2026-10-10 本地/CI 等价实测 68% 减 5pp 余量（不硬套 README 宣称值）
+          python -m pytest tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=63
 
       - name: Env diff check（防部署层分叉 · 2026-07-19 commit ref）
+        # --strict 升级暂缓：.env.dev 的真实开发密码命中 placeholder 黑名单（误报），
+        # 修准黑名单后再升级——详见 docs/learning_log.md V13 条目
         run: |
           python scripts/ci_env_diff.py
+
+  lint:
+    name: Ruff fatal gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Ruff check（E9 语法错误 + F82x 未定义名 · 基线 0，2026-10-10）
+        run: |
+          pip install ruff==0.16.10
+          ruff check backend/ scripts/
