@@ -93,6 +93,7 @@ def evaluate_single(
     use_rerank: bool = False,
     use_bm25: bool = False,
     use_multi_query: bool = False,
+    match_source: bool = False,
 ) -> Dict[str, Any]:
     """
     对单条 query 做 embedding + Qdrant top-K 检索，记录结果
@@ -159,10 +160,20 @@ def evaluate_single(
 
     retrieved_ids = [r["id"] for r in results]
     rank = None
-    for idx, rid in enumerate(retrieved_ids, 1):
-        if rid == relevant_id:
+    item_source = item.get("source")
+    for idx, r in enumerate(results, 1):
+        if r["id"] == relevant_id:
             rank = idx
             break
+        # V13（2.1'）：--match-source 源级判定——chunk_id 是内容哈希，
+        # 重切片/重灌后 gold doc_id 必然漂移（WP2 调研预警）；评测集的
+        # source 是稳定键，源级命中 = "检回正确文档的任意 chunk"（口径更宽，
+        # 两种口径的对照结果都要落报告，禁止跨口径比数字）
+        if match_source and item_source:
+            r_src = (r.get("payload") or {}).get("source") or r.get("source")
+            if r_src == item_source:
+                rank = idx
+                break
 
     hit_at_k = {k: (rank is not None and rank <= k) for k in (1, 3, 5, 10)}
     return {
@@ -272,6 +283,7 @@ def main() -> int:
     parser.add_argument("--bm25", action="store_true", help="启用 BM25 稀疏召回 + RRF 融合（与 --rerank 可叠加）")
     parser.add_argument("--multi-query", action="store_true", help="启用 Phase 4 A4 Multi-Query（query_rewriter 输出 N 路 + policy 多路 RRF 融合）")
     parser.add_argument("--latency-bench", action="store_true", help="latency benchmark 模式：每条 query 跑 3 次取中位数（防抖动）")
+    parser.add_argument("--match-source", action="store_true", help="V13(2.1') 命中判定放宽到 source 级（重灌后 doc_id 漂移场景专用；报告标注口径）")
     args = parser.parse_args()
 
     if args.multi_query:
@@ -297,13 +309,13 @@ def main() -> int:
     for i, item in enumerate(eval_set, 1):
         try:
             if n_runs == 1:
-                r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25, use_multi_query=args.multi_query)
+                r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25, use_multi_query=args.multi_query, match_source=args.match_source)
             else:
                 # 跑 3 次取 latency_ms 中位数；其他字段（hit/rank/retrieved_ids）取最后一次
                 latencies = []
                 last_r = None
                 for _ in range(n_runs):
-                    last_r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25, use_multi_query=args.multi_query)
+                    last_r = evaluate_single(item, use_rerank=args.rerank, use_bm25=args.bm25, use_multi_query=args.multi_query, match_source=args.match_source)
                     latencies.append(last_r["latency_ms"])
                 median_latency = round(statistics.median(latencies), 2)
                 last_r["latency_ms"] = median_latency
