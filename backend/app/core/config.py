@@ -194,6 +194,13 @@ class Settings(BaseSettings):
     # 默认 True（数据稳定性优先）；旧点需 scripts/migrate_chunk_id.py 手动迁移
     RAG_CHUNK_ID_BY_CONTENT_HASH: bool = True
 
+    # ---- V13（2.1'）：RAG 切片策略 ----
+    # "sentence" = 句边界贪心切片（默认：chunk 以句号/问号/换行为界收尾，
+    #              overlap 整句携带，不再切断从句——2026-10-10 审计把 500 硬切
+    #              列为与竞品同型短板）
+    # "char"     = 2026-10 之前的字符级滑窗（保留作 A/B 对照与回退开关）
+    RAG_CHUNK_STRATEGY: str = "sentence"
+
     # ---- P1-2: RAG BM25 索引后台异步重建 ----
     # 开启后 ingest 完成后触发后台线程重建 BM25 索引（不阻塞主流程）
     #   - 收益：避免首次 BM25 检索触发懒加载导致 1-3s RT spike
@@ -213,6 +220,9 @@ class Settings(BaseSettings):
         "policy": 1.2,
         "faq": 1.0,
         "product": 0.9,
+        # V13（2.1'）：词表对齐——ingest 归一化产出 promo 类目（促销活动），
+        # 修复审计发现的"实际 doc_type 13 种 vs boost 键 3 个→加权全部落空"
+        "promo": 1.0,
     }
 
     # ---- Sprint 17: KnowledgeSource 抽象 ----

@@ -20,6 +20,10 @@ from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    FieldCondition,
+    Filter,
+    FilterSelector,
+    MatchValue,
     VectorParams,
     PointStruct,
 )
@@ -227,6 +231,31 @@ def delete_points(
     client.delete(collection_name=name, points_selector=point_ids, wait=True)
     logger.info(f"qdrant delete: {len(point_ids)} points from '{name}'")
     return len(point_ids)
+
+
+def delete_source_points(source: str, collection_name: Optional[str] = None) -> int:
+    """按 source 删除该来源的全部存量点（V13 2.1' delete-before-write 原语）。
+
+    背景：chunk_id 基于内容 hash 后，切片文本一变 ID 就变，而旧点从不删除 →
+    库里多世代混存（2026-10-10 审计实测线上 202 点中 ~45% 为陈旧世代）。
+    重灌前必须先走本函数把同 source 旧点清空。
+
+    Returns:
+        Qdrant 确认删除的点数（0 = 该 source 无存量，首次入库）
+    """
+    name = collection_name or QDRANT_COLLECTION
+    client = get_client()
+    result = client.delete(
+        collection_name=name,
+        points_selector=FilterSelector(
+            filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
+        ),
+        wait=True,
+    )
+    deleted = getattr(result, "deleted_count", 0) or 0
+    if deleted:
+        logger.info(f"qdrant delete_source: source={source} 预清旧点 {deleted} 个")
+    return deleted
 
 
 # =============================================================

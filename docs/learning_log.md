@@ -7795,3 +7795,25 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 ### 6. 关联 commit
 `b09d30f`（CI 修复）· `4b3870c`（三缺陷转正）· 本分支（门禁）· `scripts/eval_refund_report.json`（22/22）
 
+---
+
+## §66 · V13 批次一（1.1-1.3）+ 2.1' 洗库切片重灌 + 模型快照时间炸弹（2026-10-10 深夜）
+
+### 1. 一晚五连（全在 master）
+- **1.1** decide 失败静默滑向 synthesize → retry 自环 + "永不无决策生成"（`d62f474`）。连带现形：test_synthesizer_refund 5 例给 chat 塞单个非 JSON return_value——**decide 从未解析成功过，全靠旧 bug 滑进 synthesize 拿同一字符串碰巧绿**（第 5 组说谎测试）。
+- **1.2** 流式中途断连吞异常 → `StreamTruncatedError` 显式化：残答 done 打标、禁入语义缓存、审计带标、metrics 残答率（`2b89f14`）。注意：test_llm_retry_breaker 场景 11 原断言"断连不抛"是把 bug 写成规范，按新契约重写。
+- **1.3** 已发 token 后 handler 抛异常 → 禁整流重答（防"半截+全文"拼接落库），改固定话术收尾；未发 token 才允许 V1.2 fallback。
+- **2.1' 提前执行**：句边界贪心切片（`chunk_text_semantic`，overlap 整句携带，超长句退字符滑窗）+ title 增强 embedding（payload.text 保持纯净、chunk_id 仍正文哈希）+ ingest **逐源 delete-before-write** + `prune_orphan_sources.py` + `normalize_doc_type`（13 种→policy/faq/product/promo，救活 P3-3 加权）+ eval `--match-source` 源级口径。
+- **重灌实录**：202 点（45% 陈旧+17 孤儿）→ 136 点 / 114 源全现世代；三级新基线 dense 0.700 → hybrid 0.733 → +rerank **0.779**（hit@1 0.427→0.576；rerank p50 1478ms 延迟成本首次显形）。22/22 活体回归零副作用。
+
+### 2. 模型快照时间炸弹（今晚最贵的发现）
+`QWEN_MODEL=qwen-plus-2025-07-28` 被 DashScope 退役 → 404；rerank provider"全 0 分保原序"静默降级把它吃成**数字正常但链路空转**（hybrid 与 hybrid+rerank 首次重跑逐项全等 + p50 仅 +16ms 才暴露）。改 `qwen-plus` 通用别名后复测才拿到真增益。教训入规：
+- 模型配置一律水位别名，禁日期快照（快照退役=第三类时间炸弹，前两类：数据窗口、评测断言）
+- **降级分支必须可观测**：静默降级 + 结果"看起来合理" = 最危险的故障形态（同主题已有：BM25 失败降 dense、检索空返 []、qdrant 开路回 []——降级矩阵加"显形"要求，配合 1.7 开关自报）
+
+### 3. 口径纪律
+新旧 hit@K 跨口径不可比（脏库+id 口径 vs 洗库+source 口径），README 双记录 + 更正声明追加；`data/eval_hitk_v13_*.json` 三份报告在库（data/ 不 track，数字进 README）。
+
+### 4. 遗留（明日批次一收尾时带上）
+1.4 resolve→Redis 热路径失效、1.5 P0 词表分级、1.6 V13 词序误升级返修（今日 21:00 审计发现：`怎么退款还没到账` 会因 policy `怎么.*退款` 先命中被误升级——升级判定需带 matched_pattern 或负向前瞻）、1.7 开关真值自报 + **模型名启动期探活**（新增要求，源自今晚炸弹）；rerank"全 0 静默"改显式降级标记（记 E 包后补）。
+
