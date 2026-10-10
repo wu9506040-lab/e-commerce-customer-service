@@ -16,6 +16,7 @@ import threading
 from typing import Any, Generator
 
 from app.core.providers.llm import get_llm_provider
+from app.core.qwen import StreamTruncatedError
 from app.services.chat.prompt_assembler import SYSTEM_PROMPT_BASE
 from app.services.metrics import metrics
 from app.tools.product_tool import ProductTool
@@ -40,13 +41,21 @@ def stream_llm(user_prompt: str) -> Generator[tuple[str, Any], None, None]:
     ]
     full_answer = ""
     # semaphore 包住整个流式调用：>10 并发时排队，超出请求首 token 延迟增大但不会 429
+    truncated = False
     with _LLM_SEMAPHORE:
-        for chunk in get_llm_provider().stream_chat(messages, temperature=0.3, max_tokens=256):
-            full_answer += chunk
-            yield ("token", chunk)
+        try:
+            for chunk in get_llm_provider().stream_chat(messages, temperature=0.3, max_tokens=256):
+                full_answer += chunk
+                yield ("token", chunk)
+        except StreamTruncatedError as e:
+            # V13（1.2）：中途断连=残答——正常收尾但 done 事件打 truncated 标记，
+            # 由 chat.py 做缓存隔离（残答禁入语义缓存，否则会反复供应半截答案）
+            truncated = True
+            logger.warning(f"stream_llm 收到截断信号: {e}")
     # M8：粗估 token 数（中文 ~1 char ≈ 1.5 token；这里简化为 char 数）
     metrics.record_answer_tokens(len(full_answer))
-    yield ("done", {"answer": full_answer})
+    metrics.record_llm_stream(truncated=truncated)
+    yield ("done", {"answer": full_answer, "truncated": truncated})
 
 
 def search_by_keyword_window(query: str, limit: int = 5) -> list[dict]:

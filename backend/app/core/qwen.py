@@ -42,6 +42,21 @@ from app.core.circuit_breaker import CircuitBreaker, CircuitOpenError
 
 logger = logging.getLogger(__name__)
 
+
+class StreamTruncatedError(Exception):
+    """V13（1.2 修复，2026-10-10）：流式生成中途断连（已 yield 部分 chunk）。
+
+    修复前：qwen.chat_stream 吞掉 APIConnectionError/APITimeoutError 直接 return，
+    上游 stream_llm 以为正常收尾 → **半截答案被当完整答案**落库/落缓存/删 checkpoint，
+    且污染缓存会反复供应残答。现在显式抛出，由消费方（stream_dispatcher 等）
+    打 truncated 标记做隔离处理。partial_chunks 记录已发出的块数供日志/观测。
+    """
+
+    def __init__(self, message: str, partial_chunks: int = 0) -> None:
+        super().__init__(message)
+        self.partial_chunks = partial_chunks
+
+
 # 配置（从 settings 读，已在 core/config.py 集中）
 QWEN_API_KEY = settings.QWEN_API_KEY
 DASHSCOPE_BASE_URL = settings.DASHSCOPE_BASE_URL
@@ -309,13 +324,17 @@ def stream_chat(
                 chunk_count += 1
                 yield chunk.choices[0].delta.content
     except (APIConnectionError, APITimeoutError) as e:
-        # 流式中途断连（已 yield 部分 token），仅 log，不重试
+        # V13（1.2）：中途断连不再静默 return——显式抛 StreamTruncatedError，
+        # 让消费方知道"这是残答而非完整答案"，做缓存隔离/前端标记。
+        # （修复前：吞异常 return → 上游正常收尾 → 半截答案落库+进语义缓存被反复命中）
         logger.warning(
             f"qwen stream_chat 中途断连（已 yield {chunk_count} chunks）: "
             f"{type(e).__name__}: {str(e)[:100]}"
         )
-        # 不抛：让上游收到 partial response 自然结束
-        return
+        raise StreamTruncatedError(
+            f"stream truncated after {chunk_count} chunks: {type(e).__name__}",
+            partial_chunks=chunk_count,
+        ) from e
 
     logger.info(f"qwen stream_chat done: chunks={chunk_count}")
 

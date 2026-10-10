@@ -495,6 +495,10 @@ async def chat(
                         # 无 running loop（极端边界）→ 跳过；下次 token 会覆盖
                         pass
                 elif event_type == "done":
+                    # V13（1.2）：流中途断连的"残答"识别——内容照常落库保留真实记录，
+                    # 但禁止写入响应缓存（半截答案进语义缓存会被 0.95 相似命中反复供应，
+                    # 把一次网络抖动放大成持续性故障）；SSE done 与审计均带 truncated 标记
+                    truncated = bool(isinstance(data, dict) and data.get("truncated"))
                     # write-through（best-effort）
                     try:
                         await asyncio.to_thread(
@@ -504,13 +508,18 @@ async def chat(
                         logger.warning(
                             f"Redis 写穿透失败: session={session_id[:12]}..., {e}"
                         )
-                    # M11.5：响应缓存（10min 内同 query 不调 LLM）
-                    try:
-                        await asyncio.to_thread(
-                            put_cached_answer, payload.query, user_id, full_answer
+                    # M11.5：响应缓存（10min 内同 query 不调 LLM）；残答禁入（V13 1.2）
+                    if not truncated:
+                        try:
+                            await asyncio.to_thread(
+                                put_cached_answer, payload.query, user_id, full_answer
+                            )
+                        except Exception as e:
+                            logger.warning(f"缓存写入失败: {e}")
+                    else:
+                        logger.warning(
+                            f"residual answer cache skipped: session={session_id[:12]}"
                         )
-                    except Exception as e:
-                        logger.warning(f"缓存写入失败: {e}")
                     try:
                         await asyncio.to_thread(
                             persist_to_mysql,
@@ -547,10 +556,14 @@ async def chat(
                             "answer_len": len(full_answer),
                             "hits": len(contexts),
                             "stream": True,
+                            "truncated": truncated,
                         },
                     )
 
-                    yield _sse_format({"type": "done", "session_id": session_id}, seq=seq + 1)
+                    done_payload = {"type": "done", "session_id": session_id}
+                    if truncated:
+                        done_payload["truncated"] = True
+                    yield _sse_format(done_payload, seq=seq + 1)
                     seq += 1
                     # Sprint P2 / SSE Resume：正常完成清理 checkpoint
                     try:
