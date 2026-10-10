@@ -7762,3 +7762,36 @@ V12 在 M14 阶段 1 多意图识别层的位置：
 - V11 报告：`docs/reports/m14_v10_baseline_real/README.md`（§10/§11 V11-A/V11-B 补记）
 - V13 待办：任务 #14（完整意图扩写：chitchat / complaint / K=全）
 
+---
+
+## §65 · V13 CI 首课 + 三缺陷转正 + 质量门禁落地（2026-10-10）
+
+### 1. 背景
+WP1 经 PR #1 合并（`9921125`）后，按已批方案走双分支：`fix/refund-eval-3-defects` + `ci/quality-gates`。
+
+### 2. CI 首跑红 6 → 三类根因（全在测试/CI 侧，生产代码零改动，`b09d30f`）
+- **依赖缺位**：ci.yml 未装 pytest-asyncio → 4 条 async 契约测试"not natively supported"。教训：**测试工具链必须显式锁定**（催生 requirements-dev.txt）
+- **mock 漂移**：test_agent_fc 的 classify mock 停留 V11 结构，orchestrator V12 起读 `intent_result["primary"]` → KeyError 真回归
+- **时间炸弹第三次**：test_promotion 硬编码 active=2，storeA 窗口 07-01→09-30 过期 → 用例内冻结时间（2026-08-15）
+
+### 3. 三缺陷转正（`4b3870c`，评测 19/22 → **22/22**）
+- **I2**：policy 表补 `退款.*到账/工作日/多久` 3 pattern（规则层堵主路径，LLM 兜底不动）
+- **A4**：classify() 规则命中段实体感知升级——policy + 含单号 + "怎么/如何·退|退·流程"形态 → refund_query；"ORDxxx 退货运费谁出"无前缀不误伤（V13 边界组 5 例锁死）
+- **H1**：RefundFlow 查无单号进图臆造（V2 有"订单不存在"分支、V3 重构丢失=回归）→ 确定性 NOT_FOUND 短路 + **`_db_reachable()` 探测**：safe_session 吞连接异常返回 None 与"真查无"同形，DB 抖动时不做确定性断言（能确定的必须答对；不能确定的不许断言，也不许进图臆造）
+- **mock 欠债现形**：test_synthesizer_refund 5 例只 mock V2 `refund_graph.OrderTool`，V3 run() 自层查询打真实 DB、靠连不上返回 None"巧合通过"——补 `refund_flow.OrderTool` 双命名空间 mock 后语义才完整
+
+### 4. CI 门禁（本分支，含 3 处方案偏离决策）
+- `backend/requirements-dev.txt`：pytest==9.1.1 / pytest-asyncio==1.4.0 / pytest-cov==7.1.0 / ruff==0.16.10
+- **偏离①** ruff 范围：方案 `select=["E9","F"]` 实测 247 处（F401×141/F541×71/F841×31）与"致命门禁"定位不符 → 收窄 E9+F82x；F821×3（eval_agent_fc 模块级注解引用 urllib）是真问题已修，基线真零；风格项后置
+- **偏离②** ruff 位置：backend/ruff.toml → 仓库根（ruff 以调用目录解析配置，须同时覆盖 backend/+scripts/）
+- 覆盖率：实测 68%（master/fix 双分支一致）→ `--cov-fail-under=63`（实测减 5pp，不硬套宣称值）
+- **偏离③** qdrant 就绪：官方镜像无 curl/wget/bash，容器内 health-cmd 不可行 → runner 侧轮询 /readyz（30×2s）
+- `ci_env_diff --strict`：实测红——.env.dev 真实开发密码命中 placeholder 黑名单（误报非漂移）→ **维持 non-strict，修准黑名单后升级**
+- 附带观察：test_agent_fc.py:404 一处 invalid 裸 noqa（warning 不阻断），随后置风格项处理
+
+### 5. 流程资产
+PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI 绿 → merge 闭环；本批双分支独立 PR 复用该流程。
+
+### 6. 关联 commit
+`b09d30f`（CI 修复）· `4b3870c`（三缺陷转正）· 本分支（门禁）· `scripts/eval_refund_report.json`（22/22）
+
