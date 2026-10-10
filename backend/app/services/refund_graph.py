@@ -789,19 +789,28 @@ def _should_fetch_policy(state: RefundState) -> str:
 
 
 def _decide_route(state: RefundState) -> str:
-    """LangGraph 完整路由（3 路：fetch_policy / synthesize / escalate）。
+    """LangGraph 完整路由（4 路：retry / fetch_policy / synthesize / escalate）。
+
+    V13（1.1 修复，2026-10-10）红线：**永不无决策生成**。
+    修复前 decide 失败（LLM 异常/解析失败且重试未达上限）返回不带 decide_result
+    的 delta，decision=None 落到兜底 "synthesize" → 用默认值硬造答案（静默幻觉路径）。
+    现在无决策 → 回边 "retry" 重入 decide；终止性由 decide_retry_count 单调递增
+    + MAX_LLM_RETRIES 超限强制 escalate 保证（图无死循环）。
 
     实际给 add_conditional_edges 用：
+    - 无 decide_result（decision=None）→ retry 回 decide 节点
     - decision=escalate → escalate 节点
     - decision=synthesize + policy_needed → fetch_policy 节点
-    - 其他 → synthesize 节点
+    - 其他（synthesize/need_more_info/need_confirm_order）→ synthesize 节点
 
     Returns:
-        "fetch_policy" | "synthesize" | "escalate"
+        "retry" | "fetch_policy" | "synthesize" | "escalate"
     """
     decide_result = state.get("decide_result") or {}
     decision = decide_result.get("decision")
 
+    if decision is None:
+        return "retry"
     if decision == "escalate":
         return "escalate"
     if decision == "synthesize" and decide_result.get("policy_needed"):
@@ -817,7 +826,8 @@ def build_refund_graph():
 
     节点：decide / fetch_policy / synthesize / escalate
     入口：decide
-    条件边：decide → {fetch_policy, synthesize, escalate}
+    条件边：decide → {retry(自环回 decide), fetch_policy, synthesize, escalate}
+      （V13 1.1：retry 自环使 MAX_LLM_RETRIES 真正生效；无决策不再滑向 synthesize）
     固定边：fetch_policy → synthesize
     终止：synthesize / escalate → END
     """
@@ -834,6 +844,7 @@ def build_refund_graph():
         "decide",
         _decide_route,
         {
+            "retry": "decide",
             "fetch_policy": "fetch_policy",
             "synthesize": "synthesize",
             "escalate": "escalate",
