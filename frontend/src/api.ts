@@ -608,7 +608,8 @@ export interface KpiTrendResp {
   series: { date: string; sessions: number; handoffs: number; deflection_rate: number | null }[];
 }
 
-/** 会话粒度满意度评价（message_id=0） */
+/** CSAT 评价：messageId 传 done 事件返回的 assistant 消息行 id（V13 2.3 消息粒度）；
+ *  0 = 会话粒度兜底（cache_hit 不落库 / 旧流程无 id） */
 export async function rateAnswer(
   sessionId: string,
   rating: 'up' | 'down',
