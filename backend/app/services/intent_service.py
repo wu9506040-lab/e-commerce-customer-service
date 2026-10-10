@@ -56,6 +56,13 @@ except Exception:
 # V13 扩 K=全时改这里即可，不动 V12 基础设施
 TOP_K: int = 2
 
+# V13（A4 修复 2026-10-10）：退款"流程咨询形态"正则——只匹配"怎么/如何+退"与
+# "退+流程"两型。带单号的政策通用条款问句（如"ORDxxx 退货运费谁出"无怎么/如何
+# 前缀、也无"退X流程"形态）不会误命中，防升级误伤
+_REFUND_PROCESS_RE = re.compile(
+    r"(怎么|如何).{0,6}退(款|货)?|退(款|货).{0,2}流程", re.IGNORECASE
+)
+
 
 def _pick_primary(intents: list[dict]) -> tuple[str, float]:
     """从多意图列表选 primary（按 confidence 降序第一个）。
@@ -205,6 +212,21 @@ class IntentService:
         rule_result = IntentService._rule_classify(query)
         if rule_result:
             rule_result["entities"] = entities
+            # V13（A4 修复）：规则层实体感知升级——"含订单号的退款流程咨询"实际是要
+            # 对具体订单发起退款，policy/RAG 路径算不出 refundable → 升级 refund_query
+            # 进退款流。意愿优先不受影响（refund 表先查，"我要退款…"轮不到这里）
+            if (
+                rule_result["primary"] == "policy_query"
+                and entities.get("order_no")
+                and _REFUND_PROCESS_RE.search(query)
+            ):
+                rule_result["primary"] = "refund_query"
+                if rule_result.get("intents"):
+                    rule_result["intents"][0]["intent"] = "refund_query"
+                logger.info(
+                    f"intent(rule-upgrade): policy_query→refund_query "
+                    f"order_no={entities['order_no']} query={query[:30]}"
+                )
             logger.info(f"intent(rule): {rule_result['primary']} query={query[:30]}")
             return _wrap_with_intent_alias(rule_result, query)
 
