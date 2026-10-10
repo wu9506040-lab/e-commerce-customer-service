@@ -111,6 +111,11 @@ class Metrics:
         self.llm_stream_total = 0
         self.llm_stream_truncated = 0
 
+        # ----- V13（降级显形）：rerank 有效率 -----
+        # degraded = 调用失败或全 0 分（该级实际未生效）
+        self.rerank_total = 0
+        self.rerank_degraded = 0
+
         # ----- V13（1.2）：LLM 流式完成度指标 -----
         # truncated = 中途断连的残答次数；truncated_rate = truncated / total
         self.llm_stream_total = 0
@@ -167,6 +172,13 @@ class Metrics:
             self.llm_stream_total += 1
             if truncated:
                 self.llm_stream_truncated += 1
+
+    def record_rerank(self, ok: bool = True) -> None:
+        """V13（降级显形）：rerank 完成计数；ok=False=降级（失败/全0分，该级未生效）"""
+        with self._lock:
+            self.rerank_total += 1
+            if not ok:
+                self.rerank_degraded += 1
 
     def inc_qdrant_search(self, result: str) -> None:
         """result: 'success' | 'fallback_open' | 'error'"""
@@ -323,6 +335,9 @@ class Metrics:
                 "qdrant_search_success": self.qdrant_search_success,
                 "qdrant_fallback_open_total": self.qdrant_fallback_open_total,
                 "qdrant_error_total": self.qdrant_error_total,
+                # V13 降级显形：rerank 有效率（degraded=该级未生效次数）
+                "rerank_total": self.rerank_total,
+                "rerank_degraded": self.rerank_degraded,
             }
 
             emb_block = {

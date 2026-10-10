@@ -35,3 +35,22 @@ CHITCHAT_RESPONSES:
   too_long: "您的问题较长，建议精简后重新提问，或联系人工客服。"
   spam: "您已多次发送相同内容，请稍候再试。"
   english_no_sku: "请用中文描述您的问题，方便我更快为您解答。"
+
+# === V13（1.5）：转人工词表与优先级（覆盖 escalation_service 内置默认）===
+# 启动期一次加载；本段缺失时服务用代码内置兜底（两处一致性由
+# tests/test_escalation_priority.py 锁定）。
+# V13 分级决策：投诉/赔付/质量/法律行动 = P0（风险事件）；
+# 纯"要人工"= P1 路由诉求——不霸占坐席 P0 队列（2026-10-10 审计：
+# 原实现说句"机器人"也升 P0，优先级通胀稀释真正的高风险工单）。
+ESCALATE_P0_KEYWORDS:
+  complaint: ["12315", "12305", "315", "工商局", "市监", "投诉", "曝光"]
+  compensation: ["三倍赔偿", "退一赔三", "假一赔十", "三倍赔", "3倍赔", "3 倍赔"]
+  quality: ["质量问题", "破损", "坏点", "开胶", "假货", "二手商品", "质量这么差", "质量差", "质量不行"]
+  user_requested: ["起诉", "律师"]
+  user_transfer: ["转人工", "转主管", "机器人", "人工客服", "真人客服", "找人工", "转接人工"]
+ESCALATE_P0_PRIORITY:
+  complaint: "P0"
+  compensation: "P0"
+  quality: "P0"
+  user_requested: "P0"
+  user_transfer: "P1"

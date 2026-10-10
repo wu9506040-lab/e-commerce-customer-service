@@ -63,6 +63,13 @@ _REFUND_PROCESS_RE = re.compile(
     r"(怎么|如何).{0,6}退(款|货)?|退(款|货).{0,2}流程", re.IGNORECASE
 )
 
+# V13（1.6 返修，2026-10-10 深夜审计）：退款"时效词"存在 → 问的是到账时间政策，
+# 不是要办理退款。修复升级判定的词序分裂："ORDxxx 怎么退款还没到账"会因
+# policy `怎么.*退款` 先命中 + 升级正则匹配"怎么退"被误升 refund_query，
+# 而"退款怎么还没到账"却留在 policy——同一语义两种路由不可接受。
+# 时效词一律压制升级（宁可漏升级走政策，不可误升级弹订单选择器）。
+_REFUND_TIMELINESS_RE = re.compile(r"到账|多久|工作日")
+
 
 def _pick_primary(intents: list[dict]) -> tuple[str, float]:
     """从多意图列表选 primary（按 confidence 降序第一个）。
@@ -219,6 +226,7 @@ class IntentService:
                 rule_result["primary"] == "policy_query"
                 and entities.get("order_no")
                 and _REFUND_PROCESS_RE.search(query)
+                and not _REFUND_TIMELINESS_RE.search(query)  # V13(1.6) 时效词压制升级
             ):
                 rule_result["primary"] = "refund_query"
                 if rule_result.get("intents"):

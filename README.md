@@ -23,7 +23,7 @@
 | **检索质量** | 330 题分层评测集三级同日连跑（2026-10-10 晚 · 洗库+语义切片后新基线，source 级命中口径 `--match-source`）：dense 0.700 → +BM25/RRF **0.733（+3.3pp）** → +LLM Rerank **0.779（累计 +7.9pp）**；hit@1 0.427→0.576（Rerank 主收益在 top-1 精排）；Rerank p50 +1.2s 延迟成本显式记录 | `cd deploy && docker compose up -d qdrant redis mysql api`，根目录 `PYTHONPATH=backend python scripts/eval_hitk.py --match-source`（逐级加 `--bm25`、`--bm25 --rerank`） |
 | **人工介入闭环（M15）** | 转自动落工单（P0 优先队列/认领/回复注入会话/结单），坐席工作台 `/admin/handoff` | 对触发词说"转人工"→ admin 登录看队列 → 回复 → 用户侧会话可见 |
 | **业务 KPI 大盘（WP1）** | AI 自助解决率 / 转人工率 / CSAT / 拦截率 / 平均轮次 / **LLM 成本估算 + Guard 省钱额** + 按日趋势，含指标公式定义 | admin 登录看 `/admin/kpi`；口径 `backend/app/services/kpi_service.py` 模块注释（成本为估算口径，note 显式标注） |
-| **测试资产** | **664 条**（单元 + E2E，含 M15 工单 / WP1 指标 / V13 路由边界、查无短路、流式截断与决策回边组；CI 全绿，宿主机 2 条依赖容器网络项除外），覆盖率 **68%（2026-10-10 实测）** | `cd backend && python -m pytest tests --cov=app` |
+| **测试资产** | **677 条**（单元 + E2E，含 M15 工单 / WP1 指标 / V13 路由边界、查无短路、流式截断、决策回边、转人工分级与降级显形组；CI 全绿，宿主机环境项除外），覆盖率 **68%（2026-10-11 实测）** | `cd backend && python -m pytest tests --cov=app` |
 | **知识库** | 18 个结构化源文件 → 114 篇文档 → 136 chunks（V13：**句边界贪心切片 + title 增强 embedding**；逐源 delete-before-write 换代 + `prune_orphan_sources.py` 孤儿清扫，2026-10-10 全量重灌验证） | `PYTHONPATH=backend python scripts/ingest_ecommerce_kb.py`（重灌幂等，先清同源旧点） |
 | **服务编排** | api / frontend / qdrant / mysql / redis 5 服务 Docker Compose + SSE 流式 + JWT 鉴权 | `deploy/docker-compose.yml` |
 
