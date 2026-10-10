@@ -188,18 +188,21 @@ class Synthesizer:
         )
 
         # 2. 分派（按 primary intent 调用对应 service/tool · V12 多意图）
+        # V13（1.3 修复，2026-10-10）：构建分派生成器与"消费+异常兜底"分离——
+        # 修复前：token 已推给客户端后 handler 抛异常 → 从头再跑 V1.2 整流 fallback，
+        # chat.py 的 full_answer=半截+重答全文 拼接落库（双 meta/双份答案）。
+        # 现在：已发过 token 就不再重答，只追加固定收尾话术+done；未发过才允许整流 fallback。
         try:
             if primary == "order_query":
                 metrics.inc_chat(primary, v3_engine="-")  # M8
                 # M9.5：传 order_no 让 order_query 优先用跳转来的订单
                 # M14：传 session_id 让 OrderContextResolver 加载会话上下文
                 # V12：传 secondary_intent_block 注入 prompt
-                yield from Synthesizer._handle_order(
+                dispatch_gen = Synthesizer._handle_order(
                     query, user_id, intent_result,
                     order_no=order_no, context_block=context_block,
                     session_id=session_id, secondary_intent_block=secondary_intent_block,
                 )
-                return
             elif primary == "refund_query":
                 # M14 Stage 3：BusinessFlow 抽象（灰度 ENABLE_BUSINESS_FLOW=True 时走 RefundFlow）
                 # RefundFlow 包装 V3 LangGraph + yield flow_stage meta；与 handle_refund_v3 行为兼容
@@ -218,34 +221,50 @@ class Synthesizer:
                         extra={"intent": primary, "flow": flow.name},
                     )
                     metrics.inc_chat(primary, v3_engine="flow")  # M8：Flow 路径独立计数
-                    yield from flow.run()
-                    return
-                # 灰度关闭 / 不参与 Flow 抽象 → 走原有 V3/V2 路径
-                if settings.USE_LANGGRAPH_REFUND:
+                    dispatch_gen = flow.run()
+                elif settings.USE_LANGGRAPH_REFUND:
+                    # 灰度关闭 Flow → V3/V2 二选一
                     logger.info("refund_query → LangGraph V3", extra={"intent": primary})
                     metrics.inc_chat(primary, v3_engine="v3")  # M8
-                    yield from handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block, history=history, secondary_intent_block=secondary_intent_block)
+                    dispatch_gen = handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block, history=history, secondary_intent_block=secondary_intent_block)
                 else:
                     metrics.inc_chat(primary, v3_engine="v2")  # M8
-                    yield from handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block, secondary_intent_block=secondary_intent_block)
-                return
+                    dispatch_gen = handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block, secondary_intent_block=secondary_intent_block)
             elif primary == "product_query":
                 metrics.inc_chat(primary, v3_engine="-")  # M8
                 # V12：传 secondary_intent_block 注入 prompt
-                yield from Synthesizer._handle_product(query, intent_result, history, sku=sku, context_block=context_block, search_queries=search_queries, secondary_intent_block=secondary_intent_block)
-                return
+                dispatch_gen = Synthesizer._handle_product(query, intent_result, history, sku=sku, context_block=context_block, search_queries=search_queries, secondary_intent_block=secondary_intent_block)
             else:  # policy_query
                 metrics.inc_chat(primary, v3_engine="-")  # M8
                 # V12：传 secondary_intent_block 注入 prompt
-                yield from Synthesizer._handle_policy(query, intent_result, history, context_block=context_block, search_queries=search_queries, secondary_intent_block=secondary_intent_block)
-                return
+                dispatch_gen = Synthesizer._handle_policy(query, intent_result, history, context_block=context_block, search_queries=search_queries, secondary_intent_block=secondary_intent_block)
+
+            yielded_token = False
+            try:
+                for event in dispatch_gen:
+                    if event[0] == "token":
+                        yielded_token = True
+                    yield event
+            except Exception as e:
+                logger.exception(
+                    f"synth.dispatch 异常: primary={primary}, yielded_token={yielded_token}, err={e}",
+                    extra={"intent": primary},
+                )
+                if yielded_token:
+                    # V13（1.3）：半截已送达 → 禁止整流重答（防拼接污染），固定话术收尾
+                    yield ("token", "\n（抱歉，刚才的回复中断了。您可以重试，或说「转人工」由人工客服协助。）")
+                    yield ("done", {"answer": ""})
+                else:
+                    # 未发过 token → 安全地走 V1.2 整流 fallback
+                    # 注意：fallback 不带 user_id（V1.2 pipeline 不接收 user_id）
+                    for event_type, data in v12_rag_run_stream(query, 5, history):
+                        yield (event_type, data)
         except Exception as e:
-            # 任何分派路径异常 → fallback 到 V1.2 统一 RAG
+            # 外层保险：分派生成器构建阶段的异常（极少见）
             logger.exception(
-                f"synth.dispatch 异常，fallback 到 V1.2 RAG: primary={primary}, err={e}",
+                f"synth.dispatch 构建异常，fallback 到 V1.2 RAG: primary={primary}, err={e}",
                 extra={"intent": primary},
             )
-            # 注意：fallback 不带 user_id（V1.2 pipeline 不接收 user_id）
             for event_type, data in v12_rag_run_stream(query, 5, history):
                 yield (event_type, data)
 
