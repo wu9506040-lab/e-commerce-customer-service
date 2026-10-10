@@ -18,6 +18,10 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     contexts: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     scores: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # V13（2.3）：当轮意图决策快照 {primary, method, confidence, intents, upgraded}
+    # 👎 反查与 badcase 池的 join 地基——没有它，差评只能 join 到"检索了什么"，
+    # 答不出"当时判成什么意图、走规则还是 LLM、是否触发升级"
+    intent_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     token_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

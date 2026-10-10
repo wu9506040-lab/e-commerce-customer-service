@@ -430,6 +430,7 @@ async def chat(
         full_answer = ""
         contexts: list = []
         scores: list = []
+        intent_snap: Optional[dict] = None  # V13(2.3)：run_stream 内部 _intent 事件的快照
         last_heartbeat = time.time()
         chat_start = time.perf_counter()  # M8：记录 chat 总耗时
         # Sprint P2 / SSE Resume：本回合 stream_id（前端拿到后用于 resume）
@@ -485,9 +486,20 @@ async def chat(
 
                 event_type, data = item
 
-                if event_type == "meta":
+                if event_type == "_intent":
+                    # V13(2.3)：意图快照内部事件——chat 消费，不外发 SSE
+                    intent_snap = data
+                    continue
+                elif event_type == "meta":
                     seq += 1
                     meta_payload = {**data, "stream_id": stream_id}
+                    # V13(2.3)：路由质量随 meta 透出（审计候选：method/confidence
+                    # 此前只存在于应用日志，前端与观测面不可见）
+                    if intent_snap:
+                        meta_payload.setdefault("intent_method", intent_snap.get("method"))
+                        meta_payload.setdefault("intent_confidence", intent_snap.get("confidence"))
+                        if intent_snap.get("upgraded"):
+                            meta_payload["intent_upgraded"] = True
                     contexts = meta_payload.get("contexts", [])
                     scores = meta_payload.get("scores", [])
                     yield _sse_format({"type": "meta", **meta_payload}, seq=seq)
@@ -532,11 +544,13 @@ async def chat(
                             f"residual answer cache skipped: session={session_id[:12]}"
                         )
                     try:
-                        await asyncio.to_thread(
+                        assistant_msg_id = await asyncio.to_thread(
                             persist_to_mysql,
                             session_id, user_id, payload.query, full_answer, contexts, scores,
+                            None, None, intent_snap,
                         )
                     except Exception as e:
+                        assistant_msg_id = None
                         logger.warning(
                             f"MySQL 写穿透失败: session={session_id[:12]}..., {e}"
                         )
@@ -574,6 +588,10 @@ async def chat(
                     done_payload = {"type": "done", "session_id": session_id}
                     if truncated:
                         done_payload["truncated"] = True
+                    # V13(2.3)：带 assistant 消息行 id——前端按"条"评价
+                    # （此前 message_id 恒 0 全退化为会话粒度，👎 反查不到具体回答）
+                    if assistant_msg_id:
+                        done_payload["assistant_message_id"] = assistant_msg_id
                     yield _sse_format(done_payload, seq=seq + 1)
                     seq += 1
                     # Sprint P2 / SSE Resume：正常完成清理 checkpoint
