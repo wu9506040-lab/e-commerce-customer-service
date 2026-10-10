@@ -32,6 +32,7 @@ import os
 import statistics
 import sys
 import time
+import urllib.request  # 模块级补齐：函数内 lazy import 使 F821 在类型注解引用处误报（ruff 门禁 2026-10-10）
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from unittest.mock import MagicMock
