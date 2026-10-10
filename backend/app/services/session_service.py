@@ -94,12 +94,21 @@ def persist_to_mysql(
     scores: Optional[List[float]] = None,
     latency_ms: Optional[int] = None,
     token_count: Optional[int] = None,
-) -> None:
+    intent_snapshot: Optional[dict] = None,
+) -> Optional[int]:
     """
-    写穿：把一轮问答写入 MySQL（messages + UPSERT conversations）
-    失败仅 warning，不抛（MySQL 是冷路径，挂掉不能影响 /chat 热路径）
+    写穿门面：转发 mysql_store.persist_to_mysql
+
+    V13(2.3) 教训留档：本门面是 chat.py 的实际调用对象；2.3 首版只升级了
+    mysql_store 签名、门面没透传新参 → live 演示 TypeError 被兜底吞成 aid=None
+    （日志仅一条 WARNING，5 轮排查全在猜镜像问题）。跨模块同名双函数是
+    第三个双源债（前例 _ORDER_NO_RE），ruff F811 管不到跨文件，收敛挂账。
+    失败仅 warning 不抛（MySQL 冷路径不影响热路径）。
+
+    Returns:
+        assistant 消息行 id（V13 2.3 消息粒度评价）；失败/跳过 None
     """
-    mysql_store.persist_to_mysql(
+    return mysql_store.persist_to_mysql(
         session_id=session_id,
         user_id=user_id,
         user_content=user_content,
@@ -108,6 +117,7 @@ def persist_to_mysql(
         scores=scores,
         latency_ms=latency_ms,
         token_count=token_count,
+        intent_snapshot=intent_snapshot,
     )
 
 

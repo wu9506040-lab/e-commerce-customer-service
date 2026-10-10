@@ -22,6 +22,7 @@ from typing import Optional
 from app.core.providers.llm import get_llm_provider
 from app.schemas.intent import IntentEntities, IntentType
 from app.services.config_loader import get_config_loader
+from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,9 @@ def _wrap_with_intent_alias(result: dict, query: str) -> dict:
     # 兼容旧字段（V11 行为：直接读 .intent / .confidence 仍可用）
     new_result["intent"] = primary
     new_result["confidence"] = primary_conf
+    # V13(2.3)：upgraded 标记透传（快照/计数消费；无标记=False 不外显）
+    if result.get("upgraded"):
+        new_result["upgraded"] = True
     return new_result
 
 
@@ -229,12 +233,18 @@ class IntentService:
                 and not _REFUND_TIMELINESS_RE.search(query)  # V13(1.6) 时效词压制升级
             ):
                 rule_result["primary"] = "refund_query"
+                rule_result["upgraded"] = True  # V13(2.3)：升级标记随快照落库
                 if rule_result.get("intents"):
                     rule_result["intents"][0]["intent"] = "refund_query"
                 logger.info(
                     f"intent(rule-upgrade): policy_query→refund_query "
                     f"order_no={entities['order_no']} query={query[:30]}"
                 )
+            # V13(2.3)：方法分布计数（规则命中率是"三级路由省钱"叙事的核心指标，
+            # 审计确认此前无任何埋点，"LLM 兜底率多少"答不上来）
+            metrics.inc_intent_method(
+                "rule", upgraded=bool(rule_result.get("upgraded"))
+            )
             logger.info(f"intent(rule): {rule_result['primary']} query={query[:30]}")
             return _wrap_with_intent_alias(rule_result, query)
 
@@ -245,6 +255,7 @@ class IntentService:
             else:
                 llm_result = IntentService._llm_classify(query)
             llm_result["entities"] = entities
+            metrics.inc_intent_method("llm")  # V13(2.3) LLM 兜底率埋点
             logger.info(
                 f"intent(llm): intents={[i['intent'] for i in llm_result.get('intents', [])]} "
                 f"primary={llm_result.get('primary')} query={query[:30]}"
@@ -254,6 +265,7 @@ class IntentService:
             logger.warning(f"intent llm fallback 失败: {e}")
 
         # 3. 默认 policy_query（兜底兜底）
+        metrics.inc_intent_method("default")  # V13(2.3)
         return _wrap_with_intent_alias({
             "intents": [{"intent": "policy_query", "confidence": 0.5}],
             "primary": "policy_query",

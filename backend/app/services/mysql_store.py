@@ -67,7 +67,8 @@ def persist_to_mysql(
     scores: Optional[List[float]] = None,
     latency_ms: Optional[int] = None,
     token_count: Optional[int] = None,
-) -> None:
+    intent_snapshot: Optional[dict] = None,
+) -> Optional[int]:
     """
     写穿：把一轮问答写入 MySQL（messages + UPSERT conversations）
 
@@ -82,13 +83,18 @@ def persist_to_mysql(
         scores: 对应相似度（仅 assistant 行存）
         latency_ms: LLM 响应耗时（仅 assistant 行存）
         token_count: LLM token 数（仅 assistant 行存）
+        intent_snapshot: V13(2.3) 当轮意图决策快照（仅 assistant 行存）
+
+    Returns:
+        assistant 消息行 id（V13 2.3：done 事件带它，前端按消息评价，
+        👎 才能反查到具体回答+意图+检索上下文）；任何失败路径返回 None
     """
     if not session_id or not user_content or not assistant_content:
         logger.warning(
             f"mysql_store.persist_to_mysql: 参数不完整，跳过 "
             f"session={session_id[:12] if session_id else 'None'}..."
         )
-        return
+        return None
 
     # with_safe_session 内部 commit + 异常吞咽 + warning
     with with_safe_session(commit=True) as db:
@@ -118,26 +124,32 @@ def persist_to_mysql(
             existing.last_message_at = func.now()
 
         # 2. INSERT messages（2 行：user + assistant）
-        db.add_all([
+        db.add(
             Message(
                 session_id=session_id,
                 user_id=user_id,
                 role="user",
                 content=user_content,
-            ),
-            Message(
-                session_id=session_id,
-                user_id=user_id,
-                role="assistant",
-                content=assistant_content,
-                contexts=contexts,
-                scores=scores,
-                token_count=token_count,
-                latency_ms=latency_ms,
-            ),
-        ])
+            )
+        )
+        assistant_msg = Message(
+            session_id=session_id,
+            user_id=user_id,
+            role="assistant",
+            content=assistant_content,
+            contexts=contexts,
+            scores=scores,
+            token_count=token_count,
+            latency_ms=latency_ms,
+            intent_snapshot=intent_snapshot,
+        )
+        db.add(assistant_msg)
+        # V13(2.3)：flush 拿自增 id（with_safe_session 提交前）；flush 失败=整段回滚
+        db.flush()
 
         logger.debug(
             f"mysql_store.persist_to_mysql: session={session_id[:12]}..., "
-            f"user_id={user_id}, messages_added=2"
+            f"user_id={user_id}, messages_added=2, "
+            f"assistant_id={assistant_msg.id}"
         )
+        return assistant_msg.id
