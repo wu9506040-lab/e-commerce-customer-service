@@ -175,11 +175,12 @@ class TestHandleRefundV3:
         # 关键：不再 yield 旧版「订单号」prompt
         assert not any("订单号" in ev[1] for ev in token_events)
 
+    @patch("app.services.business_flow.refund_flow.OrderTool")
     @patch.object(settings, "ENABLE_ORDER_RESOLVER", True)
     @patch("app.services.context.order_context_resolver.OrderTool")
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.OrderTool")
-    def test_one_order_direct_answer(self, mock_lg_tool, mock_provider, mock_tool):
+    def test_one_order_direct_answer(self, mock_lg_tool, mock_provider, mock_tool, mock_rf_tool):
         """2026-07-18 改造：唯一 1 单 → Resolver DIRECT_ANSWER + 走 LangGraph（不询问）"""
         # Resolver 用 mock_tool.list_user_orders 查 1 单 → DIRECT_ANSWER
         mock_tool.list_user_orders.return_value = [
@@ -187,6 +188,10 @@ class TestHandleRefundV3:
         ]
         # LangGraph fetch_order 用 mock_lg_tool.get_order_by_no 拿订单详情
         mock_lg_tool.get_order_by_no.return_value = make_order(
+            order_no="ORD20260718001", days_ago=3
+        )
+        # V3: RefundFlow.run() 会再按 effective_order_no 查一次详情（V13 补 mock）
+        mock_rf_tool.get_order_by_no.return_value = make_order(
             order_no="ORD20260718001", days_ago=3
         )
         mock_provider.return_value.chat.return_value = {"reply": "可以退"}
@@ -252,12 +257,15 @@ class TestHandleRefundV3:
         # token 应包含 LLM 最终答案
         assert any("符合" in ev[1] for ev in token_events)
 
+    @patch("app.services.business_flow.refund_flow.OrderTool")
     @patch("app.services.refund_graph.OrderTool")
     @patch("app.services.chat.refund_handler.OrderService")
-    def test_path2_quality_issue_escalate(self, mock_order_svc, mock_tool):
+    def test_path2_quality_issue_escalate(self, mock_order_svc, mock_tool, mock_rf_tool):
         """路径 2：质量问题无凭证 → escalate"""
         mock_order_svc.list_user_orders.return_value = [make_order()]
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
+        # V3: RefundFlow.run() 层的订单查询（V13 补 mock，场景=订单存在）
+        mock_rf_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
 
         from app.services.chat.refund_handler import handle_refund_v3
         events = collect_events(handle_refund_v3(
@@ -272,13 +280,16 @@ class TestHandleRefundV3:
         assert len(token_events) >= 1
         assert any("人工" in ev[1] for ev in token_events)
 
+    @patch("app.services.business_flow.refund_flow.OrderTool")
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.OrderTool")
     @patch("app.services.chat.refund_handler.OrderService")
-    def test_path3_over_7_days(self, mock_order_svc, mock_tool, mock_provider):
+    def test_path3_over_7_days(self, mock_order_svc, mock_tool, mock_provider, mock_rf_tool):
         """路径 3：超过 7 天 → 不可退 → synthesize"""
         mock_order_svc.list_user_orders.return_value = [make_order(days_ago=15)]
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=15)
+        # V3: RefundFlow.run() 层的订单查询（V13 补 mock，场景=订单存在）
+        mock_rf_tool.get_order_by_no.return_value = make_order("delivered", days_ago=15)
         mock_provider.return_value.chat.return_value = {"reply": "已超过 7 天，不符合退款条件"}
 
         from app.services.chat.refund_handler import handle_refund_v3
@@ -304,16 +315,20 @@ class TestHandleRefundV3:
 class TestFallback:
     """LangGraph 异常时 fallback 到 V2"""
 
+    @patch("app.services.business_flow.refund_flow.OrderTool")
     @patch("app.services.refund_graph.OrderTool")
     @patch("app.services.chat.refund_handler.OrderService")
     @patch("app.services.chat.refund_handler.RefundService")
     @patch("app.services.chat.stream_dispatcher.get_llm_provider")
     def test_langgraph_failure_fallback_to_v2(
-        self, mock_provider, mock_refund_svc, mock_order_svc, mock_tool,
+        self, mock_provider, mock_refund_svc, mock_order_svc, mock_tool, mock_rf_tool,
     ):
         """LangGraph 内部抛异常 → fallback 到 V2"""
         # V2 链路需要的 mock
         mock_order_svc.list_user_orders.return_value = [make_order()]
+        # V3: run() 层必须查到订单才能走到图、由图内 mock_tool 抛异常触发 fallback
+        # （查无会进 V13 确定性短路，压根不进图——场景语义不符）
+        mock_rf_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
         mock_refund_svc.check_refundable_with_policy.return_value = {
             "tool_result": {"refundable": True, "reason": "7 天无理由", "order_status": "delivered"},
             "policy_docs": [{"text": "七天无理由..."}],
@@ -344,14 +359,17 @@ class TestFallback:
 class TestSSEProtocol:
     """验证 SSE 事件格式（meta / token 的 payload 结构）"""
 
+    @patch("app.services.business_flow.refund_flow.OrderTool")
     @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.refund_graph.PolicyService")
     @patch("app.services.refund_graph.OrderTool")
     @patch("app.services.chat.refund_handler.OrderService")
-    def test_meta_payload_structure(self, mock_order_svc, mock_tool, mock_policy, mock_provider):
+    def test_meta_payload_structure(self, mock_order_svc, mock_tool, mock_policy, mock_provider, mock_rf_tool):
         """meta 事件 payload 应包含 V3 特有字段"""
         mock_order_svc.list_user_orders.return_value = [make_order()]
         mock_tool.get_order_by_no.return_value = make_order(days_ago=3)
+        # V3: RefundFlow.run() 层的订单查询（V13 补 mock，场景=订单存在）
+        mock_rf_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
         mock_policy.search_policy.return_value = [{"text": "..."}]
         mock_provider.return_value.chat.return_value = {"reply": "OK"}
 
