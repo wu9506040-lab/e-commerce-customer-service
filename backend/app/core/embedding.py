@@ -17,9 +17,10 @@ Embedding 客户端 - DashScope text-embedding-v3（OpenAI 兼容模式）
 可观测性（M8）：
 - 调用 / 重试 / 错误 上报 metrics
 """
+import contextvars
 import logging
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from openai import OpenAI
 from openai import RateLimitError, APITimeoutError, APIConnectionError
@@ -28,6 +29,44 @@ from app.core.config import settings
 from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)
+
+# =============================================================
+# V13（2.2）：请求级 embedding 复用
+# 审计发现同一 query 在一次 /chat 内最多被真实 embed 4 次
+# （guard L2 / 语义缓存读 / 检索 / 缓存写），全是同一文本的重复 API 调用。
+# contextvar 在 asyncio Task 内天然隔离、asyncio.to_thread 以 copy_context
+# 传递——在 event_generator 入口 begin 一次，同请求各线程共享这张 memo。
+# 未 begin（默认 None）时行为与旧版完全一致（批处理/离线脚本不受影响）。
+# =============================================================
+_embed_memo: contextvars.ContextVar[Optional[Dict[str, List[float]]]] = (
+    contextvars.ContextVar("embed_memo", default=None)
+)
+_EMBED_MEMO_MAX = 8  # 单请求去重文本本就极少，上限只防意外循环调用撑内存
+
+
+def begin_embed_memo():
+    """请求入口开启本上下文 embedding 复用；返回 token（一般无需 reset，随 Task 消亡）"""
+    return _embed_memo.set({})
+
+
+def embed_text(text: str) -> List[float]:
+    """单文本 embedding（V13 2.2：请求内同文本命中 memo 直接复用向量）。
+
+    命中不计入 embedding 调用指标（真实 API 调用才是成本）；
+    返回副本防调用方原地改写污染 memo。
+    """
+    memo = _embed_memo.get()
+    if memo is None:
+        return _embed_text_uncached(text)
+    hit = memo.get(text)
+    if hit is not None:
+        logger.debug(f"embed_text memo hit: text_len={len(text)}")
+        return list(hit)
+    vec = _embed_text_uncached(text)
+    if len(memo) < _EMBED_MEMO_MAX:
+        memo[text] = list(vec)
+    return vec
+
 
 # =============================================================
 # 配置
@@ -82,9 +121,10 @@ def _is_retryable(e: Exception) -> bool:
     return isinstance(e, (RateLimitError, APITimeoutError, APIConnectionError))
 
 
-def embed_text(text: str) -> List[float]:
+def _embed_text_uncached(text: str) -> List[float]:
     """
-    单文本转 embedding（带 429/超时 retry）
+    单文本转 embedding（带 429/超时 retry）——真实 API 调用体，
+    对外入口是同文件 embed_text()（V13 2.2 请求级 memo 包装）
 
     Args:
         text: 输入文本（≤ 8K tokens）
