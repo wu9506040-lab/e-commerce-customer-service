@@ -106,6 +106,16 @@ class Metrics:
         self.rewrite_multi_total = 0
         self.rewrite_multi_by_reason: Dict[str, int] = {}
 
+        # ----- V13（1.2）：LLM 流式完成度指标 -----
+        # truncated_rate = llm_stream_truncated / llm_stream_total（残答率）
+        self.llm_stream_total = 0
+        self.llm_stream_truncated = 0
+
+        # ----- V13（1.2）：LLM 流式完成度指标 -----
+        # truncated = 中途断连的残答次数；truncated_rate = truncated / total
+        self.llm_stream_total = 0
+        self.llm_stream_truncated = 0
+
         # ----- M14：OrderContextResolver 决策质量指标 -----
         # 4 类指标（plan §10 阶段 4）：
         # 1. multi_order_disambiguation_accuracy = SHOW_PICKER / total_orders_many
@@ -150,6 +160,13 @@ class Metrics:
             self.chat_retrieve_hits_count += 1
 
     # ----- RAG / qdrant -----
+
+    def record_llm_stream(self, truncated: bool = False) -> None:
+        """V13（1.2）：记录一次 LLM 流式收尾；truncated=中途断连的残答"""
+        with self._lock:
+            self.llm_stream_total += 1
+            if truncated:
+                self.llm_stream_truncated += 1
 
     def inc_qdrant_search(self, result: str) -> None:
         """result: 'success' | 'fallback_open' | 'error'"""
@@ -291,6 +308,9 @@ class Metrics:
                     "samples": len(latencies),
                 },
                 "answer_tokens_total": self.chat_answer_tokens_total,
+                # V13（1.2）：流式完成度
+                "stream_total": self.llm_stream_total,
+                "stream_truncated": self.llm_stream_truncated,
                 "retrieve_hits_avg": (
                     round(self.chat_retrieve_hits_sum / self.chat_retrieve_hits_count, 2)
                     if self.chat_retrieve_hits_count > 0
