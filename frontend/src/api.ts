@@ -574,3 +574,58 @@ export async function closeHandoffTicket(
 ): Promise<{ ok: boolean; ticket: HandoffTicketBrief }> {
   return http(`/admin/handoff/tickets/${id}/close`, { method: 'POST' });
 }
+
+// =============================================================
+// WP1 业务 KPI + 回答评价（CSAT）
+// =============================================================
+export interface KpiSnapshot {
+  window: { start: string; end: string };
+  sessions_total: number;
+  messages_user: number;
+  handoff: { sessions: number; tickets_total: number; p0_total: number };
+  deflection_rate: number | null;
+  handoff_rate: number | null;
+  csat: number | null;
+  ratings: { up: number; down: number; rated_sessions: number };
+  rating_coverage: number | null;
+  guard_blocked: number;
+  guard_block_rate: number | null;
+  avg_rounds: number | null;
+  p0_ratio: number | null;
+  cost: {
+    input_tokens: number;
+    output_tokens: number;
+    total_cost_cny: number;
+    avg_cost_per_session_cny: number | null;
+    guard_savings_cny: number;
+    pricing: { model: string; in_per_1k: number; out_per_1k: number };
+    note: string;
+  };
+}
+
+export interface KpiTrendResp {
+  days: number;
+  series: { date: string; sessions: number; handoffs: number; deflection_rate: number | null }[];
+}
+
+/** 会话粒度满意度评价（message_id=0） */
+export async function rateAnswer(
+  sessionId: string,
+  rating: 'up' | 'down',
+  comment = '',
+  messageId = 0,
+): Promise<{ ok: boolean }> {
+  return http('/chat/rate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, message_id: messageId, rating, comment }),
+  });
+}
+
+export async function getAdminKpi(days = 14): Promise<KpiSnapshot> {
+  return http(`/admin/analytics/kpi?days=${days}`);
+}
+
+export async function getKpiTrend(days = 14): Promise<KpiTrendResp> {
+  return http(`/admin/analytics/kpi/trend?days=${days}`);
+}

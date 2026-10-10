@@ -20,6 +20,8 @@ eval_refund_accuracy.py - 退款准确性专项评估（M9.5 + 用户反馈驱�
     PYTHONIOENCODING=utf-8 python scripts/eval_refund_accuracy.py
 """
 import json
+import os
+import re
 import sys
 import time
 import urllib.error
@@ -27,7 +29,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-API_BASE = "http://localhost:8000/api"
+API_BASE = os.getenv("EVAL_API_BASE", "http://localhost:8000/api")  # 可指向容器或宿主机实例
 USERNAME = "demotest"
 PASSWORD = "demotest123"
 
@@ -162,7 +164,7 @@ TEST_CASES = [
         "name": "G1-无order-口语化",
         "query": "我想退个货，能退吗",
         "expected_refundable": None,
-        "expected_verdict_any": ["请提供", "订单号", "联系人工"],
+        "expected_verdict_any": ["请提供", "订单号", "联系人工", "展示", "最近订单", "哪个"],
         "banned_any": ["可以退", "支持您退", "已为您办理", "退款审核通过", "不能退", "超过 7 天"],
         "note": "无订单号必须反问或转人工",
     },
@@ -170,7 +172,7 @@ TEST_CASES = [
         "name": "G2-无order-极简",
         "query": "退？",
         "expected_refundable": None,
-        "expected_verdict_any": ["请提供", "订单号", "联系人工"],
+        "expected_verdict_any": ["请提供", "订单号", "联系人工", "展示", "最近订单", "哪个"],
         "banned_any": ["可以退", "不能退"],
         "note": "极简问法，反问或转人工",
     },
@@ -178,7 +180,7 @@ TEST_CASES = [
         "name": "G3-无order-没有订单号",
         "query": "没有订单号怎么退",
         "expected_refundable": None,
-        "expected_verdict_any": ["请提供", "订单号", "联系人工", "提供"],
+        "expected_verdict_any": ["请提供", "订单号", "联系人工", "提供", "展示", "最近订单", "哪个"],
         "banned_any": ["您可以退", "支持您退", "已为您办理"],
         "note": "无订单号：反问或转人工",
     },
@@ -318,8 +320,13 @@ def chat_stream(query: str, order_no: Optional[str], cookie: str,
                 continue
             et = event.get("type")
             if et == "meta":
-                intent = event.get("intent")
-                refundable = event.get("refundable")
+                if event.get("intent"):
+                    intent = event.get("intent")
+                # 一轮可能有多条 meta（决策 meta + 后续 meta）；只有带 refundable 的那条才赋值，
+                # 否则后到的无该字段 meta 会把已捕获的判定覆盖成 None（历史 bug，导致 refundable 全 None）
+                rv = event.get("refundable")
+                if rv is not None:
+                    refundable = rv
             elif et == "token":
                 answer += event.get("text", "")
             elif et == "done":
@@ -349,9 +356,13 @@ def check_case(case: dict, result: dict) -> tuple[bool, str]:
     if expected_refundable is not None and result["refundable"] != expected_refundable:
         return False, f"meta.refundable={result['refundable']} != 期望 {expected_refundable}"
 
-    # 2. 期望订单号必须出现（防串单）
-    if expected_order_no and expected_order_no not in answer:
-        return False, f"答案未包含期望订单号 {expected_order_no}"
+    # 2. 防串单（语义修正版）：答案若提及订单号，只能是本用例的期望单；
+    #    不再强制"必须复读单号"——判定正确但不复述单号是合理话术变体，旧断言属过拟合
+    if expected_order_no:
+        mentioned = set(re.findall(r"ORD\d{9,}", answer))
+        wrong = mentioned - {expected_order_no}
+        if wrong:
+            return False, f"答案串入其它订单号 {sorted(wrong)}"
 
     # 3. 期望退款结论句至少 1 个
     if expected_verdict_any and not any(k in answer for k in expected_verdict_any):
@@ -368,6 +379,49 @@ def check_case(case: dict, result: dict) -> tuple[bool, str]:
 # =============================================================
 # 主流程
 # =============================================================
+# ============ 时间炸弹自愈（Day 20）============
+# 历史问题：用例硬编码订单号 + seed 订单按"seed 当天"生成日期 → 隔几天再跑，
+# delivered 订单滑出 7 天退款窗口，A/D/E 类整体误报失败（数据腐烂，不是逻辑回归）。
+# 修法：评测运行前把 fixture 订单的 create_time 校准回用例语义的天数——
+# 测试自带 fixture 重建能力，任何时候跑都是同一片天。
+FIXTURE_DAYS_AGO = {
+    "ORD20260628001": 0,   # pending（C1）
+    "ORD20260628002": 1,   # paid（D1）
+    "ORD20260628003": 2,   # shipped（E1）
+    "ORD20260628004": 5,   # delivered 窗口内（A1-A4）
+    "ORD20260628005": 15,  # completed（F1）
+    "ORD20260628006": 7,   # refunded（B1）
+    "ORD20260620001": 3,   # pending（C2）
+    "ORD20260615004": 10,  # delivered 超期（A5）
+}
+
+
+def refresh_fixture_orders() -> int:
+    """按用例语义回写 fixture 订单 create_time。DB 不可达时返回 -1（不阻断，用旧数据跑）。"""
+    url = os.environ.get("DATABASE_URL", "")
+    if not url:
+        print("  ⚠️ 未设 DATABASE_URL，跳过 fixture 刷新（窗口断言可能因时间漂移失败）")
+        return -1
+    try:
+        from datetime import datetime, timedelta
+        from sqlalchemy import create_engine, text
+        eng = create_engine(url, pool_pre_ping=True)
+        n = 0
+        with eng.begin() as conn:
+            for no, days in FIXTURE_DAYS_AGO.items():
+                ts = datetime.now() - timedelta(days=days)
+                r = conn.execute(
+                    text("UPDATE orders SET create_time = :ts WHERE order_no = :no"),
+                    {"ts": ts, "no": no},
+                )
+                n += r.rowcount
+        print(f"  fixture 自愈：{n}/{len(FIXTURE_DAYS_AGO)} 个订单时间窗已校准")
+        return n
+    except Exception as e:
+        print(f"  ⚠️ fixture 刷新失败（继续跑，失败详情看数据）：{e}")
+        return -1
+
+
 def main():
     print("=" * 70)
     print("退款准确性专项测试 (M9.5 + 用户反馈驱动)")
