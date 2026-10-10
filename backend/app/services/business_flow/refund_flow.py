@@ -167,6 +167,28 @@ def _yield_handoff(
 logger = logging.getLogger(__name__)
 
 
+def _db_reachable() -> bool:
+    """DB 连通性轻量探测（V13 H1 短路配套，2026-10-10）。
+
+    为什么需要：OrderTool.get_order_by_no 在 MySQL 不可达时会被
+    mysql_client.safe_session 吞掉异常返回 None——与"确实查无此单"同形。
+    "订单不存在"是确定性断言，必须建立在查询真实执行成功之上
+    （能确定的必须答对；不能确定的不许断言，也不许进图臆造）。
+    裸 session 不经 safe_session，连接失败直接抛异常，信号可靠。
+    探测失败 → 返回 False，RefundFlow 维持原"空 order_info 进图 + V2 保险丝"路径。
+    """
+    try:
+        from sqlalchemy import text
+
+        from app.clients.mysql_client import get_session_local
+        with get_session_local()() as db:
+            db.execute(text("SELECT 1"))
+        return True
+    except Exception as e:
+        logger.warning(f"RefundFlow: DB 可达性探测失败，确定性话术短路禁用: {e}")
+        return False
+
+
 class RefundFlow:
     """退款业务流：包装 LangGraph V3 + 显式 stage 推送
 
@@ -326,11 +348,37 @@ class RefundFlow:
         orders_list: list = []
 
         if effective_order_no:
+            order_query_failed = False
             try:
                 order_info = OrderTool.get_order_by_no(self.user_id, effective_order_no) or {}
             except Exception as e:
                 logger.warning(f"RefundFlow: OrderTool.get_order_by_no failed: {e}")
                 order_info = {}
+                # 查询异常（DB 抖动）≠ 订单确不存在：不进下面的确定性短路，
+                # 维持原有"空 order_info 进图"路径（2026-10-10 测试回归教训）
+                order_query_failed = True
+
+            # V13（H1 修复 2026-10-10）：自报单号"查无此单"是确定性事实，不进图不调 LLM。
+            # 原路径 order_info={} → judge 跳过、reason 空 → synthesize 被硬约束#5
+            # （第一句必须给结论）逼出臆造。V2 check_refundable 有"订单不存在"分支、
+            # V3 重构丢失属回归——话术对齐 Resolver NOT_FOUND 出口，meta 带 refundable=False
+            if not order_info and not order_query_failed and _db_reachable():
+                yield ("meta", {
+                    "intent": "refund_query",
+                    "entities": entities,
+                    "contexts": [],
+                    "scores": [],
+                    "order_no": effective_order_no,
+                    "flow_stage": "fetch_order",
+                    "v3_engine": "langgraph",
+                    "resolver_action": OrderResolverAction.NOT_FOUND.value,
+                    "refundable": False,
+                    "reason": "订单不存在",
+                })
+                yield from stream_simple(
+                    f"订单 {effective_order_no} 不存在或不属于当前用户，请检查订单号。"
+                )
+                return
 
             if order_info:
                 # 注入 status_zh（与 Resolver 一致）

@@ -431,3 +431,53 @@ class TestIntentResponseSchema:
         assert serialized["intent"] == "refund_query"
         assert serialized["primary"] == "refund_query"
         assert serialized["confidence"] == 1.0
+
+
+# =============================================================
+# 11. V13（2026-10-10）三缺陷修复 · policy↔refund 路由边界锁
+# =============================================================
+class TestV13RoutingBoundary:
+    """I2（policy 补时效 pattern）+ A4（规则层实体感知升级）的回归防护。
+
+    背景：eval_refund_accuracy A4/I2 双向误路由（审计 2026-10-09 确认）。
+    """
+
+    def test_i2_refund_arrival_time_goes_policy(self):
+        """I2：'退款多久到账'是政策问答 → 新 pattern 命中规则层，不落 LLM"""
+        from app.services.intent_service import IntentService
+
+        result = IntentService.classify("退款多久到账")
+        assert result["primary"] == "policy_query"
+        assert result["method"] == "rule"
+
+    def test_a4_order_process_inquiry_upgrades_refund(self):
+        """A4：含单号+流程咨询形态（policy 先命中）→ 升级 refund_query"""
+        from app.services.intent_service import IntentService
+
+        result = IntentService.classify("ORD20260628004 怎么申请退款，流程是什么")
+        assert result["primary"] == "refund_query"
+        assert result["intent"] == "refund_query"  # 别名同步（_wrap 基于 primary）
+        assert result["intents"][0]["intent"] == "refund_query"
+        assert result["entities"]["order_no"] == "ORD20260628004"
+        assert result["method"] == "rule"
+
+    def test_j1_freight_question_not_upgraded(self):
+        """J1 反例：'ORDxxx 退货运费谁出'含"退货"但无怎么/如何前缀 → 保持 policy（防误伤）"""
+        from app.services.intent_service import IntentService
+
+        result = IntentService.classify("ORD20260628004 退货运费谁出")
+        assert result["primary"] == "policy_query"
+
+    def test_willingness_priority_over_timing(self):
+        """意愿优先：'我要退款，退款多久到账' → refund 表先查，不被 policy 时效 pattern 截走"""
+        from app.services.intent_service import IntentService
+
+        result = IntentService.classify("我要退款，退款多久到账")
+        assert result["primary"] == "refund_query"
+
+    def test_control_group_policy_questions_unaffected(self):
+        """对照组：既有政策问句不受新 pattern 影响"""
+        from app.services.intent_service import IntentService
+
+        assert IntentService.classify("7天无理由退货运费谁出")["primary"] == "policy_query"
+        assert IntentService.classify("手机保修期多久")["primary"] == "policy_query"
