@@ -14,6 +14,7 @@ from app.models.product import Product
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.refund import Refund, RefundStatus
 from app.models.handoff_ticket import HandoffTicket, HandoffStatus
+from app.models.message_rating import MessageRating
 
 __all__ = [
     "Base",

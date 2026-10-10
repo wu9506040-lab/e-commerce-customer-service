@@ -22,7 +22,8 @@
 |------|--------|----------|
 | **检索质量** | 330 题分层评测集四级同日连跑（2026-10-09）：dense 0.703 → +BM25/RRF **0.755（+5.2pp）** → +LLM Rerank **0.806（累计 +10.3pp）**；hit@10 0.806→0.882 | `cd deploy && docker compose up -d qdrant redis mysql api`，根目录 `PYTHONPATH=backend python scripts/eval_hitk.py`（逐级加 `--bm25`、`--bm25 --rerank`） |
 | **人工介入闭环（M15）** | 转自动落工单（P0 优先队列/认领/回复注入会话/结单），坐席工作台 `/admin/handoff` | 对触发词说"转人工"→ admin 登录看队列 → 回复 → 用户侧会话可见 |
-| **测试资产** | **638 passed**（单元 + E2E，含 M15 工单 6 例），覆盖率 **67%** | `cd backend && python -m pytest tests --cov=app` |
+| **业务 KPI 大盘（WP1）** | AI 自助解决率 / 转人工率 / CSAT / 拦截率 / 平均轮次 / **LLM 成本估算 + Guard 省钱额** + 按日趋势，含指标公式定义 | admin 登录看 `/admin/kpi`；口径 `backend/app/services/kpi_service.py` 模块注释（成本为估算口径，note 显式标注） |
+| **测试资产** | **643 passed**（单元 + E2E，含 M15 工单 6 例 + WP1 指标 6 例），覆盖率 **67%** | `cd backend && python -m pytest tests --cov=app` |
 | **知识库** | 18 个结构化源文件 → 67 篇文档 → 202 chunks，chunk_id 内容哈希 uuid5 **幂等入库**（重跑/重排零重复） | `PYTHONPATH=backend python scripts/ingest_ecommerce_kb.py` |
 | **服务编排** | api / frontend / qdrant / mysql / redis 5 服务 Docker Compose + SSE 流式 + JWT 鉴权 | `deploy/docker-compose.yml` |
 
@@ -41,7 +42,7 @@
 1. 合成 query 与被检索文档同源，存在自匹配偏置；v3 方向为真实对话日志脱敏回流（`operation_log` 全量审计字段已预留）
 2. 评测集二值相关 + 单正例设定，hit@K 为保守下界
 3. 知识库 202 chunks 小规模，RRF/HNSW 参数结论未在大规模数据验证
-4. `scripts/eval_refund_accuracy.py` 存在**双重时间炸弹**：用例硬编码订单号 + seed 订单按日期生成且 7 天退款时效窗口会过期——当前环境跑出 5/22 属数据时序问题非逻辑回归（订单解析/状态机单测全绿）；修法见 backlog：用例运行时从库取号 + seed 滚动日期
+4. ~~退款评测双重时间炸弹~~ **已修（2026-10-10）**：seed 改固定订单号 + 评测启动前自愈刷新时间窗 + 修复 SSE 解析被后到 meta 覆盖 refundable 的 bug + 防串单断言语义化。5/22 → **19/22（86.4%）**；剩余 3 项是刻意保留的真实缺陷（A4/I2 政策类问题被退款关键词截胡的误路由、H1 对不存在订单的话术臆造），不靠放松断言粉饰——见 `scripts/eval_refund_accuracy.py` 注释
 5. L3 限流为 INCR+过期 的**固定窗口**计数（边界突发用 ZSET 时间戳实现真滑动，在 backlog）
 
 ---

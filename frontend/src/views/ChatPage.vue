@@ -6,7 +6,7 @@
  * - SSE meta 完整保存到 message（intent/entities/tool_result_preview）
  * - 会话列表：左侧侧边栏
  */
-import { ref, onMounted, watch } from 'vue';
+import { computed, ref, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   listConversations,
@@ -16,6 +16,7 @@ import {
   streamChat,
   // Sprint P2 / SSE Resume：流式中断续传
   resumeChat,
+  rateAnswer,
 } from '../api';
 import type { Conversation, Message, StreamEvent } from '../types';
 import ConversationList from '../components/ConversationList.vue';
@@ -28,6 +29,28 @@ const router = useRouter();
 const conversations = ref<Conversation[]>([]);
 const currentSessionId = ref<string | null>(null);
 const messages = ref<Message[]>([]);
+
+// ===== WP1 CSAT 会话满意度（供 kpi_service 聚合 csat/rating_coverage） =====
+const csatComment = ref('');
+const rated = ref(false);
+const canRate = computed(() => {
+  const last = messages.value[messages.value.length - 1];
+  return !streaming.value && messages.value.length > 0 && !!last && last.role === 'assistant';
+});
+async function submitRate(kind: 'up' | 'down'): Promise<void> {
+  if (!currentSessionId.value || rated.value) return;
+  try {
+    const resp = await rateAnswer(currentSessionId.value, kind, csatComment.value.trim());
+    if (resp.ok) rated.value = true;
+  } catch (e) {
+    console.warn('CSAT 提交失败', e);
+  }
+}
+// 新一轮消息（追问/新会话）时重置评价状态
+watch(() => messages.value.length, () => {
+  rated.value = false;
+  csatComment.value = '';
+});
 
 const streaming = ref(false);
 const streamingText = ref('');
@@ -426,6 +449,15 @@ watch(
         <button class="dismiss" @click="error = ''">×</button>
       </div>
 
+      <!-- WP1 CSAT：AI 回答完成后的会话粒度满意度评价条 -->
+      <div v-if="canRate" class="csat-bar">
+        <span class="q">这次回答解决您的问题了吗？</span>
+        <button :disabled="rated" @click="submitRate('up')">👍 有用</button>
+        <button :disabled="rated" @click="submitRate('down')">👎 没用</button>
+        <input v-model="csatComment" maxlength="200" placeholder="可补一句哪里没解决好（选填）" :disabled="rated">
+        <span v-if="rated" class="done">已反馈，感谢 ✔</span>
+      </div>
+
       <MessageInput :disabled="streaming" @send="sendMessage" />
     </main>
   </div>
@@ -508,4 +540,12 @@ watch(
   padding: 0 var(--sp-1);
   line-height: 1;
 }
+
+/* WP1 CSAT 评价条 */
+.csat-bar { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; padding: 8px 10px; background: #f7f9fc; border: 1px solid #eef0f4; border-radius: 8px; font-size: 13px; flex-wrap: wrap; }
+.csat-bar .q { color: #556; }
+.csat-bar button { border: 1px solid #d9d9d9; background: #fff; border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.csat-bar button:disabled { opacity: .5; cursor: default; }
+.csat-bar input { flex: 1; min-width: 140px; border: 1px solid #e3e6ea; border-radius: 6px; padding: 3px 8px; }
+.csat-bar .done { color: #2e7d32; font-weight: 600; }
 </style>

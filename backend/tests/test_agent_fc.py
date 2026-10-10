@@ -369,8 +369,11 @@ class TestOrchestratorFCIntegration:
             # 让 v12_rag_run_stream 立即返一个 done 事件，避免真跑 RAG
             mock_v12.return_value = iter([("done", {"answer": "v12 fallback"})])
             # mock intent_service 防止真跑分类
+            # 【2026-10-10 CI 修复】mock 停留在 V11 旧结构，orchestrator V12 起读
+            # intent_result["primary"]（orchestrator.py:167），旧 mock 触发 KeyError
             with patch("app.services.intent_service.IntentService.classify",
-                       return_value={"intent": "policy_query", "entities": {},
+                       return_value={"intents": [{"intent": "policy_query", "confidence": 1.0}],
+                                     "primary": "policy_query", "entities": {},
                                      "method": "rule", "confidence": 1.0}):
                 events = _consume(Synthesizer.run_stream("test", user_id=1))
 

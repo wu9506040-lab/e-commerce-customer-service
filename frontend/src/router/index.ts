@@ -87,6 +87,14 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '运营数据驾驶舱', requiresAuth: true, requiresAdmin: true },
   },
 
+  // WP1 业务 KPI 大盘（仅 admin）
+  {
+    path: '/admin/kpi',
+    name: 'admin-kpi',
+    component: () => import('../views/AdminKpi.vue'),
+    meta: { title: '业务 KPI 大盘', requiresAuth: true, requiresAdmin: true },
+  },
+
   // M15 人工介入坐席工作台（仅 admin）
   {
     path: '/admin/handoff',
