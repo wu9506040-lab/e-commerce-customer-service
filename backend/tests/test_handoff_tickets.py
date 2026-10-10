@@ -76,3 +76,28 @@ class TestTicketLifecycle:
             def execute(self, *a, **k): raise RuntimeError("db down")
         tid = svc.persist_handoff(42, "S-fail", "user_requested", _payload(), db=_Broken())
         assert tid is None
+
+    def test_ht7_resolve_invalidates_redis_history(self, db_session):
+        """V13(1.4)：resolve 必须失效该会话 Redis 热历史——用户拉历史 Redis
+        优先，不清热缓存则永远看不到坐席回复（M15 宣称的真实断链）"""
+        from unittest.mock import patch
+
+        tid = svc.persist_handoff(
+            42, "S-inv", "user_requested", _payload(sid="S-inv"), db=db_session
+        )
+        with patch("app.services.redis_store.clear_history") as mock_clear:
+            res = svc.resolve_ticket(db_session, tid, "agent", "已处理，请查收。")
+        assert res["ok"]
+        mock_clear.assert_called_once_with("S-inv")
+
+    def test_ht7b_clear_failure_does_not_break_resolve(self, db_session):
+        """V13(1.4) 边界：Redis 不可用时 resolve 照常成功（TTL 兜底，best-effort）"""
+        from unittest.mock import patch
+
+        tid = svc.persist_handoff(
+            42, "S-inv2", "user_requested", _payload(sid="S-inv2"), db=db_session
+        )
+        with patch("app.services.redis_store.clear_history",
+                   side_effect=ConnectionError("redis down")):
+            res = svc.resolve_ticket(db_session, tid, "agent", "已处理")
+        assert res["ok"] and res["ticket"]["status"] == "resolved"
