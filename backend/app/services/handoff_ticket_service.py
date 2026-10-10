@@ -201,6 +201,18 @@ def resolve_ticket(db: Session, ticket_id: int, admin_username: str, reply: str)
     if not t.assignee:
         t.assignee = admin_username
     db.commit()
+    # V13（1.4）：人工回复只写了 MySQL，而用户拉历史 Redis 热路径优先
+    # （session_service.load_history_with_fallback）——热会话未过期时用户
+    # 永远看不到坐席回复（M15"回复注入会话"宣称的真实断链）。失效热缓存，
+    # 下一次加载走 MySQL 冷回填。失败仅告警（TTL 600s 是最终兜底）。
+    if t.session_id:
+        try:
+            from app.services import redis_store
+            redis_store.clear_history(t.session_id)
+        except Exception as e:
+            logger.warning(
+                f"resolve: redis history invalidate failed（热会话暂不可见人工回复）: {e}"
+            )
     logger.info(f"handoff ticket resolved: no={t.ticket_no} by={admin_username}")
     return {"ok": True, "ticket": _ticket_brief(t)}
 
