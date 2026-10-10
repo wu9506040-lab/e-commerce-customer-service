@@ -24,6 +24,10 @@ os.environ.setdefault("JWT_SECRET", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
 os.environ.setdefault("DATABASE_URL", "mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=utf8mb4")
 
 from app.core.config import settings  # noqa: E402
+# V13（1.1 修复连带）：decide 节点需要真实决策 JSON。此前多条用例给 chat 塞单个
+# return_value（非 JSON），旧路由 bug 把"决策解析失败"静默滑向 synthesize 才碰巧绿；
+# retry 回边生效后必须按场景给 [decide JSON, 答案] 序列（见 test_refund_graph._decide_reply）
+from test_refund_graph import _decide_reply  # noqa: E402
 
 
 # ============ 辅助：构造测试数据 ============
@@ -194,7 +198,10 @@ class TestHandleRefundV3:
         mock_rf_tool.get_order_by_no.return_value = make_order(
             order_no="ORD20260718001", days_ago=3
         )
-        mock_provider.return_value.chat.return_value = {"reply": "可以退"}
+        mock_provider.return_value.chat.side_effect = [
+            {"reply": _decide_reply("synthesize", target="ORD20260718001", policy_needed=False)},
+            {"reply": "可以退"},
+        ]
 
         from app.services.chat.refund_handler import handle_refund_v3
         events = collect_events(handle_refund_v3(
@@ -223,7 +230,10 @@ class TestHandleRefundV3:
         mock_rf_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
         # V2 兼容 mock path（refund_graph 保留 unused import）
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
-        mock_provider.return_value.chat.return_value = {"reply": "符合 7 天无理由"}
+        mock_provider.return_value.chat.side_effect = [
+            {"reply": _decide_reply("synthesize", policy_needed=False)},
+            {"reply": "符合 7 天无理由"},
+        ]
 
         from app.services.chat.refund_handler import handle_refund_v3
         events = collect_events(handle_refund_v3(
@@ -290,7 +300,10 @@ class TestHandleRefundV3:
         mock_tool.get_order_by_no.return_value = make_order("delivered", days_ago=15)
         # V3: RefundFlow.run() 层的订单查询（V13 补 mock，场景=订单存在）
         mock_rf_tool.get_order_by_no.return_value = make_order("delivered", days_ago=15)
-        mock_provider.return_value.chat.return_value = {"reply": "已超过 7 天，不符合退款条件"}
+        mock_provider.return_value.chat.side_effect = [
+            {"reply": _decide_reply("synthesize", policy_needed=False)},
+            {"reply": "已超过 7 天，不符合退款条件"},
+        ]
 
         from app.services.chat.refund_handler import handle_refund_v3
         events = collect_events(handle_refund_v3(
@@ -315,15 +328,23 @@ class TestHandleRefundV3:
 class TestFallback:
     """LangGraph 异常时 fallback 到 V2"""
 
+    @patch("app.services.refund_graph.get_llm_provider")
     @patch("app.services.business_flow.refund_flow.OrderTool")
     @patch("app.services.refund_graph.OrderTool")
     @patch("app.services.chat.refund_handler.OrderService")
     @patch("app.services.chat.refund_handler.RefundService")
     @patch("app.services.chat.stream_dispatcher.get_llm_provider")
     def test_langgraph_failure_fallback_to_v2(
-        self, mock_provider, mock_refund_svc, mock_order_svc, mock_tool, mock_rf_tool,
+        self, mock_provider, mock_refund_svc, mock_order_svc, mock_tool, mock_rf_tool, mock_graph_llm,
     ):
         """LangGraph 内部抛异常 → fallback 到 V2"""
+        # V13（1.1 连带修正）：decide 需真实决策 JSON 通过校验进入 synthesize，
+        # 由 synthesize 的 chat 抛异常制造"图内失败"——旧写法靠非 JSON 输出走
+        # bug 路径（决策失败静默滑向 synthesize）碰巧触发 fallback，语义是错的
+        mock_graph_llm.return_value.chat.side_effect = [
+            {"reply": _decide_reply("synthesize", policy_needed=False)},
+            RuntimeError("DB down in graph"),
+        ]
         # V2 链路需要的 mock
         mock_order_svc.list_user_orders.return_value = [make_order()]
         # V3: run() 层必须查到订单才能走到图、由图内 mock_tool 抛异常触发 fallback
@@ -371,7 +392,10 @@ class TestSSEProtocol:
         # V3: RefundFlow.run() 层的订单查询（V13 补 mock，场景=订单存在）
         mock_rf_tool.get_order_by_no.return_value = make_order("delivered", days_ago=3)
         mock_policy.search_policy.return_value = [{"text": "..."}]
-        mock_provider.return_value.chat.return_value = {"reply": "OK"}
+        mock_provider.return_value.chat.side_effect = [
+            {"reply": _decide_reply("synthesize", policy_needed=False)},
+            {"reply": "OK"},
+        ]
 
         from app.services.chat.refund_handler import handle_refund_v3
         events = collect_events(handle_refund_v3(

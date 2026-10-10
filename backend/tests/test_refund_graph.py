@@ -134,5 +134,67 @@ class TestRefundGraphPaths:
         assert mock_provider.return_value.chat.call_count == 1
 
 
+# ============ V13（1.1 修复，2026-10-10）：decide 失败重试自环 + 永不无决策生成 ============
+
+class TestDecideRetryLoop:
+    """回归防护：审计发现的静默路径——decide 失败(无 decide_result)曾落到
+    synthesize 用默认值硬造答案；修复后走 retry 回边，超限强制 escalate。"""
+
+    @patch("app.services.refund_graph.get_llm_provider")
+    def test_llm_error_then_recovers_via_retry_edge(self, mock_provider):
+        """LLM 异常 1 次 → retry 回边重入 decide → 恢复后正常生成"""
+        mock_provider.return_value.chat.side_effect = [
+            ConnectionError("LLM boom"),
+            {"reply": _decide_reply("synthesize", policy_needed=False)},
+            {"reply": "您的订单可以退。"},
+        ]
+
+        from app.services.refund_graph import refund_graph_app
+        result = refund_graph_app.invoke(_base_state())
+
+        assert "可以退" in result["final_answer"]
+        assert mock_provider.return_value.chat.call_count == 3
+        assert result.get("decide_retry_count") == 1
+
+    @patch("app.services.refund_graph.get_llm_provider")
+    def test_llm_always_fails_escalates_at_max_retries(self, mock_provider):
+        """连续异常达 MAX_LLM_RETRIES=3 → 强制 escalate，绝不进 synthesize"""
+        mock_provider.return_value.chat.side_effect = [
+            ConnectionError("boom1"),
+            ConnectionError("boom2"),
+            ConnectionError("boom3"),
+        ]
+
+        from app.services.refund_graph import refund_graph_app
+        result = refund_graph_app.invoke(_base_state())
+
+        assert mock_provider.return_value.chat.call_count == 3
+        assert "escalate_result" in result
+        assert not result.get("final_answer")
+
+    @patch("app.services.refund_graph.get_llm_provider")
+    def test_unparseable_output_retries_then_succeeds(self, mock_provider):
+        """LLM 输出不可解析 → retry 回边 → 二次有效 JSON 正常走完"""
+        mock_provider.return_value.chat.side_effect = [
+            {"reply": "这显然不是JSON"},
+            {"reply": _decide_reply("synthesize", policy_needed=False)},
+            {"reply": "好的，可以退。"},
+        ]
+
+        from app.services.refund_graph import refund_graph_app
+        result = refund_graph_app.invoke(_base_state())
+
+        assert "可以退" in result["final_answer"]
+        assert result.get("decide_retry_count") == 1
+
+    def test_route_retry_when_no_decision(self):
+        """路由函数单测：无 decide_result → 'retry'（修复前此态落 synthesize=幻觉路径）"""
+        from app.services.refund_graph import _decide_route
+
+        assert _decide_route({}) == "retry"
+        assert _decide_route({"decide_result": {}}) == "retry"
+        assert _decide_route({"decide_result": {"decision": "escalate"}}) == "escalate"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
