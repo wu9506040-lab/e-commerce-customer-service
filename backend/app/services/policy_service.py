@@ -162,7 +162,7 @@ class PolicyService:
     # 单路检索（保持向后兼容，A4/A5/A8 全部基于它）
     # =============================================================
     @staticmethod
-    def search_policy(query: str, top_k: int = 3) -> list[dict]:
+    def search_policy(query: str, top_k: int = 3, skip_rerank: bool = False) -> list[dict]:
         """
         检索政策 KB（退货/保修/物流/促销等）
 
@@ -171,6 +171,8 @@ class PolicyService:
         Args:
             query: 用户问题
             top_k: 返回条数
+            skip_rerank: V13（2.2）True=跳过 LLM 精排（cache_hit 展示型检索专用，
+                不为"看个来源"再付一次精排的 token 成本和 1.2s 延迟）
 
         Returns:
             [{"text": str, "source": str, "score": float,
@@ -187,17 +189,20 @@ class PolicyService:
             metrics.record_hit_at_k(0)
             return []
 
-        # 可选：rerank 精排
+        # 可选：rerank 精排（V13 2.2：skip_rerank 直取粗排前 top_k，不再调 LLM）
         if settings.USE_RERANK and len(hits) > top_k:
-            try:
-                from app.core.providers.rerank import get_rerank_provider
-                hits = get_rerank_provider().rerank(query, hits, top_n=top_k)
-                logger.debug(
-                    f"policy rerank: candidates={len(hits)}/{coarse_top_k} → top{top_k}"
-                )
-            except Exception as e:
-                logger.warning(f"policy rerank 失败，降级到粗排: {e}")
+            if skip_rerank:
                 hits = hits[:top_k]
+            else:
+                try:
+                    from app.core.providers.rerank import get_rerank_provider
+                    hits = get_rerank_provider().rerank(query, hits, top_n=top_k)
+                    logger.debug(
+                        f"policy rerank: candidates={len(hits)}/{coarse_top_k} → top{top_k}"
+                    )
+                except Exception as e:
+                    logger.warning(f"policy rerank 失败，降级到粗排: {e}")
+                    hits = hits[:top_k]
 
         metrics.record_hit_at_k(1 if hits else 0)
         return _format_hits(hits)
