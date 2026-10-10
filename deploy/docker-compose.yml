@@ -48,6 +48,10 @@ services:
       # C2 Agent FC 灰度开关（2026-07-16 C4 验证开启；false 走 V1.2 fallback）
       ENABLE_AGENT_FC: ${ENABLE_AGENT_FC:-false}
       MAX_AGENT_TURNS: ${MAX_AGENT_TURNS:-5}
+      # V13（1.7）补漏：这两个开关此前只在代码默认值，不在 compose 注入清单，
+      # 改行为要靠重新 build 镜像——部署层漂移源头之一
+      SSE_CARD_V2: ${SSE_CARD_V2:-true}
+      ENABLE_CONTEXT_STORE: ${ENABLE_CONTEXT_STORE:-false}
       # JWT 鉴权（2026-06-28 轮换，不依赖 config.py 默认占位符）
       JWT_SECRET: ${JWT_SECRET}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}

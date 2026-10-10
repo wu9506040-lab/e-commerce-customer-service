@@ -481,3 +481,20 @@ class TestV13RoutingBoundary:
 
         assert IntentService.classify("7天无理由退货运费谁出")["primary"] == "policy_query"
         assert IntentService.classify("手机保修期多久")["primary"] == "policy_query"
+
+    def test_v13_word_order_pair_both_stay_policy(self):
+        """V13(1.6) 词序对偶：'ORD… 怎么退款还没到账' 与 'ORD… 退款怎么还没到账'
+        同一语义（问时效），必须都留在 policy_query——修复前前者会被误升级。"""
+        from app.services.intent_service import IntentService
+
+        r1 = IntentService.classify("ORD20260628004 怎么退款还没到账")
+        r2 = IntentService.classify("ORD20260628004 退款怎么还没到账")
+        assert r1["primary"] == "policy_query", "时效词'到账'必须压制流程升级"
+        assert r2["primary"] == "policy_query"
+
+    def test_v13_genuine_process_question_still_upgrades(self):
+        """V13(1.6) 对照：无时效词的真流程问句升级不受影响（防压制过宽）"""
+        from app.services.intent_service import IntentService
+
+        r = IntentService.classify("ORD20260628004 怎么退款")
+        assert r["primary"] == "refund_query"

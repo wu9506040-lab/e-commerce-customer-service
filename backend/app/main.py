@@ -225,6 +225,51 @@ async def startup_event():
         f"secure={settings.COOKIE_SECURE}, "
         f"samesite={settings.COOKIE_SAMESITE}"
     )
+
+    # V13（1.7）：feature flag 真值自报——审计教训：代码默认 / .env / compose
+    # 三源漂移（如 USE_LANGGRAPH_REFUND 代码 False 容器 true），此前只能人肉
+    # 翻三个文件才知道"线上到底开着什么"。启动日志一屏看全生效值。
+    _flags = {
+        "USE_LANGGRAPH_REFUND": settings.USE_LANGGRAPH_REFUND,
+        "ENABLE_BUSINESS_FLOW": settings.ENABLE_BUSINESS_FLOW,
+        "ENABLE_ORDER_RESOLVER": settings.ENABLE_ORDER_RESOLVER,
+        "ENABLE_ESCALATION_HANDOFF": settings.ENABLE_ESCALATION_HANDOFF,
+        "ENABLE_AGENT_FC": settings.ENABLE_AGENT_FC,
+        "USE_HYBRID_BM25": settings.USE_HYBRID_BM25,
+        "USE_RERANK": settings.USE_RERANK,
+        "ENABLE_MULTI_QUERY": settings.ENABLE_MULTI_QUERY,
+        "ENABLE_USER_PROFILE": settings.ENABLE_USER_PROFILE,
+        "ENABLE_CONTEXT_STORE": settings.ENABLE_CONTEXT_STORE,
+        "SSE_CARD_V2": settings.SSE_CARD_V2,
+        "RAG_CHUNK_STRATEGY": settings.RAG_CHUNK_STRATEGY,
+    }
+    logger.info("feature flags: " + "  ".join(f"{k}={v}" for k, v in _flags.items()))
+
+    # V13（1.7）：模型名形状体检——日期快照会被上游退役（2026-10-10 实锤：
+    # qwen-plus-2025-07-28 下架 404，被 rerank 静默降级吃成"数字正常、整级空转"）
+    import re as _re
+    if _re.search(r"-\d{4}-\d{2}-\d{2}$", settings.QWEN_MODEL or ""):
+        logger.warning(
+            f"QWEN_MODEL={settings.QWEN_MODEL} 是带日期快照版本，存在被上游退役风险，"
+            "建议改用通用别名（qwen-plus / qwen-turbo）"
+        )
+
+    # V13（1.7）：模型连通性后台探活（不阻塞启动；失败只显形告警。
+    # 此前 401/404 类配置错误要等第一个用户请求才暴露）
+    import threading
+
+    def _probe_llm() -> None:
+        try:
+            from app.core import qwen as _q
+            _q.chat([{"role": "user", "content": "ping"}], max_tokens=8)
+            logger.info(f"model probe OK: {settings.QWEN_MODEL}")
+        except Exception as e:
+            logger.error(
+                f"model probe FAILED: {settings.QWEN_MODEL} -> "
+                f"{type(e).__name__}: {str(e)[:120]}"
+            )
+
+    threading.Thread(target=_probe_llm, daemon=True, name="llm-probe").start()
     logger.info("=" * 60)
 
 
