@@ -116,6 +116,12 @@ class Metrics:
         self.rerank_total = 0
         self.rerank_degraded = 0
 
+        # ----- V13（2.3）：意图路由质量指标 -----
+        # method: 'rule' | 'llm' | 'default'；upgrade 单列计数（rule 内子事件）
+        # 规则命中率 = rule / total —— "三级路由省 LLM 成本"叙事的量化底座
+        self.intent_by_method: Dict[str, int] = {}
+        self.intent_upgrade_total = 0
+
         # ----- V13（1.2）：LLM 流式完成度指标 -----
         # truncated = 中途断连的残答次数；truncated_rate = truncated / total
         self.llm_stream_total = 0
@@ -179,6 +185,13 @@ class Metrics:
             self.rerank_total += 1
             if not ok:
                 self.rerank_degraded += 1
+
+    def inc_intent_method(self, method: str, upgraded: bool = False) -> None:
+        """V13(2.3)：意图分类方法分布计数（rule/llm/default）；upgraded 另加一计"""
+        with self._lock:
+            self.intent_by_method[method] = self.intent_by_method.get(method, 0) + 1
+            if upgraded:
+                self.intent_upgrade_total += 1
 
     def inc_qdrant_search(self, result: str) -> None:
         """result: 'success' | 'fallback_open' | 'error'"""
@@ -417,6 +430,11 @@ class Metrics:
                 "uptime_seconds": uptime,
                 "chat": chat_block,
                 "rag": rag_block,
+                # V13(2.3)：意图路由质量（rule/llm/default 分布 + 升级计数）
+                "intent": {
+                    "by_method": dict(self.intent_by_method),
+                    "upgrade_total": self.intent_upgrade_total,
+                },
                 "embedding": emb_block,
                 "circuit_breaker": cb_block,
                 "hit_at_k": hit_k_block,

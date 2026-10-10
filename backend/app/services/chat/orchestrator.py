@@ -172,6 +172,18 @@ class Synthesizer:
             logger.debug("synth.intent: 复用 chat 预分类（省一次 LLM 调用）")
         else:
             intent_result = IntentService.classify(query)
+
+        # V13（2.3）：内部事件携带当轮意图决策快照——chat.py 消费后随消息落库
+        # （intent_snapshot 列），不外发 SSE。👎/badcase 反查的 join 地基：
+        # 没有它，差评只能 join 到"检索了什么"，答不出"当时判成什么意图、
+        # 走规则还是 LLM、是否触发过升级"。
+        yield ("_intent", {
+            "primary": intent_result.get("primary"),
+            "method": intent_result.get("method"),
+            "confidence": intent_result.get("confidence"),
+            "intents": intent_result.get("intents", []),
+            "upgraded": bool(intent_result.get("upgraded")),
+        })
         primary = intent_result["primary"]  # V12：主意图（替代 V11 的 intent_result["intent"]）
         entities = intent_result["entities"]
         # V12：构造 secondary_intent_block（让 LLM 知道用户可能还想问 X 类问题）

@@ -37,10 +37,17 @@ const canRate = computed(() => {
   const last = messages.value[messages.value.length - 1];
   return !streaming.value && messages.value.length > 0 && !!last && last.role === 'assistant';
 });
+// V13(2.3)：done 事件带回的 assistant 消息行 id——评价按"条"而非按"会话"。
+// 此前 message_id 恒 0，差评无法反查到具体回答（badcase 池的粒度债）
+const lastAssistantMessageId = ref<number | null>(null);
+
 async function submitRate(kind: 'up' | 'down'): Promise<void> {
   if (!currentSessionId.value || rated.value) return;
   try {
-    const resp = await rateAnswer(currentSessionId.value, kind, csatComment.value.trim());
+    const resp = await rateAnswer(
+      currentSessionId.value, kind, csatComment.value.trim(),
+      lastAssistantMessageId.value ?? 0,
+    );
     if (resp.ok) rated.value = true;
   } catch (e) {
     console.warn('CSAT 提交失败', e);
@@ -50,6 +57,7 @@ async function submitRate(kind: 'up' | 'down'): Promise<void> {
 watch(() => messages.value.length, () => {
   rated.value = false;
   csatComment.value = '';
+  lastAssistantMessageId.value = null;  // V13(2.3)：新轮次未拿到 done 前禁挂旧 id
 });
 
 const streaming = ref(false);
@@ -302,6 +310,8 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
               break;
             case 'done':
               currentSessionId.value = event.session_id;
+              // V13(2.3)：记录本条回答的消息 id（cache_hit/落库失败时无此字段→null）
+              lastAssistantMessageId.value = event.assistant_message_id ?? null;
               {
                 const meta = capturedMeta && capturedMeta.type === 'meta' ? capturedMeta : null;
                 const assistantMsg: Message = {

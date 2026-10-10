@@ -1,0 +1,5 @@
+
+# V13(2.3)修：pycache 进 build context 会导致镜像内旧 .pyc 因源文件 mtime 一致而被信任，
+# 运行时代码覆盖不上（2026-10-11 persist_to_mysql 新签名被旧字节码压住的根因）
+**/__pycache__/
+*.pyc
