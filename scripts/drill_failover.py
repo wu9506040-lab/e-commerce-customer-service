@@ -26,6 +26,8 @@ import uuid
 from pathlib import Path
 from typing import List
 
+import requests
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
@@ -56,8 +58,7 @@ def pct(xs: List[float], q: float) -> float:
 # =============================================================
 # 共用：登录拿 token + 创建评测用户
 # =============================================================
-def login_session(name: str, pw: str) -> "requests.Session":
-    import requests
+def login_session(name: str, pw: str) -> requests.Session:
     r = requests.post(f"{BASE}/api/auth/login",
                       data={"username": name, "password": pw}, timeout=15)
     r.raise_for_status()
