@@ -64,6 +64,7 @@ from app.services.session_service import (
     persist_to_mysql,
 )
 # P2 长程记忆：每轮 done 后异步更新 user_profiles（best-effort）
+from app.services import badcase_service  # V14（2.4）guard 误杀留证入池
 from app.services import profile_service
 from app.services.guard import guard as input_guard
 from app.services.intent_service import IntentService
@@ -221,6 +222,12 @@ async def chat(
                     "guard_reason": guard_result.reason,
                     "query_len": len(payload.query),
                 },
+            )
+            # V14（2.4）：operation_log 不记正文——guard 误杀的证据只能落 badcase 池。
+            # 自开 session、失败显形（metrics+日志），绝不阻断拦截应答。
+            badcase_service.enqueue_guard_blocked_safe(
+                query=payload.query, session_id=session_id, user_id=user_id,
+                layer=guard_result.layer or "", reason=guard_result.reason or "",
             )
             logger.info(
                 f"/chat guard blocked: layer={guard_result.layer} "

@@ -15,8 +15,11 @@ message_ratings（评价）、operation_log chat_guard_blocked（拦截）。
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -112,6 +115,19 @@ def upsert_rating(
         row.rating = rating
         row.comment = comment
     db.commit()
+    # V14（2.4）飞轮入口：👎 即坏样本信号，同会话入 badcase 池。
+    # 入池失败不阻断评价（CSAT 是主契约）——但必须显形：error 计数 + 异常日志。
+    if rating == "down":
+        try:
+            from app.services import badcase_service
+            badcase_service.enqueue_thumbs_down(
+                db, session_id=session_id, message_id=message_id, user_id=user_id)
+        except Exception:
+            from app.services.metrics import metrics
+            metrics.badcase_enqueue_error += 1
+            logger.exception(
+                "badcase enqueue failed (thumbs_down): session=%s message=%s",
+                session_id, message_id)
     return {"ok": True, "rating": rating, "session_id": session_id}
 
 
