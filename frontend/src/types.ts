@@ -278,7 +278,7 @@ export type StreamEvent =
       handoff?: HandoffPayload;
     }
   | { type: 'token'; id?: number; text: string }
-  | { type: 'done'; id?: number; session_id: string }
+  | { type: 'done'; id?: number; session_id: string; assistant_message_id?: number }
   | { type: 'error'; id?: number; message: string }
   | { type: 'heartbeat'; id?: number; ts: number }
   | { type: 'closed'; id?: number }
