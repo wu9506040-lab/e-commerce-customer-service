@@ -241,6 +241,11 @@ async def startup_event():
         "USE_RERANK": settings.USE_RERANK,
         "ENABLE_MULTI_QUERY": settings.ENABLE_MULTI_QUERY,
         "ENABLE_USER_PROFILE": settings.ENABLE_USER_PROFILE,
+        # V14（3.3）请求级预算——和上面业务开关平级，启动日志一眼看生效值
+        "CHAT_DEADLINE_SECONDS": settings.CHAT_DEADLINE_SECONDS,
+        "LLM_CALL_TIMEOUT": settings.LLM_CALL_TIMEOUT,
+        "LLM_SDK_MAX_RETRIES": settings.LLM_SDK_MAX_RETRIES,
+        "LLM_SEMAPHORE_SIZE": settings.LLM_SEMAPHORE_SIZE,
         "ENABLE_CONTEXT_STORE": settings.ENABLE_CONTEXT_STORE,
         "SSE_CARD_V2": settings.SSE_CARD_V2,
         "RAG_CHUNK_STRATEGY": settings.RAG_CHUNK_STRATEGY,
