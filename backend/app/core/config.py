@@ -244,6 +244,22 @@ class Settings(BaseSettings):
     # 断路器开路后多久进入 HALF_OPEN 探活
     LLM_CIRCUIT_RECOVERY_TIMEOUT: float = 60.0
 
+    # ---- V14（3.3）请求级超时预算 ----
+    # /chat 全链墙钟预算；client 层每次 HTTP 调用超时= min(分段上限, 剩余预算)，
+    # 重试/排队/流式推进前过 deadline.check()，超线快速失败走既有降级矩阵。
+    CHAT_DEADLINE_SECONDS: float = 90.0
+    # 分段单次调用上限（秒）：防单级吃光预算，饿死下游生成段
+    LLM_CALL_TIMEOUT: float = 30.0          # 通用 chat/stream 单次上限（原硬编码 30.0）
+    RERANK_CALL_TIMEOUT: float = 20.0       # 精排级：超线→保原序降级（已有显形）
+    INTENT_CALL_TIMEOUT: float = 10.0       # 意图 LLM 兜底：超线→默认 policy（已有）
+    REWRITE_CALL_TIMEOUT: float = 6.0       # 查询改写：超线→用原 query（已有）
+    # OpenAI SDK 内建重试清零：项目自有 retry+退避+断路器，SDK 再叠 2 次是
+    # "最坏 10 分钟"的根因放大器（30s×3×4 叠加）；单 attempt=单 HTTP，熔断计数才诚实
+    LLM_SDK_MAX_RETRIES: int = 0
+    # 流式并发闸（stream_dispatcher._LLM_SEMAPHORE）：容量与排队等待上限
+    LLM_SEMAPHORE_SIZE: int = 10
+    LLM_SEMAPHORE_ACQUIRE_TIMEOUT: float = 15.0
+
 
 settings = Settings()
 

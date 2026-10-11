@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 from openai import OpenAI
 from openai import RateLimitError, APITimeoutError, APIConnectionError
 
+from app.core import deadline as _deadline
 from app.core.config import settings
 from app.services.metrics import metrics
 
@@ -139,6 +140,8 @@ def _embed_text_uncached(text: str) -> List[float]:
     if not text or not text.strip():
         raise ValueError("embed_text: text 不能为空")
 
+    # V14（3.3）：单次调用入口过预算检查 + 每 attempt 用剩余预算裁剪 timeout
+    _deadline.check("embed")
     client = get_client()
     last_error: Optional[Exception] = None
 
@@ -148,6 +151,7 @@ def _embed_text_uncached(text: str) -> List[float]:
                 model=EMBEDDING_MODEL,
                 input=text,
                 encoding_format="float",
+                timeout=_deadline.clamp_timeout(EMBEDDING_TIMEOUT),
             )
             embedding = response.data[0].embedding
             logger.info(
@@ -161,6 +165,16 @@ def _embed_text_uncached(text: str) -> List[float]:
             last_error = e
             if attempt < _MAX_RETRIES:
                 wait = _BACKOFF_BASE * (2 ** attempt)  # 1s / 2s / 4s
+                # 预算能否撑起"wait + 又一次 embed"？撑不起立即抛，让上层降级
+                if not _deadline.can_afford(wait + EMBEDDING_TIMEOUT + 0.5):
+                    metrics.record_deadline_exceeded("embed")
+                    logger.warning(
+                        f"embed_text 预算不足跳重试: need~{wait + EMBEDDING_TIMEOUT + 0.5:.1f}s"
+                    )
+                    raise _deadline.DeadlineExceededError(
+                        f"budget cannot afford embed retry (need {wait + EMBEDDING_TIMEOUT + 0.5:.1f}s)",
+                        stage="embed",
+                    )
                 logger.warning(
                     f"embed_text 重试 {attempt + 1}/{_MAX_RETRIES + 1}: "
                     f"{type(e).__name__}, waiting {wait}s"
