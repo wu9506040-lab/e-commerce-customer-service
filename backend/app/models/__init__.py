@@ -15,6 +15,7 @@ from app.models.order import Order, OrderItem, OrderStatus
 from app.models.refund import Refund, RefundStatus
 from app.models.handoff_ticket import HandoffTicket, HandoffStatus
 from app.models.message_rating import MessageRating
+from app.models.badcase import BadcaseCandidate  # V14（2.4）badcase 自动池
 
 __all__ = [
     "Base",
