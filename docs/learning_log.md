@@ -7860,3 +7860,21 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 - **运维踩坑留档**：`docker compose up -d api` 忘带 `--env-file .env.dev` → 全 `${VAR}` 插值空 → JWT_SECRET 缺失崩溃循环，且四个 USE_*/ENABLE_* 功能开关会**静默回退 false**（本项目"降级必须显形"军规在运维命令层的镜像案例）。重建/滚动一律用 `docker compose -p customer-service --env-file .env.dev up -d api`。
 - 活体实验自己的翻车也留档：第一次脚本把 load() 解析后的 content 串当文件原文写回 → 打坏容器内 agent_fc_v1.yaml（宿主 git 无恙，docker cp 恢复）；坏 YAML 被 loader 明确 PromptFormatError 拒绝，**未静默供坏**——失败显形修复自身也通过活体检验。
 
+## §68 · V14（2.4）badcase 自动池：飞轮从人肉变机制（2026-10-11）
+
+### 1. 交付
+- **表** `badcase_candidates`：(query_hash, signal_type) 唯一，归一化哈希去重（复发 bump hit_count 不重复建行）；snapshot JSON 存当轮全现场（intent/top_contexts 两形状兼容/答案节选/guard 层与理由）。
+- **三信号入池**：① 👎——`upsert_rating` 写入侧实时钩子（join 2.3 intent_snapshot 反查问句与检索现场，message_id=0 兜底取会话最后一条 assistant 并打标）；② LLM 低置信——`collect_low_confidence` 扫描（method=llm 且 conf<0.6，规则命中不收）；③ guard 拦截——`enqueue_guard_blocked_safe` 自开 session、失败显形（计数+日志）绝不阻断拦截应答（operation_log 不记正文，误杀证据只能落池）。
+- **审核面 API**（`/api/admin/badcases`，require_admin）：列表过滤分页 / PATCH reviewed(标注 expected_source 稳定键)|discarded / collect；状态机 new↔reviewed/discarded、merged 锁定不可回退（merged 只能由脚本 reviewed→merged）。
+- **合入脚本** `merge_badcase_to_eval.py`：默认 dry-run；doc_id 由 source 现库解析（防漂移）；no-source/source-not-in-KB/dup-query 三类 FAIL 宁缺毋滥；--apply 先备份 .bak 再写、mark_merged 状态机回写。演示合入走临时 --eval-file，330 基线不动（demo 文件 330→331 实证）。
+- **测试** +23 条（池组全档：入池/去重/现场 join/两形状兼容/无现场 error 计数/扫描三态/状态机 5 例/API 5 例含 RBAC 401-403 回归锁/脚本纯函数 2 例）。
+- **终验**：716 条=715 绿+1 环境项、覆盖 69%（8949/2745）、ruff 0；活体 `verify_flywheel_live.py` 11 步全 PASS（真实 LLM 问答→👎→英文误杀→池见双信号带现场→reviewed→collect 可用）。
+
+### 2. 踩坑三则（全部转成回归/惯例）
+- **`signal` 是 MySQL 8 保留字**（SIGNAL 语句）：ORM 自动引号建表能跑、手写 SQL 直查即炸（建表当日实测）→ 列名改 `signal_type`（ORM 属性与 API JSON 键不变），`migrate_v14_badcase.py` 幂等改名（索引随列走、ix 旧名保留属正常）；未上线新表改名要趁早。
+- **演示脚本第二遍 FAIL 揪出语义正确行为**：与首轮同文问句 → 哈希相同 → 👎 落 merged 行 bump 而非新池行——去重语义按设计工作，但校验脚本必须用唯一问句 + status=new 过滤（校验脚本自己也要出厂验证）。
+- **unique 约束字符串按列名解析**：mapped_column("signal_type", …) 后 `UniqueConstraint("query_hash","signal")` 集合期 KeyError——改约束串用真实列名。
+
+### 3. 口径升级（简历已同步）
+"👎 差评经 intent 快照反查——badcase 采集→人工审核→回归评测闭环**在建**" → 采集（三信号自动入池）+ 审核（API 状态机+稳定键标注）+ 合入（脚本防漂移+备份+回写）**已运行**，活体校验命令可复现。诚实边界不变：合入仍需人工确认（半自动是设计而非缺陷——评测集质量靠人审兜底）；低置信扫描阈值 0.6 是经验值无分布依据（E6'/2.5 黄金集后再校准）。
+
