@@ -247,16 +247,101 @@ class TestMtimeReloadWithVersions:
         original = loader.load("agent", version="v2")
         assert "[v2 内容]" in original
 
-        # 模拟编辑：等 mtime 刷新 + 改内容
-        time.sleep(0.1)
-        (prompts_dir / "agent_v2.yaml").write_text(
+        # 模拟编辑并显式前推 mtime。
+        # 为什么这么修：loader 缓存按 st_mtime 浮点相等判断文件是否变更（prompt_loader.py
+        # 的 cached[0] == mtime），而 Windows 文件时间戳存在惰性刷新——sleep(0.1) 后重写
+        # 文件 mtime 常常未变，缓存判定"没改"返回旧内容，本测试在宿主机上约半数概率假红
+        # （flaky，2026-10-11 实测三连跑 fail/pass/fail 定位）。生产不受影响（真实编辑
+        # 间隔远超时钟粒度），测试用 os.utime 把 mtime 确定性地推后 10s 消除掷硬币。
+        p = prompts_dir / "agent_v2.yaml"
+        p.write_text(
             "content: |\n  [v2 修订] 内容已变更。\n",
             encoding="utf-8",
         )
+        future = time.time() + 10
+        os.utime(p, (future, future))
 
         updated = loader.load("agent", version="v2")
         assert "[v2 修订]" in updated
         assert updated != original
+
+
+# =============================================================
+# V14 回归：manifest/content 时间戳同刻平铺时的缓存陈旧（生产实锤 bug）
+# 2026-10-11 扫描 config/prompts 发现 agent_fc.yaml 与两个内容文件 mtime 全等
+# （同秒创建/复制部署可致），旧实现命中判断只看 manifest mtime →
+# 内容文件后续编辑永不生效，"prompt 热更新"静默失效。
+# =============================================================
+class TestStaleCacheSameTick:
+    """外部内容文件与 manifest mtime 平铺/回拨时，缓存失效判断必须仍然正确"""
+
+    MANIFEST = (
+        "default_version: v2\n"
+        "versions:\n"
+        "  v2:\n"
+        "    file: agent_v2.yaml\n"
+    )
+
+    def _make_same_tick_pair(self, base: Path) -> Path:
+        """构造 manifest + 内容文件，并把内容文件 mtime 抹平到与 manifest 全等"""
+        (base / "agent.yaml").write_text(self.MANIFEST, encoding="utf-8")
+        v2 = base / "agent_v2.yaml"
+        v2.write_text("content: |\n  [OLD] 原始内容。\n", encoding="utf-8")
+        m = (base / "agent.yaml").stat().st_mtime
+        os.utime(v2, (m, m))
+        return v2
+
+    def test_content_edit_picked_up_when_same_tick(self, tmp_path):
+        """平铺场景：首次 load 后编辑内容文件（mtime 变新）→ 必须返回新值"""
+        from app.services.prompt_loader import YAMLPromptLoader
+
+        base = tmp_path / "prompts"
+        base.mkdir()
+        v2 = self._make_same_tick_pair(base)
+        loader = YAMLPromptLoader(base)
+        assert "[OLD]" in loader.load("agent", version="v2")
+
+        v2.write_text("content: |\n  [NEW] 已修订内容。\n", encoding="utf-8")
+        future = time.time() + 10
+        os.utime(v2, (future, future))
+        assert "[NEW]" in loader.load("agent", version="v2")
+
+    def test_content_mtime_rollback_also_detected(self, tmp_path):
+        """回拨场景：git checkout / 恢复旧备份使内容 mtime 变旧 → 同样是变更，必须重读"""
+        from app.services.prompt_loader import YAMLPromptLoader
+
+        base = tmp_path / "prompts"
+        base.mkdir()
+        v2 = self._make_same_tick_pair(base)
+        loader = YAMLPromptLoader(base)
+        assert "[OLD]" in loader.load("agent", version="v2")
+
+        v2.write_text("content: |\n  [NEW] 已修订内容。\n", encoding="utf-8")
+        past = time.time() - 100
+        os.utime(v2, (past, past))
+        assert "[NEW]" in loader.load("agent", version="v2")
+
+    def test_cache_hit_still_works_no_extra_reads(self, tmp_path):
+        """无变更时缓存必须真命中：连续两次 load 只读一次内容文件（防修成永不命中空转）"""
+        from app.services.prompt_loader import YAMLPromptLoader
+
+        base = tmp_path / "prompts"
+        base.mkdir()
+        self._make_same_tick_pair(base)
+        loader = YAMLPromptLoader(base)
+
+        reads: list = []
+        original = loader._load_version_file_with_mtime
+
+        def counting(*args, **kwargs):
+            reads.append(1)
+            return original(*args, **kwargs)
+
+        loader._load_version_file_with_mtime = counting
+        first = loader.load("agent", version="v2")
+        second = loader.load("agent", version="v2")
+        assert first == second
+        assert len(reads) == 1, f"缓存未命中，内容文件被重复读取 {len(reads)} 次"
 
 
 if __name__ == "__main__":
