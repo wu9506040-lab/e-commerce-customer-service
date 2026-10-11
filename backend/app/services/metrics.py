@@ -122,6 +122,12 @@ class Metrics:
         self.intent_by_method: Dict[str, int] = {}
         self.intent_upgrade_total = 0
 
+        # ----- V14（2.4）：badcase 自动池计数器 -----
+        # 入池总次数/分信号/失败显形（enqueuer 不阻断主链路，但失败必须可见）
+        self.badcase_enqueue_total = 0
+        self.badcase_enqueue_error = 0
+        self.badcase_by_signal: Dict[str, int] = {}
+
         # ----- V13（1.2）：LLM 流式完成度指标 -----
         # truncated = 中途断连的残答次数；truncated_rate = truncated / total
         self.llm_stream_total = 0
@@ -351,6 +357,13 @@ class Metrics:
                 # V13 降级显形：rerank 有效率（degraded=该级未生效次数）
                 "rerank_total": self.rerank_total,
                 "rerank_degraded": self.rerank_degraded,
+            }
+
+            badcase_block = {
+                # V14（2.4）：飞轮采集侧健康度
+                "enqueue_total": self.badcase_enqueue_total,
+                "enqueue_error": self.badcase_enqueue_error,
+                "by_signal": dict(self.badcase_by_signal),
             }
 
             emb_block = {
