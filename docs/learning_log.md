@@ -7817,3 +7817,42 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 ### 4. 遗留（明日批次一收尾时带上）
 1.4 resolve→Redis 热路径失效、1.5 P0 词表分级、1.6 V13 词序误升级返修（今日 21:00 审计发现：`怎么退款还没到账` 会因 policy `怎么.*退款` 先命中被误升级——升级判定需带 matched_pattern 或负向前瞻）、1.7 开关真值自报 + **模型名启动期探活**（新增要求，源自今晚炸弹）；rerank"全 0 静默"改显式降级标记（记 E 包后补）。
 
+## §67 · V14 刷数字复跑揪出 prompt 缓存静默陈旧 + 修复锁死 + 死文件清理（2026-10-11）
+
+### 1. 背景
+按存档接续"刷数字三件"债（README 677 滞后、v3 简历 hit@5/测试数/覆盖率仍是洗库前旧口径）。铁律先行：写数字前本机全量复跑。Docker Desktop 自恢复昨晚重建的五容器（api healthy、qdrant 136 点 = 新库世代）。
+
+### 2. 复跑现形：口径差 1 的真相是掷硬币
+- 全量 690 = 688 绿 + 2 红；存档口径"689 绿 + 1 环境项"——差值即问题。
+- 第一假设"GBK 编码"**被证伪**（PYTHONUTF8=1 复跑照红）；第二假设"跨文件污染"**也被证伪**（单跑三连 fail/pass/fail = 真 flaky）。
+- `test_source_attribution`：hostname `mysql` 宿主机不可达，纯环境项（CI 有真 service 绿）。
+
+### 3. 根因：prompt_loader 缓存"只比 manifest 时间戳"（生产 bug，不是测试太严）
+- 命中判断 `cached[0] == m_manifest`（load()），但写入的是 `max(m_manifest, m_content)`——**写判与读判不对称**。
+- 后果按两文件创建时序的时钟运气二选一：content mtime ≤ manifest → 缓存一次填好后**永使命中，内容文件编辑永不生效（热更新静默失效）**；content mtime > manifest → 永不命中，每次 miss 空转重复读文件。
+- 生产雷区实锤（扫描 config/prompts 时间戳）：agent.yaml 组 = 空转形态；**agent_fc.yaml 与两内容文件 mtime 三者全等（1784566110.271）= 陈旧形态命中雷区**。
+- 确定性复现（脚本模拟同刻平铺）：平铺对编辑后 load 仍回旧值 `STALE`；对照（content 更新）回新值。
+
+### 4. 修复（生产 5 处编辑 + 回归 3 条测试锁死）
+- 缓存 value 升级 `(manifest_mtime, content_path, content_mtime, content)`，命中需两时间戳都匹配；内联/兼容模式后两项 None（manifest 即唯一来源）；helper 返回 3 元组含解析后路径。
+- 内容文件被删 → stat OSError 落重读分支走明确报错，**不静默供旧**（降级显形军规同源）。
+- 新回归 TestStaleCacheSameTick：①平铺+后续编辑必须返回新值 ②mtime 回拨（git checkout/还原备份形态）也是变更必须重读 ③无变更时缓存真命中（monkeypatch 计数两次 load 只读一次内容文件，防"修成永不命中"回退）。
+- 原 flaky 用例 `sleep(0.1)` 换 `os.utime(+10s)` 确定性触发（测试侧，消除掷硬币语义）。
+
+### 5. 终验（2026-10-11 实测权威口径）
+- 测试池 **693 = 692 绿 + 1 环境项**（source_attribution），覆盖率 **69%**（8684 语句/2719 miss），ruff E9+F82x 0 错；test_prompt_loader_version.py 19 条全绿；原 flaky 五连跑全绿。
+- 评测 v13 三级报告在库（data/eval_hitk_v13_*.json，330 题 source 级）：dense 0.700 → hybrid 0.733 → +rerank 0.779；hit@1 0.427→0.576；hit@10 0.812（旧 0.882 系脏库 doc_id 口径，跨口径不引用）。
+- 数字刷新落地：README 五处（badges 632→693/67→69%/hit@5 旧口径→新三级、战绩卡 677→693+V14 组、"660+"→693、复跑日期）；v3 简历 md+构建 HTML 同步（114 篇/136 chunks、三级消融、693/69%）。
+
+### 6. 死文件清理
+`frontend/src/components/ChatPage.vue`（8.5KB，6-28 旧版）全仓零 import（其余匹配仅为注释）——用户批准 git rm（历史可恢复）。
+
+### 7. 补记（昨晚 2.2/2.3 未单独立档于此）
+- 2.2 请求级去重（c2a8fe0）：embed 请求级 contextvar memo、run_stream pre_intent 透传三态锁、cache_hit 免精排；活体单请求 embed 4→1。
+- 2.3 意图快照落库（01e0912）：messages.intent_snapshot + `_intent` 内部事件 + done 带 message_id + 消息粒度评价；挖出同名双函数门面吞 TypeError、pycache+compose 竞态两雷，.dockerignore 新建；活体四步 👎 反查全通。
+
+### 8. 教训
+- "689 绿 + 1 环境项"口径里就藏着一枚硬币——**数字要能当场重复复现才能写**；刷数字之日即复跑揪谎之日。
+- 缓存"写入判据"与"命中判据"必须同构，否则一半是摆设；本次修复顺带终结 agent.yaml 组的每请求空转重复读。
+- 调试方法论第二次闭环：假设要设计能证伪的最小实验（单跑三连击 30 秒内把"污染论"打穿），错两次才见真根因，但每一步都比瞎改快。
+
