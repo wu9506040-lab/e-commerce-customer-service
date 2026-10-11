@@ -14,6 +14,7 @@ from app.api.admin_conversations import router as admin_conversations_router  # 
 from app.api.admin_handoff import router as admin_handoff_router  # M15 人工介入工单坐席工作台
 from app.api.ratings import router as ratings_router  # WP1 回答评价（CSAT 采集）
 from app.api.badcase_admin import router as badcase_admin_router  # V14（2.4）badcase 池审核面
+from app.api.confirm_ticket import router as confirm_ticket_router  # V14（human-in-the-loop）高风险工具护栏
 from app.api.auth import router as auth_router
 from app.api.channels import router as channels_router  # S14 ChannelAdapter Webhook
 from app.api.chat import router as chat_router
@@ -162,6 +163,7 @@ app.include_router(admin_conversations_router)  # P4-1 admin 全局会话查询
 app.include_router(admin_handoff_router)  # M15 人工介入工单坐席工作台
 app.include_router(ratings_router)  # WP1 CSAT 评价入口
 app.include_router(badcase_admin_router)  # V14（2.4）badcase 池审核面
+app.include_router(confirm_ticket_router)  # V14（human-in-the-loop）高风险工具护栏
 app.include_router(auth_router)
 app.include_router(conversations_router)  # §12
 app.include_router(intent_router)  # M3
@@ -201,6 +203,23 @@ async def metrics_endpoint():
 # =============================================================
 @app.on_event("startup")
 async def startup_event():
+    # V14（human-in-the-loop）：注册高风险工具执行器（业务模块启动期填表）
+    # 当前演示档：refund_execute 走真 OrderLifecycle.refund_order；
+    # 未来 FC 灰度开 + 上线（refund_execute / send_email / create_order 等），
+    # 同样按此模式注册即可——confirmation 入口一行不改。
+    from app.services.confirm_ticket_service import register_executor
+    from app.services.order_lifecycle import OrderLifecycle
+
+    def _refund_execute(args: dict, user_id: int) -> dict:
+        return OrderLifecycle.refund_order(
+            user_id=user_id,
+            order_no=args["order_no"],
+            reason=args.get("reason", "用户申请退款"),
+            remark=args.get("remark"),
+            role="user",
+        )
+
+    register_executor("refund_execute", _refund_execute)
     logger.info("=" * 60)
     logger.info("智能客服 API 启动")
     logger.info(f"环境: {settings.APP_ENV}")

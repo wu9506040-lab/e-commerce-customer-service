@@ -7860,7 +7860,52 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 - **运维踩坑留档**：`docker compose up -d api` 忘带 `--env-file .env.dev` → 全 `${VAR}` 插值空 → JWT_SECRET 缺失崩溃循环，且四个 USE_*/ENABLE_* 功能开关会**静默回退 false**（本项目"降级必须显形"军规在运维命令层的镜像案例）。重建/滚动一律用 `docker compose -p customer-service --env-file .env.dev up -d api`。
 - 活体实验自己的翻车也留档：第一次脚本把 load() 解析后的 content 串当文件原文写回 → 打坏容器内 agent_fc_v1.yaml（宿主 git 无恙，docker cp 恢复）；坏 YAML 被 loader 明确 PromptFormatError 拒绝，**未静默供坏**——失败显形修复自身也通过活体检验。
 
-## §69 · V14（3.3）请求级超时预算 + 故障演练实测（2026-10-11）
+## §70 · V14（human-in-the-loop）confirm_ticket 落地（2026-10-11）
+
+### 1. 业务铁律（与培训机构材料 §一.四 同源，本项目按此落地代码）
+> "AI 只负责填表，最终签字确认必须由人完成。"
+> 反例：用户说买票 → AI 直接扣款 → 用户惊恐
+> 正例：用户说买票 → AI 查询 → AI 生成订单卡片 → 用户点确认 → 才真的支付
+
+### 2. 落地（4 件套 5 道防御 一次性落）
+- `app/models/confirm_ticket.py`（新）：confirm_tickets 表（status 五态机 + args_hash VARCHAR(64) + result_snapshot JSON 留档）
+- `app/services/confirm_ticket_service.py`（新）：propose/list/confirm/reject/sweep_expired + `TOOL_EXECUTORS` 注册表 + 5 道防御
+- `app/api/confirm_ticket.py`（新）：5 端点（propose/list/get/confirm/reject）依赖 get_current_user（非 admin）
+- `app/main.py`：`startup_event` 注册 refund_execute 执行器 → `OrderLifecycle.refund_order`
+- `app/services/metrics.py`：新增 `confirm_ticket_propose/executed/rejected/failed_total` + `by_tool` + snapshot block
+
+### 3. 5 道防御（每条都活体验证）
+- ① **参数冻结**：args_hash = md5(canonical_json(tool_args))；confirm 时重算比对，不一致 400 — 防"AI 出卡片后偷偷改金额"
+- ② **TTL**：默认 300 秒过期未操作 → sweep 推进 status=expired；confirm 入口再校验（防"隔夜票据"）
+- ③ **幂等**：executed 行二次 confirm 返原 result_snapshot，executor 不被重复调用（防双花）
+- ④ **状态机**：proposed → confirmed（confirm 入口）/ rejected（reject 入口）；merged 锁定不可回退
+- ⑤ **全量 timestamp + result_snapshot**：proposed/confirmed/executed/expired 四事件均可审计回放
+
+### 4. 测试 +16 全绿（tests/test_confirm_ticket.py）
+- propose 写入 + 同 args_hash 去重 bump
+- 5 道防御独立单测（attacker_model 修改 tool_args → 拒绝）
+- 跨用户越权（alice/bob 双用户 → 别人的 confirm 抛 PermissionError）
+- sweep_expired 不动已 executed 行
+- API RBAC（未登录 401/403）
+- metrics 计数
+
+### 5. 演练 12 步全 PASS（scripts/verify_confirm_ticket.py）
+真实端到端：登录 → propose → 列票 → 篡改防御拦截 → 跨用户 403 → 真 confirm → executed + result_snapshot → 二次 confirm 幂等 → reject → sweep_expired 切过期票据 → 终态 expired。**报告落 `data/confirm_ticket_drill_report.json`**。
+
+### 6. 踩坑 4 则
+- args_hash String(32) 装不下 "ct:"+md5(35字符)：方案把列定 String(64)；ALTER 表对齐——"埋地雷"是隐式约束字符串拼接坑
+- 演练第二轮撞第一轮 dedup：方案 session_id 加唯一后缀 (drill-<uuid>)——dedup 是按 (session, tool, args_hash) 唯一，演练路径必须每次唯一
+- cross_user 看似 PASS 实则非自己票：方案重读 alice id 并 reset 票面 args 字节级一致；attacker_model 用原始 args JSON（不是模仿品）
+- sweep_expired import 时机：脚本必须 setdefault JWT_SECRET/DATABASE_URL 后再 import 业务模块，否则触发 _validate_jwt_secret 拒启动
+
+### 7. 弹药同步
+- README 战绩卡新增 human-in-the-loop 行（一行密度+出处）
+- 弹药 §0 早已收口（详见 README）；§12 第 7 行从"落地中"升"已落地+12 步 PASS"；§13 一键复现清单加 `verify_confirm_ticket.py` 命令
+
+### 8. 教训
+- "业务铁律"和"代码铁律"是两回事：前者是规范（写在 README 不出错），后者必须用 4 件套硬编码（不写代码就是空话）；本次落地后规范→代码的可验证桥梁走通
+- args_hash 这种"看起来不关键"的字段也是面试考点："AI 偷改金额"是培训材料的经典反例——你的四件套里这一条最锐利
+- 演练脚本第一次跑就暴露两个真实 bug（session_id 冲突、args_hash 列宽），再次印证"先 run 再 ship"——比任何 review 都早发现问题
 
 ### 1. 根因
 "最坏 10 分钟"（OPTIMIZATION 3.3 实测估计）= OpenAI SDK 默认 `max_retries=2` × 项目自有 retry×4 × 单次 timeout=30s + 退避抖动，叠成 chat 阶段之间分钟级尾部；rerank 最坏 ~127s；synthesize 流式无总时长上限。任何 user 拿不到"这一轮最多多久"的承诺。
