@@ -128,6 +128,14 @@ class Metrics:
         self.badcase_enqueue_error = 0
         self.badcase_by_signal: Dict[str, int] = {}
 
+        # ----- V14（3.3）：请求级超时预算计数器 -----
+        # 按阶段（llm.chat/llm.stream/llm.stream.chunk/rerank/embed）显形
+        # 预算被打断的次数；fallback fast-fail 是 spec 点名的"OPEN 时不二次调 LLM"
+        # 的快速失败路径；sem_wait 是并发闸排队超窗（>10 路并发下排队不会无限等）
+        self.deadline_exceeded_by_stage: Dict[str, int] = {}
+        self.sem_wait_timeout_total = 0
+        self.fallback_fastfail_total = 0
+
         # ----- V13（1.2）：LLM 流式完成度指标 -----
         # truncated = 中途断连的残答次数；truncated_rate = truncated / total
         self.llm_stream_total = 0
@@ -150,6 +158,20 @@ class Metrics:
         self.resolver_total_orders_many = 0  # N>=2 订单
         self.resolver_card_expected = 0              # SSE Card 应发总次数
         self.resolver_card_sent_when_expected = 0    # 应发时实际发送的次数（仅计分子）
+
+    # ----- V14（3.3）请求级超时预算：计数器 -----
+    # 全阶段仅计数，不应与业务开关混淆；调用方负责传递 stage 标签
+    # （llm.chat / llm.stream / llm.stream.chunk / rerank / embed / llm.semaphore）
+    def record_deadline_exceeded(self, stage: str) -> None:
+        self.deadline_exceeded_by_stage[stage] = (
+            self.deadline_exceeded_by_stage.get(stage, 0) + 1
+        )
+
+    def record_sem_wait_timeout(self) -> None:
+        self.sem_wait_timeout_total += 1
+
+    def record_fallback_fastfail(self) -> None:
+        self.fallback_fastfail_total += 1
 
     # ----- chat -----
 
@@ -366,6 +388,13 @@ class Metrics:
                 "by_signal": dict(self.badcase_by_signal),
             }
 
+            deadline_block = {
+                # V14（3.3）：请求级预算健康度
+                "exceeded_by_stage": dict(self.deadline_exceeded_by_stage),
+                "sem_wait_timeout": self.sem_wait_timeout_total,
+                "fallback_fastfail": self.fallback_fastfail_total,
+            }
+
             emb_block = {
                 "calls_total": self.embedding_calls_total,
                 "retries_total": self.embedding_retries_total,
@@ -455,6 +484,10 @@ class Metrics:
                 "rewrite": rewrite_block,
                 "rewrite_multi": rewrite_multi_block,
                 "m14_resolver": m14_block,
+                # V14（2.4）：badcase 自动池指标
+                "badcase": badcase_block,
+                # V14（3.3）：请求级超时预算指标
+                "deadline": deadline_block,
             }
 
 

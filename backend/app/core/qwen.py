@@ -37,6 +37,7 @@ from openai import (
     RateLimitError,
 )
 
+from app.core import deadline as _deadline
 from app.core.config import settings
 from app.core.circuit_breaker import CircuitBreaker, CircuitOpenError
 
@@ -91,10 +92,14 @@ def get_client() -> OpenAI:
                 "请在 .env.dev 设置真实的 API Key："
                 "https://dashscope.console.aliyun.com/apiKey"
             )
+        # V14（3.3）：超时从硬编码进配置；SDK 内建重试清零——项目自有
+        # retry+退避+断路器，SDK 默认 max_retries=2 与之复合是"最坏 10 分钟"
+        # 的根因放大器（一次 attempt 实为 3 次 HTTP，熔断计数也失真）。
         _client = OpenAI(
             api_key=QWEN_API_KEY,
             base_url=DASHSCOPE_BASE_URL,
-            timeout=30.0,
+            timeout=settings.LLM_CALL_TIMEOUT,
+            max_retries=settings.LLM_SDK_MAX_RETRIES,
         )
     return _client
 
@@ -125,6 +130,9 @@ def chat(
     max_tokens: Optional[int] = None,
     tools: Optional[List[Dict]] = None,
     tool_choice: Optional[str] = None,
+    *,
+    call_timeout: Optional[float] = None,
+    stage: str = "llm.chat",
 ) -> Dict:
     """
     调用千问 chat 端点（带 retry + 指数退避 + 抖动 + 断路器）
@@ -138,6 +146,9 @@ def chat(
             [{"type": "function", "function": {"name", "description", "parameters"}}]
         tool_choice: "auto" / "none" / {"type": "function", "function": {"name": "..."}}
             None = 不传（由模型默认行为决定）
+        call_timeout: 单次 HTTP 上限（秒）；None 则 settings.LLM_CALL_TIMEOUT。
+            实际传给 SDK = min(call_timeout, deadline 剩余预算)。
+        stage: 阶段标签（rerank/intent/rewrite/synthesize），错误上报 + deadline metric 用。
 
     Returns:
         {
@@ -150,12 +161,13 @@ def chat(
     Raises:
         BadRequestError / AuthenticationError / PermissionDeniedError: 业务错（不重试）
         CircuitOpenError: 断路器开路（上游应降级到兜底）
+        DeadlineExceededError: 预算耗尽（快速失败，不重试无意义 requeue）
         Exception: 重试耗尽后透传最后一次异常
     """
     client = get_client()
     used_model = model or QWEN_MODEL
 
-    logger.info(f"qwen chat: model={used_model}, messages={len(messages)}")
+    logger.info(f"qwen chat: model={used_model}, messages={len(messages)} stage={stage}")
 
     kwargs = {
         "model": used_model,
@@ -169,6 +181,12 @@ def chat(
         logger.info(f"qwen chat: tools={len(tools)}")
     if tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
+
+    base_cap = float(call_timeout) if call_timeout is not None else settings.LLM_CALL_TIMEOUT
+    # V14（3.3）：每 attempt 实时算 timeout（预算收缩），预算耗尽先于重试 sleeping 抛，
+    # 比 sleeping 后才知道"白睡"的旧路径省掉分钟级尾部。
+    kwargs["timeout"] = _deadline.clamp_timeout(base_cap)
+    _deadline.check(stage)
 
     max_retries = settings.LLM_MAX_RETRIES
     base_delay = settings.LLM_RETRY_BASE_DELAY
@@ -230,6 +248,20 @@ def chat(
                 raise
             # 可重试错误：退避后重试
             wait = _calc_backoff(attempt, base_delay)
+            # 预算还能不能撑起"wait + 又一次整次调用"？撑不起就不要再睡 +
+            # 不要再发——上层已经没时间等，必须立刻抛让上游降级（不让"白睡 + 白
+            # 调"叠加分钟级尾部）
+            if not _deadline.can_afford(wait + base_cap + 1.0):
+                from app.services.metrics import metrics as _metrics
+                _metrics.record_deadline_exceeded(stage)
+                logger.warning(
+                    f"qwen chat 预算不足跳重试: attempt={attempt + 1}, "
+                    f"need~{wait + base_cap + 1:.1f}s, err={type(e).__name__}"
+                )
+                raise _deadline.DeadlineExceededError(
+                    f"budget cannot afford retry (need {wait + base_cap + 1:.1f}s)",
+                    stage=stage,
+                )
             logger.warning(
                 f"qwen chat retry: attempt={attempt + 1}/{max_retries + 1}, "
                 f"waiting {wait:.2f}s, err={type(e).__name__}: {str(e)[:100]}"
@@ -265,6 +297,19 @@ def stream_chat(
     Yields:
         文本片段（可能为空字符串，已过滤）
     """
+    # V14（3.3）：建连前预算检查放在生成器函数体外——Python 生成器函数
+    # 体内代码只在 next() 时执行，调用 stream_chat() 本身只返回生成器对象
+    # 不跑 check。把守卫推到生成器边界外才能实现"建连前抢先拒绝"的设计意图
+    _deadline.check("llm.stream")
+    return _stream_chat_inner(messages, model, temperature, max_tokens)
+
+
+def _stream_chat_inner(
+    messages: List[Dict[str, str]],
+    model: Optional[str],
+    temperature: float,
+    max_tokens: Optional[int],
+) -> Generator[str, None, None]:
     client = get_client()
     used_model = model or QWEN_MODEL
 
@@ -272,13 +317,12 @@ def stream_chat(
         f"qwen stream_chat: model={used_model}, messages={len(messages)}, "
         f"max_tokens={max_tokens}"
     )
-
-    # 仅 retry 连接阶段，不 retry 已开始的流
     create_kwargs = {
         "model": used_model,
         "messages": messages,
         "temperature": temperature,
         "stream": True,
+        "timeout": _deadline.clamp_timeout(settings.LLM_CALL_TIMEOUT),
     }
     if max_tokens is not None:
         create_kwargs["max_tokens"] = max_tokens
@@ -308,6 +352,14 @@ def stream_chat(
                 )
                 raise
             wait = _calc_backoff(attempt, base_delay)
+            # 预算还能不能撑起"wait + 又一次建连"？撑不起立即抛，让上层快速失败
+            if not _deadline.can_afford(wait + settings.LLM_CALL_TIMEOUT + 1.0):
+                from app.services.metrics import metrics as _metrics
+                _metrics.record_deadline_exceeded("llm.stream")
+                raise _deadline.DeadlineExceededError(
+                    f"budget cannot afford stream retry (need {wait + settings.LLM_CALL_TIMEOUT + 1:.1f}s)",
+                    stage="llm.stream",
+                )
             logger.warning(
                 f"qwen stream_chat retry: attempt={attempt + 1}/{max_retries + 1}, "
                 f"waiting {wait:.2f}s, err={type(e).__name__}: {str(e)[:100]}"
@@ -320,6 +372,19 @@ def stream_chat(
     chunk_count = 0
     try:
         for chunk in stream:
+            # V14（3.3）：流式逐 chunk 过预算——超线按残答契约处理（与中途断
+            # 连同型），避免 stream 把整 90s 预算吃光没机会生成答案
+            rem = _deadline.remaining()
+            if rem is not None and rem <= 0:
+                from app.services.metrics import metrics as _metrics
+                _metrics.record_deadline_exceeded("llm.stream.chunk")
+                logger.warning(
+                    f"qwen stream_chat 预算耗尽（已 yield {chunk_count} chunks）：按残答处理"
+                )
+                raise StreamTruncatedError(
+                    f"budget exhausted after {chunk_count} chunks",
+                    partial_chunks=chunk_count,
+                )
             if chunk.choices and chunk.choices[0].delta.content:
                 chunk_count += 1
                 yield chunk.choices[0].delta.content
