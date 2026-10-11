@@ -16,6 +16,7 @@ from app.models.refund import Refund, RefundStatus
 from app.models.handoff_ticket import HandoffTicket, HandoffStatus
 from app.models.message_rating import MessageRating
 from app.models.badcase import BadcaseCandidate  # V14（2.4）badcase 自动池
+from app.models.confirm_ticket import ConfirmTicket  # V14（human-in-the-loop）高风险工具护栏
 
 __all__ = [
     "Base",
