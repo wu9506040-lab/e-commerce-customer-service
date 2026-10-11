@@ -10,7 +10,7 @@
 [![Docker](https://img.shields.io/badge/Docker_Compose-5_services-2496ED?logo=docker)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![CI](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml/badge.svg)](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml)
-![Tests](https://img.shields.io/badge/pytest-693%20collected-4c1?logo=pytest)
+![Tests](https://img.shields.io/badge/pytest-716%20collected-4c1?logo=pytest)
 ![Coverage](https://img.shields.io/badge/coverage-69%25-yellowgreen)
 ![Eval](https://img.shields.io/badge/hit%405-0.700%E2%86%920.779%20(%2B7.9pp%2C%20source%E7%BA%A7)-blue?logo=dataflow)
 
@@ -23,7 +23,8 @@
 | **检索质量** | 330 题分层评测集三级同日连跑（2026-10-10 晚 · 洗库+语义切片后新基线，source 级命中口径 `--match-source`）：dense 0.700 → +BM25/RRF **0.733（+3.3pp）** → +LLM Rerank **0.779（累计 +7.9pp）**；hit@1 0.427→0.576（Rerank 主收益在 top-1 精排）；Rerank p50 +1.2s 延迟成本显式记录 | `cd deploy && docker compose up -d qdrant redis mysql api`，根目录 `PYTHONPATH=backend python scripts/eval_hitk.py --match-source`（逐级加 `--bm25`、`--bm25 --rerank`） |
 | **人工介入闭环（M15）** | 转自动落工单（P0 优先队列/认领/回复注入会话/结单），坐席工作台 `/admin/handoff` | 对触发词说"转人工"→ admin 登录看队列 → 回复 → 用户侧会话可见 |
 | **业务 KPI 大盘（WP1）** | AI 自助解决率 / 转人工率 / CSAT / 拦截率 / 平均轮次 / **LLM 成本估算 + Guard 省钱额** + 按日趋势，含指标公式定义 | admin 登录看 `/admin/kpi`；口径 `backend/app/services/kpi_service.py` 模块注释（成本为估算口径，note 显式标注） |
-| **测试资产** | **693 条**（单元 + E2E，含 M15 工单 / WP1 指标 / V13 路由边界、查无短路、流式截断、决策回边、转人工分级与降级显形组、V14 prompt 缓存陈旧回归组；2026-10-11 实测 **692 绿 + 1 宿主机环境项**，CI 全绿），覆盖率 **69%（2026-10-11 实测）** | `cd backend && python -m pytest tests --cov=app` |
+| **badcase 自动池（V14 飞轮机制化）** | 三类信号自动入池——👎（join 意图快照带全现场）/ LLM 低置信扫描 / guard 拦截留证；归一化哈希去重（复发 bump 计数）；admin 审核标注**稳定键 source** → `merge_badcase_to_eval.py` 半自动合入评测集（doc_id 现库解析、默认 dry-run、合入备份+状态机回写）；入池失败显形计数不阻断主链路 | 活体闭环：`DATABASE_URL=... PYTHONIOENCODING=utf-8 python scripts/verify_flywheel_live.py`（真实问答→👎→误杀→入池→审核 11 步全 PASS）；合入演示走 `--apply --eval-file` 临时文件不动 330 基线 |
+| **测试资产** | **716 条**（单元 + E2E，含 M15 工单 / WP1 指标 / V13 路由边界、查无短路、流式截断、决策回边、转人工分级与降级显形组、V14 prompt 缓存陈旧回归组、V14 badcase 池组；2026-10-11 实测 **715 绿 + 1 宿主机环境项**，CI 全绿），覆盖率 **69%（2026-10-11 实测）** | `cd backend && python -m pytest tests --cov=app` |
 | **知识库** | 18 个结构化源文件 → 114 篇文档 → 136 chunks（V13：**句边界贪心切片 + title 增强 embedding**；逐源 delete-before-write 换代 + `prune_orphan_sources.py` 孤儿清扫，2026-10-10 全量重灌验证） | `PYTHONPATH=backend python scripts/ingest_ecommerce_kb.py`（重灌幂等，先清同源旧点） |
 | **服务编排** | api / frontend / qdrant / mysql / redis 5 服务 Docker Compose + SSE 流式 + JWT 鉴权 | `deploy/docker-compose.yml` |
 
@@ -34,7 +35,7 @@
 
 - 7 月存档的 0.842 / 0.897 在**当前知识库上不可复现**（KB 内容与配置自 7 月后演进；评测 doc_id 与现库匹配率 109/110，排除 ID 漂移，确认是库变化）——本 README 只采同日同口径连跑值，跨期高点一律不采用
 - **更正声明**：本 README 早前版本以 7 月 hybrid(0.842) 对比当日 hybrid_rerank(0.806)，误称"Rerank 负增益 -3.6pp"——跨口径对比本身就是错误读法；同口径下 Rerank 为**正增益（0.755→0.806，+5.1pp）**。此更正正是本项目"数据诚实声明"该防的错误模式，公开留档
-- 早期文档中「385 pytest」口径已过时（现为 693 条，2026-10-11 本机全量复跑），不再采用——**只写能当场跑出来的数字**
+- 早期文档中「385 pytest」口径已过时（现为 716 条，2026-10-11 本机全量复跑），不再采用——**只写能当场跑出来的数字**
 - **2026-10-10 深夜两项更正**：① 自查发现线上知识库 ~45%（92/202）为陈旧世代点（内容哈希 ID + 无 delete-before-write 的历史缺陷），全量洗库重灌后，旧三级数字（0.703/0.755/0.806，脏库 + doc_id 口径）停止引用，新基线见战绩卡（source 级口径，跨口径不可比、不可与旧数字比涨跌）；② 期间发现 `QWEN_MODEL` 日期快照（qwen-plus-2025-07-28）被上游退役返回 404，Rerank 在"全 0 分静默降原序"降级分支下**实际空转**——已切通用别名并带真实 rerank 复测三级。教训：模型快照会过期，配置用水位别名；降级必须显形
 - 公网 ECS 演示已随服务器到期下线；本地 Docker 五服务即为完整运行形态
 
