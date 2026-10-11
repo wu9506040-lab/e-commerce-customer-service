@@ -110,7 +110,12 @@ class YAMLPromptLoader:
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir.resolve()
         # Sprint 5：缓存 key 从 name 升级到 (name, version)；兼容模式 version="v1"
-        self._cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
+        # V14：缓存 value 升级为 (manifest_mtime, content_path, content_mtime, content)。
+        #   引用外部文件的 version 存内容文件路径与其 mtime；
+        #   内联 content / 兼容模式 manifest 本身是唯一来源，后两项为 None。
+        self._cache: Dict[
+            Tuple[str, str], Tuple[float, Optional[Path], Optional[float], str]
+        ] = {}
         self._lock = threading.Lock()
 
     # =============================================================
@@ -156,8 +161,10 @@ class YAMLPromptLoader:
             )
         return default
 
-    def _load_version_file_with_mtime(self, name: str, version: str, file_rel: str) -> Tuple[str, float]:
-        """读 manifest 指定 version 的内容文件 + 返回文件 mtime（供 cache key 用）。
+    def _load_version_file_with_mtime(
+        self, name: str, version: str, file_rel: str
+    ) -> Tuple[str, float, Path]:
+        """读 manifest 指定 version 的内容文件 + 返回文件 mtime 与路径（供缓存失效判断用）。
 
         Args:
             name: manifest 名称（用于报错）
@@ -165,7 +172,7 @@ class YAMLPromptLoader:
             file_rel: 相对 base_dir 的 YAML 文件路径（如 ``agent_v1.yaml``）
 
         Returns:
-            (prompt 文本已 strip, 文件 mtime)
+            (prompt 文本已 strip, 文件 mtime, 内容文件绝对路径)
 
         Raises:
             PromptNameError: file_rel 路径越权
@@ -206,7 +213,7 @@ class YAMLPromptLoader:
                 f"{name}/{version}", "content 字段缺失或为空"
             )
 
-        return content.strip(), file_mtime
+        return content.strip(), file_mtime, full_path
 
     # =============================================================
     # 主入口
@@ -239,7 +246,20 @@ class YAMLPromptLoader:
         with self._lock:
             cached = self._cache.get(cache_key)
             if cached is not None and cached[0] == mtime:
-                return cached[1]
+                # V14 修（2026-10-11 实锤）：命中只比 manifest mtime，而缓存写入的是
+                # max(manifest, content)——两个文件时间戳同刻平铺（同秒创建 / git 检出 /
+                # Docker COPY 保留时间戳）时 cached[0]==manifest_mtime 恒成立，之后编辑
+                # 内容文件永不触发重读，"mtime 热更新"静默失效（config/prompts 实测
+                # agent_fc.yaml 三文件 mtime 全等，命中雷区；agent.yaml 则每次必 miss 空转）。
+                # 现在引用外部文件的路径必须两个时间戳都匹配才算命中。
+                _, content_path, content_mtime, content = cached
+                if content_mtime is None:
+                    return content  # 内联/兼容模式：manifest 即唯一来源
+                try:
+                    if content_path.stat().st_mtime == content_mtime:
+                        return content
+                except OSError:
+                    pass  # 内容文件被删 → 落到重读分支，走明确报错，不静默供旧
 
             try:
                 data = yaml.safe_load(full_path.read_text(encoding="utf-8"))
@@ -256,6 +276,7 @@ class YAMLPromptLoader:
                 inline_content = ver_info.get("content")
                 if isinstance(inline_content, str) and inline_content.strip():
                     content = inline_content.strip()
+                    content_path, content_mtime = None, None
                 else:
                     # 2) 引用外部 file
                     file_rel = ver_info.get("file")
@@ -264,11 +285,13 @@ class YAMLPromptLoader:
                             f"{name}/{actual_version}",
                             "version 缺 file 或 content 字段",
                         )
-                    content, version_file_mtime = self._load_version_file_with_mtime(
-                        name, actual_version, file_rel
+                    content, version_file_mtime, version_file_path = (
+                        self._load_version_file_with_mtime(
+                            name, actual_version, file_rel
+                        )
                     )
-                    # 内容文件被改 → manifest mtime 不变也会触发重读
-                    mtime = max(mtime, version_file_mtime)
+                    # 内容文件独立于 manifest 的变更信号单独入缓存（见上方 V14 注释）
+                    content_path, content_mtime = version_file_path, version_file_mtime
             else:
                 # 兼容模式：YAML 无 versions 字段 → 当单版本 v1
                 if version is not None and version != "v1":
@@ -284,8 +307,9 @@ class YAMLPromptLoader:
                 if not isinstance(content, str) or not content.strip():
                     raise PromptFormatError(name, "content 字段缺失或为空")
                 content = content.strip()
+                content_path, content_mtime = None, None
 
-            self._cache[cache_key] = (mtime, content)
+            self._cache[cache_key] = (mtime, content_path, content_mtime, content)
             return content
 
 
