@@ -7860,6 +7860,53 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 - **运维踩坑留档**：`docker compose up -d api` 忘带 `--env-file .env.dev` → 全 `${VAR}` 插值空 → JWT_SECRET 缺失崩溃循环，且四个 USE_*/ENABLE_* 功能开关会**静默回退 false**（本项目"降级必须显形"军规在运维命令层的镜像案例）。重建/滚动一律用 `docker compose -p customer-service --env-file .env.dev up -d api`。
 - 活体实验自己的翻车也留档：第一次脚本把 load() 解析后的 content 串当文件原文写回 → 打坏容器内 agent_fc_v1.yaml（宿主 git 无恙，docker cp 恢复）；坏 YAML 被 loader 明确 PromptFormatError 拒绝，**未静默供坏**——失败显形修复自身也通过活体检验。
 
+## §69 · V14（3.3）请求级超时预算 + 故障演练实测（2026-10-11）
+
+### 1. 根因
+"最坏 10 分钟"（OPTIMIZATION 3.3 实测估计）= OpenAI SDK 默认 `max_retries=2` × 项目自有 retry×4 × 单次 timeout=30s + 退避抖动，叠成 chat 阶段之间分钟级尾部；rerank 最坏 ~127s；synthesize 流式无总时长上限。任何 user 拿不到"这一轮最多多久"的承诺。
+
+### 2. 设计要点（client 层零侵入）
+- `app/core/deadline.py`（新）：contextvar 存绝对截止时刻（time.monotonic），提供 `start_budget/remaining/clamp_timeout/check/can_afford`。contextvar 跨 asyncio.to_thread 复制传播（与 2.2 embed memo 同机制，已活体验证）。
+- 客户端层统一 clamp_timeout：每次 HTTP 调用实际超时 = min(分段上限, 剩余预算)；重试循环预算不足 → 提前 DeadlineExceededError（**比 sleeping 后才发现"白睡"省掉 N 分钟尾部**）。
+- OpenAI SDK max_retries=0（settings.LLM_SDK_MAX_RETRIES）：项目自有 retry+退避+断路器，SDK 内建默认 2 次重试是放大器，叠出"最坏 12 次 HTTP × 30s"。清零后 attempt 与熔断计数 1:1 诚实对齐。
+- 流式逐 chunk 预算检查：超线抛 `StreamTruncatedError`（与中途断连同型残答契约，避免 stream 把预算吃光没机会出答案）。
+- 10 路 semaphore（threading，wrap 整段流式）+ acquire 等待上限 = min(settings.LLM_SEMAPHORE_ACQUIRE_TIMEOUT, 剩余)。>10 并发不再无限等吃预算。
+- fallback V1.2 快速失败：dispatch except 捕获 `CircuitOpenError | DeadlineExceededError` 时跳过 V1.2 二次整流调用（必然撞墙），固定话术+done+metrics.fallback_fastfail。spec 点名的 OPEN fast-fail 路径。
+- 分段上限预算分配：LLM 30 / Rerank 20 / Intent 10 / Rewrite 6 / Embed 10，让下游 synthesize 自然拿剩余预算。
+
+### 3. 失败显形军规新增三处
+- `metrics.deadline_exceeded_by_stage: Dict[str, int]`（按阶段标签：`llm.chat`/`llm.stream`/`llm.stream.chunk`/`rerank`/`embed`）
+- `metrics.sem_wait_timeout_total`
+- `metrics.fallback_fastfail_total`
+
+### 4. 实测（`scripts/drill_failover.py` 三道演练）
+| 攻击 | 结果 |
+|---|---|
+| LLM 黑洞：容器内真 qwen.chat 打不可达 IP | SINGLE：**66.98s 在 90s 预算内拒绝**（不是 ~10 分钟）；五次连续：attempt1=45.79s 失败，**attempt2~6 全部 0ms CircuitOpenError**（无重试、无真实 HTTP）|
+| Qdrant 拔线：docker stop + /chat 端到端 | 5437ms 出答，intent=policy_query，got_token=True（检索降级不阻塞主链路）|
+| 并发 20 路 /chat | wall=4.9s、p50=4.83s、p95=4.84s、max=4.84s、20/20 出 token、零错误 |
+
+### 5. 测试 +23（tests/test_deadline_budget.py）
+deadline 单元 6 + qwen.chat clamp/budget-exit 2 + qwen.stream_chat 入口拒 1 + dispatcher sem 超窗 1 + rerank 降级显形 1；全绿。
+
+### 6. 踩坑三则
+- 生成器函数体的代码只在 next() 时跑：把入口 check 放 `stream_chat` 函数体内不会触发（函数体延迟执行），必须放到包装层 `stream_chat` 里 + 内层 `_stream_chat_inner` 才合规。
+- 短路评估 `if rem is not None and rem <= 0:` 中 `rem` 被取两次（短路救不到"非 None"分支）——改成 `rem = _deadline.remaining(); if rem is not None and rem <= 0:` 单次取。
+- 注册端 5/min 限流 + login 同样限流让 register-and-login-then-rate-limit 联调被卡——绕开：直连 DB 预创用户（passlib bcrypt + INSERT），20 路 /chat 复用同一 admin cookie（L3 是同 query 限不限 user）。
+
+### 7. 口径升级（弹药 §12 已同步）
+§12 五道场景题全部从"正在做/状态标清"升到"已落地 + 实测数字"：
+- 大模型调用失败：实测单请求 66.98s，熔断后 0ms
+- 超时/慢请求：90s + 分段上限 + 流式逐 chunk 预算
+- 并发：实测 20 路 max 4.8s、零错误
+- 流式残答：预算耗尽等同残答（统一契约）
+- 缓存不一致：V14 双时间戳案例已锁
+
+### 8. 教训
+- "最坏 10 分钟"是 LLM 客户端默认配置的隐藏叠加，不是某个特定 bug——清零 SDK max_retries 是根因层。
+- 失败的另一面：**熔断器+SDK预算+信号量排队**任一独立都不够，三件要全装才压得住分钟级尾部。
+- 故障演练不应被"测试通过"假象替代——`drill_failover.py` 把 spec 一句话变成可读数字，未来回归用同样的脚本能 5 分钟内看出预算/熔断有没有被某次重构破坏。
+
 ## §68 · V14（2.4）badcase 自动池：飞轮从人肉变机制（2026-10-11）
 
 ### 1. 交付

@@ -31,6 +31,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from app.core import qwen as _legacy_qwen
+from app.core.config import settings
 from app.core.providers.rerank.protocols import RerankProvider
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,10 @@ class QwenRerankProvider:
                 [{"role": "user", "content": prompt}],
                 temperature=0.0,  # 关闭随机性
                 max_tokens=500,
+                # V14（3.3）：rerank 阶段独立上限 20s（保留预算给生成），
+                # 客户端再按剩余预算动态收紧 + 预算不足跳重试
+                call_timeout=settings.RERANK_CALL_TIMEOUT,
+                stage="rerank",
             )
             scores = _parse_batch_scores(result["reply"], len(batch))
         except Exception as e:

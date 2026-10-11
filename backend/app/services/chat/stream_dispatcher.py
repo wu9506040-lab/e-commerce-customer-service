@@ -15,6 +15,8 @@ import re
 import threading
 from typing import Any, Generator
 
+from app.core import deadline as _deadline
+from app.core.config import settings
 from app.core.providers.llm import get_llm_provider
 from app.core.qwen import StreamTruncatedError
 from app.services.chat.prompt_assembler import SYSTEM_PROMPT_BASE
@@ -26,11 +28,13 @@ logger = logging.getLogger(__name__)
 # §9 并发控制：P1 压测发现 50 并发直接打 LLM 触发 DashScope 限流（429）
 # 用 semaphore 限流到 10 路并发，超出请求排队等待
 # 实测 DashScope qwen-plus 默认 ~60 QPM，10 并发是安全水位
-_LLM_SEMAPHORE = threading.Semaphore(10)
+# V14（3.3）：闸容量从硬编码进 Settings，且排队等待上限=min(settings.ACQUIRE_TIMEOUT, 预算剩余)——
+# 排队不应无限等，预算里也明文禁止"排队吃预算"
+_LLM_SEMAPHORE = threading.Semaphore(settings.LLM_SEMAPHORE_SIZE)
 
 
 def stream_llm(user_prompt: str) -> Generator[tuple[str, Any], None, None]:
-    """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10）
+    """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10 + 3.3 预算）
 
     P1：max_tokens=256 压输出长度，与 SYSTEM_PROMPT_BASE "200 字以内" 硬约束对齐
     （512 token ≈ 1500 中文字符，会让 LLM 写长文超出 prompt 字数限制）
@@ -40,9 +44,17 @@ def stream_llm(user_prompt: str) -> Generator[tuple[str, Any], None, None]:
         {"role": "user", "content": user_prompt},
     ]
     full_answer = ""
-    # semaphore 包住整个流式调用：>10 并发时排队，超出请求首 token 延迟增大但不会 429
+    # semaphore + 排队上限 + 预算裁剪（3.3）：>10 并发排队等待，超时/超预算快速失败走降级
     truncated = False
-    with _LLM_SEMAPHORE:
+    acquire_budget = _deadline.clamp_timeout(settings.LLM_SEMAPHORE_ACQUIRE_TIMEOUT)
+    acquired = _LLM_SEMAPHORE.acquire(timeout=acquire_budget)
+    if not acquired:
+        metrics.record_sem_wait_timeout()
+        raise _deadline.DeadlineExceededError(
+            f"LLM concurrency gate queueing timed out ({acquire_budget:.1f}s)",
+            stage="llm.semaphore",
+        )
+    try:
         try:
             for chunk in get_llm_provider().stream_chat(messages, temperature=0.3, max_tokens=256):
                 full_answer += chunk
@@ -52,6 +64,8 @@ def stream_llm(user_prompt: str) -> Generator[tuple[str, Any], None, None]:
             # 由 chat.py 做缓存隔离（残答禁入语义缓存，否则会反复供应半截答案）
             truncated = True
             logger.warning(f"stream_llm 收到截断信号: {e}")
+    finally:
+        _LLM_SEMAPHORE.release()
     # M8：粗估 token 数（中文 ~1 char ≈ 1.5 token；这里简化为 char 数）
     metrics.record_answer_tokens(len(full_answer))
     metrics.record_llm_stream(truncated=truncated)
