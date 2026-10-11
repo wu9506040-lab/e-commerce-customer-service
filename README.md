@@ -16,6 +16,23 @@
 
 ---
 
+## 💡 一句话定位
+
+**这不是"又一套千问 RAG 问答模板"，而是面向中小电商真实售后业务规则建模的 Agent 系统** —— 独立全栈交付：13 类业务工具覆盖售前/售中/售后 + Agentic RAG + LangGraph 退款流图 + 请求级超时预算（最坏 66.98s→90s）+ human-in-the-loop 5 道防御 + 716 测试/CI 三门禁。规则口径源自淘宝/京东/拼多多真实退换货政策与 12315 高频问答。
+
+![前端登录页](docs/screenshots/frontend-login.png)
+
+```bash
+# 5 分钟跑通核心：5 服务 Docker Compose + 22-22 退款活体 + drill 三道故障演练
+cd deploy && docker compose up -d
+DATABASE_URL='mysql+pymysql://cs_user:dev_user_2026@localhost:3307/customer_service?charset=utf8mb4' \
+  PYTHONIOENCODING=utf-8 python scripts/verify_flywheel_live.py && \
+  python scripts/verify_confirm_ticket.py && \
+  python scripts/drill_failover.py
+```
+
+---
+
 ## 📊 实测战绩（2026-10-11 本机复跑，全部可一键复现）
 
 | 维度 | 实测值 | 复现命令 |
