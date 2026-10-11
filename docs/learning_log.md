@@ -7843,6 +7843,7 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 - 测试池 **693 = 692 绿 + 1 环境项**（source_attribution），覆盖率 **69%**（8684 语句/2719 miss），ruff E9+F82x 0 错；test_prompt_loader_version.py 19 条全绿；原 flaky 五连跑全绿。
 - 评测 v13 三级报告在库（data/eval_hitk_v13_*.json，330 题 source 级）：dense 0.700 → hybrid 0.733 → +rerank 0.779；hit@1 0.427→0.576；hit@10 0.812（旧 0.882 系脏库 doc_id 口径，跨口径不引用）。
 - 数字刷新落地：README 五处（badges 632→693/67→69%/hit@5 旧口径→新三级、战绩卡 677→693+V14 组、"660+"→693、复跑日期）；v3 简历 md+构建 HTML 同步（114 篇/136 chunks、三级消融、693/69%）。
+- 重建 api 容器（带 V14 修复）后活体 22 例退款端到端复验 **22/22**，health 全组件 ok，feature flags 自报与部署口径一致。
 
 ### 6. 死文件清理
 `frontend/src/components/ChatPage.vue`（8.5KB，6-28 旧版）全仓零 import（其余匹配仅为注释）——用户批准 git rm（历史可恢复）。
@@ -7855,4 +7856,7 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 - "689 绿 + 1 环境项"口径里就藏着一枚硬币——**数字要能当场重复复现才能写**；刷数字之日即复跑揪谎之日。
 - 缓存"写入判据"与"命中判据"必须同构，否则一半是摆设；本次修复顺带终结 agent.yaml 组的每请求空转重复读。
 - 调试方法论第二次闭环：假设要设计能证伪的最小实验（单跑三连击 30 秒内把"污染论"打穿），错两次才见真根因，但每一步都比瞎改快。
+- **明示局限（不粉饰）**：mtime 轮询固有空窗——同一时间刻度内的连续变更（编辑后立刻恢复）仍会判"未变"（活体对照实验：间隔 1.2s 恢复即可见，同刻连写不可见）。彻底解法是 inotify（watchdog 库），留 V3+；当前场景（人工低频改 prompt）风险可接受。
+- **运维踩坑留档**：`docker compose up -d api` 忘带 `--env-file .env.dev` → 全 `${VAR}` 插值空 → JWT_SECRET 缺失崩溃循环，且四个 USE_*/ENABLE_* 功能开关会**静默回退 false**（本项目"降级必须显形"军规在运维命令层的镜像案例）。重建/滚动一律用 `docker compose -p customer-service --env-file .env.dev up -d api`。
+- 活体实验自己的翻车也留档：第一次脚本把 load() 解析后的 content 串当文件原文写回 → 打坏容器内 agent_fc_v1.yaml（宿主 git 无恙，docker cp 恢复）；坏 YAML 被 loader 明确 PromptFormatError 拒绝，**未静默供坏**——失败显形修复自身也通过活体检验。
 
