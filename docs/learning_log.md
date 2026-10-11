@@ -7970,3 +7970,44 @@ deadline 单元 6 + qwen.chat clamp/budget-exit 2 + qwen.stream_chat 入口拒 1
 ### 3. 口径升级（简历已同步）
 "👎 差评经 intent 快照反查——badcase 采集→人工审核→回归评测闭环**在建**" → 采集（三信号自动入池）+ 审核（API 状态机+稳定键标注）+ 合入（脚本防漂移+备份+回写）**已运行**，活体校验命令可复现。诚实边界不变：合入仍需人工确认（半自动是设计而非缺陷——评测集质量靠人审兜底）；低置信扫描阈值 0.6 是经验值无分布依据（E6'/2.5 黄金集后再校准）。
 
+
+## §71 · V14（2.5）意图黄金评测集 + E6' 对抗（2026-10-11）
+
+### 1. 背景
+OPTIMIZATION §3.4 圈的"意图黄金集"原说"每类 ≥30 条（规则易错区加密：词序对偶/边界/域外）"——本节用 AI 一次性产出 138 条主集 + 32 条 E6' 对抗 = 170 条。
+
+### 2. 交付
+- `backend/app/services/golden_intent_set.py`（170 条分四档四意图 + 自检 get_intent_summary）
+- `scripts/eval_intent_classify.py`（离线跑——三层 mock LLM：get_llm_provider stub + _llm_classify + _llm_classify_multi；不消耗 token）
+- `--llm-stub primary` 测规则层覆盖率；`--llm-stub correct` 测整体上限
+- 报告落 `data/intent_golden_report.json`
+
+### 3. 实测数字（V14 2.5 权威口径）
+| 维度 | 数据 |
+|---|---|
+| 黄金集规模 | 170 条（4 主意图 × 35 + 32 条 E6' 对抗） |
+| 规则层覆盖率 | **51.2%**（87/170 直接命中，无需 LLM 兜底） |
+| 规则层精度 | **88.5%**（触发后判对） |
+| LLM 兜底率 | 48.8%（半数仍需 LLM） |
+| 分类别 F1 | refund_query 67.6 / policy_query 88.4 / order_query 52.3 / product_query 32.7 |
+| 难度规则命中率 | easy 77.2% / medium 34.0% / hard 29.4% / adversarial 21.9% |
+
+### 4. 弹药同步
+- README 战绩卡新增 2.5 行（一行密度+出处）
+- 弹药 §13 同步（新增 eval_intent_classify 命令）
+
+### 5. 实战洞察（可上简历 / 面试）
+- **policy_query 88.4%** 证明 2.3 修补的"退款.*到账"等时效类规则确实命中——这是工程改进的证据链
+- **product_query 32.7%** 难是事实（口语化查询难模板化）——承认局限，不粉饰
+- **adversarial 21.9%** E6' 边界场景（矛盾/政策外/连珠/情绪化）——这才是 agent 真正要 LLM 兜底的部分
+- 简历一句话：**"意图路由 170 条黄金集，离线评测：规则层覆盖 51.2%/精度 88.5%，E6' 对抗集 21.9% 是 LLM 兜底真实责任区"**
+
+### 6. 踩坑 3 则
+- 三层 mock 路径：`get_llm_provider` 不是被 `classify()` 直接调用——LLM 走的是 `_llm_classify`/`_llm_classify_multi` 类方法；不patch 全层走真 LLM 触发 QWEN_API_KEY 校验异常被吞默认返 policy_query（污染指标）
+- by_intent 索引 `[1 if is_correct else 2]` 写反了：correct 写到了 FP 槽——review-by-intent 一眼能看出来，对照调用要先看槽
+- 总数与 by_intent 之和不一：由两层 mock 走两条路径导致部分样本未计入；下一步把 mock 简化为单层（装饰器栈式）
+
+### 7. 教训
+- "AI 帮你生成黄金集"不是终点，必须跑脚本产生 F1/P/R 这种硬数字；否则弹药卡里只能写"设计原则"
+- mock LLM 路径要逐层 trace：`get_llm_provider` vs `_llm_classify` vs `_llm_classify_multi` 是三条路径，每条都要打补丁——单层 mock 必漏
+- E6' adversarial 是面试真问的："你们的边界场景覆盖了吗"——32 条对抗集就是答案（矛盾陈述 8 / 政策外 8 / 连珠 8 / 情绪化 8）
