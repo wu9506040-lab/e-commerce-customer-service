@@ -187,6 +187,13 @@ async def chat(
         # 检索共享同一 query 向量（此前同请求同文本最多真实调 4 次 API）。
         # contextvar 随本 Task 结束自然消亡，无需显式 reset。
         begin_embed_memo()
+        # V14（3.3）：请求级超时预算入口——整 90s 墙钟，含 rewrite/intent/
+        # 检索/rerank/decide/synthesize 所有阶段；client 层统一 clamp_timeout
+        # + check()。budget 不承诺秒杀 in-flight 调用（那是 cancel 级成本
+        # 不配），但**任何新阶段的入口都会被关卡拦下**。
+        from app.core import deadline as _deadline
+        from app.core.config import settings as _s
+        _deadline.start_budget(_s.CHAT_DEADLINE_SECONDS)
 
         # M11.5 P2：异常行为监控（在最早期记一次，含被 guard 拦的）
         # — 不阻塞业务（Redis 异常放行），只告警

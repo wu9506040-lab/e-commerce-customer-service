@@ -25,6 +25,7 @@ import re as _re
 from typing import Any, Generator, Optional, Tuple
 
 from app.core.config import settings
+from app.core import deadline as _deadline
 from app.services.context import (
     ConversationContext,
     ContextService,
@@ -39,6 +40,7 @@ from app.services.metrics import metrics
 from app.services.order_service import OrderService
 from app.services.policy_service import PolicyService
 from app.services.rag.pipeline import run_stream as v12_rag_run_stream
+from app.core.circuit_breaker import CircuitOpenError
 from app.services.query_rewriter import rewrite_query  # M12：指代补全
 from app.services.query_rewriter import rewrite_query_multi  # Phase 4 A4：Multi-Query 多路改写
 from app.services.session_service import ANONYMOUS_USER_ID
@@ -265,6 +267,22 @@ class Synthesizer:
                     if event[0] == "token":
                         yielded_token = True
                     yield event
+            except (CircuitOpenError, _deadline.DeadlineExceededError) as e:
+                # V14（3.3）：spec 点名——断路器 OPEN 或预算耗尽时，V1.2 整流
+                # fallback 也会二次撞墙（同一把 LLM），直接固定话术收尾，
+                # 让用户拿到一个简短反馈而不是再等一次最终失败（兜底也耗预算）
+                metrics.record_fallback_fastfail()
+                logger.warning(
+                    f"synth.dispatch fast-fail（不再二次调 LLM）: primary={primary}, "
+                    f"yielded_token={yielded_token}, err={type(e).__name__}",
+                    extra={"intent": primary},
+                )
+                if yielded_token:
+                    yield ("token", "\n（抱歉，刚才的回复中断了。您可以重试，或说「转人工」由人工客服协助。）")
+                else:
+                    yield ("token", "\n（系统繁忙，请稍后重试，或说「转人工」由人工客服协助。）")
+                yield ("done", {"answer": "", "fast_fail": True})
+                return
             except Exception as e:
                 logger.exception(
                     f"synth.dispatch 异常: primary={primary}, yielded_token={yielded_token}, err={e}",
@@ -279,6 +297,16 @@ class Synthesizer:
                     # 注意：fallback 不带 user_id（V1.2 pipeline 不接收 user_id）
                     for event_type, data in v12_rag_run_stream(query, 5, history):
                         yield (event_type, data)
+        except (CircuitOpenError, _deadline.DeadlineExceededError) as e:
+            # 外层保险：构建阶段就 OPEN/超预算——同 fast-fail
+            metrics.record_fallback_fastfail()
+            logger.warning(
+                f"synth.dispatch 构建期 fast-fail: primary={primary}, err={type(e).__name__}",
+                extra={"intent": primary},
+            )
+            yield ("token", "\n（系统繁忙，请稍后重试，或说「转人工」由人工客服协助。）")
+            yield ("done", {"answer": "", "fast_fail": True})
+            return
         except Exception as e:
             # 外层保险：分派生成器构建阶段的异常（极少见）
             logger.exception(
