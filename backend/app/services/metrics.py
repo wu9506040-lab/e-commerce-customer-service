@@ -136,6 +136,15 @@ class Metrics:
         self.sem_wait_timeout_total = 0
         self.fallback_fastfail_total = 0
 
+        # ----- V14（human-in-the-loop）：高风险工具 confirm_ticket 计数 -----
+        # 提案/确认/执行/拒绝/失败——只计"值得说"的状态变更；防"AI 偷改"
+        # 属于 confirm 入口的 args_hash 校验，这里只记流程通过率
+        self.confirm_ticket_propose_total = 0
+        self.confirm_ticket_executed_total = 0
+        self.confirm_ticket_rejected_total = 0
+        self.confirm_ticket_failed_total = 0
+        self.confirm_ticket_by_tool: Dict[str, int] = {}
+
         # ----- V13（1.2）：LLM 流式完成度指标 -----
         # truncated = 中途断连的残答次数；truncated_rate = truncated / total
         self.llm_stream_total = 0
@@ -172,6 +181,21 @@ class Metrics:
 
     def record_fallback_fastfail(self) -> None:
         self.fallback_fastfail_total += 1
+
+    def record_confirm_ticket_propose(self, tool_name: str) -> None:
+        self.confirm_ticket_propose_total += 1
+        self.confirm_ticket_by_tool[tool_name] = (
+            self.confirm_ticket_by_tool.get(tool_name, 0) + 1
+        )
+
+    def record_confirm_ticket_executed(self, tool_name: str) -> None:
+        self.confirm_ticket_executed_total += 1
+
+    def record_confirm_ticket_rejected(self, tool_name: str) -> None:
+        self.confirm_ticket_rejected_total += 1
+
+    def record_confirm_ticket_failed(self) -> None:
+        self.confirm_ticket_failed_total += 1
 
     # ----- chat -----
 
@@ -395,6 +419,15 @@ class Metrics:
                 "fallback_fastfail": self.fallback_fastfail_total,
             }
 
+            confirm_ticket_block = {
+                # V14（human-in-the-loop）：高风险工具票据生命周期
+                "propose_total": self.confirm_ticket_propose_total,
+                "executed_total": self.confirm_ticket_executed_total,
+                "rejected_total": self.confirm_ticket_rejected_total,
+                "failed_total": self.confirm_ticket_failed_total,
+                "by_tool": dict(self.confirm_ticket_by_tool),
+            }
+
             emb_block = {
                 "calls_total": self.embedding_calls_total,
                 "retries_total": self.embedding_retries_total,
@@ -488,6 +521,8 @@ class Metrics:
                 "badcase": badcase_block,
                 # V14（3.3）：请求级超时预算指标
                 "deadline": deadline_block,
+                # V14（human-in-the-loop）：高风险工具 confirm_ticket 指标
+                "confirm_ticket": confirm_ticket_block,
             }
 
 
