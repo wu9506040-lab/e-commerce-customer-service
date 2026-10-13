@@ -177,6 +177,15 @@ class Settings(BaseSettings):
     # 默认 false（灰度用）；demo 时可开 true
     ENABLE_ESCALATION_HANDOFF: bool = False
 
+    # ---- V15: 用户上下文预加载 ----
+    # 开启后 chat.py 入口调用 user_context_preloader.preload(user_id)，
+    # 加载最近 5 单（含产品）+ 用户画像，注入 LLM prompt 的 context_block 末尾
+    # 关闭则不加载（不影响主流程）
+    # 默认 false（灰度用），验证完再开 true
+    ENABLE_USER_CONTEXT_PRELOAD: bool = False
+    # 预加载订单上限（与 user_context_preloader.MAX_RECENT_ORDERS 对齐）
+    USER_CONTEXT_PRELOAD_MAX_ORDERS: int = 5
+
     # ---- P1-3: RAG ingest MySQL 失败回滚 Qdrant ----
     # 触发场景：upsert_points 成功 → upsert_knowledge_meta 失败 → 孤儿点残留
     # 开启后：自动 delete_points(chunk_ids) 回滚；rollback 失败仅 log warning（不掩盖 MySQL 错误）
