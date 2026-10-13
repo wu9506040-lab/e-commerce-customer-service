@@ -181,6 +181,24 @@ async def chat(
         f"history_len={len(history)} {user_ctx}"
     )
 
+    # 2.5 V15：会话入口用户上下文预加载（best-effort，不阻塞主流程）
+    #   - 加载最近 5 单（含产品）+ 画像 → 注入 LLM prompt
+    #   - 灰度开关 ENABLE_USER_CONTEXT_PRELOAD 默认关，验证后开
+    user_context_block = ""
+    if settings.ENABLE_USER_CONTEXT_PRELOAD and user_id and user_id != ANONYMOUS_USER_ID:
+        try:
+            from app.services import user_context_preloader as _ucp
+            preload_data = await asyncio.to_thread(_ucp.preload, user_id)
+            user_context_block = _ucp.to_prompt_block(preload_data)
+            logger.info(
+                f"/chat V15 preload: user_id={user_id}, "
+                f"orders={len(preload_data.get('orders', []))}, "
+                f"profile_len={len(preload_data.get('profile_text', ''))}"
+            )
+        except Exception as e:
+            logger.warning(f"/chat V15 preload 失败（放行）: user_id={user_id}, {e}")
+            user_context_block = ""
+
     # 3. 异步 SSE 生成器（M7：async generator + heartbeat + 断开检测）
     async def event_generator():
         # V13（2.2）：请求级 embedding 复用起点——guard L2 / 语义缓存读写 /
@@ -463,6 +481,8 @@ async def chat(
             # V13（2.2）：透传预分类结果，消除同请求双分类（此前规则 miss 时
             # chat.py 与 orchestrator 各调一次 LLM classify，且输入版本不同）
             pre_intent=pre_intent,
+            # V15：会话入口预加载的用户上下文（最近 5 单 + 画像）
+            user_context_block=user_context_block,
         ))
 
         try:

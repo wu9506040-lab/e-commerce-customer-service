@@ -38,6 +38,7 @@ def _build_context_block(
     order_no: Optional[str],
     user_id: Optional[int],
     profile_block: str = "",
+    user_context_block: str = "",
 ) -> str:
     """M9.5：构建从商品/订单跳转携带的 context 信息（注入 LLM prompt）
 
@@ -45,6 +46,10 @@ def _build_context_block(
 
     P2 长程记忆：扩 profile_block 参数，把跨 session 用户画像拼到 context_block 末尾。
     profile_block 来自 profile_service.to_prompt_block()，默认空串（开关关闭或匿名）。
+
+    V15 新增 user_context_block：会话入口预加载的用户上下文（最近 5 单 + 画像摘要），
+    来自 user_context_preloader.to_prompt_block()。拼到 profile_block 之后，
+    让 LLM 看到"用户最近买了什么"。
 
     Returns:
         多行字符串，每行一个 context 段；无 context 时返回空串。
@@ -96,6 +101,11 @@ def _build_context_block(
     # 优先级：M9.5 context > profile（profile 是补充信息，不应覆盖当前订单/商品）
     if profile_block:
         lines.append(profile_block)
+
+    # V15：用户上下文预加载（user_context_block）—— 最近 5 单 + 画像
+    # 拼到 profile 之后，让 LLM 能主动关联"用户最近买的商品"
+    if user_context_block:
+        lines.append(user_context_block)
 
     return "\n".join(lines)
 
