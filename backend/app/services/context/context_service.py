@@ -42,6 +42,9 @@ class ConversationContext:
     flow_state: Optional[str] = None
     resolved_orders: list = field(default_factory=list)
     flow_payload: dict = field(default_factory=dict)
+    # V15：会话入口预加载的最近订单精简版（[{order_no, status, items_text}]）
+    # 第一轮加载后缓存，避免每条消息重复查 DB；30min 空闲过期后重查
+    recent_orders_summary: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

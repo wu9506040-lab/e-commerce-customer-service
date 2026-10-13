@@ -71,6 +71,7 @@ class Synthesizer:
         order_no: Optional[str] = None,
         session_id: Optional[str] = None,
         pre_intent: Optional[dict] = None,
+        user_context_block: str = "",
     ) -> Generator[Tuple[str, Any], None, None]:
         """
         主入口：分类 → 分派 → 融合 → LLM 流式输出
@@ -82,6 +83,8 @@ class Synthesizer:
             sku: 当前商品 SKU（M9.5：从 /shop/:sku 跳转携带，注入 prompt 让 LLM 知道是哪款）
             order_no: 当前订单号（M9.5：从 OrderCard 跳转携带，注入 prompt 让 LLM 知道是哪个订单）
             session_id: 会话 ID（M14：OrderContextResolver 用其加载会话上下文）
+            pre_intent: chat 入口已分类结果（透传省一次 LLM 调用）
+            user_context_block: V15 用户上下文预加载块（最近 5 单 + 画像），chat 入口注入
 
         Yields:
             ("meta", {intent, entities, ...})
@@ -155,7 +158,8 @@ class Synthesizer:
                 profile_block = ""
 
         context_block = prompt_assembler._build_context_block(
-            sku, order_no, user_id, profile_block=profile_block
+            sku, order_no, user_id, profile_block=profile_block,
+            user_context_block=user_context_block,  # V15：会话入口预加载
         )
         if context_block:
             logger.info(
