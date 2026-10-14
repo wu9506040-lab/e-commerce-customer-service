@@ -186,6 +186,14 @@ class Settings(BaseSettings):
     # 预加载订单上限（与 user_context_preloader.MAX_RECENT_ORDERS 对齐）
     USER_CONTEXT_PRELOAD_MAX_ORDERS: int = 5
 
+    # ---- V16: 闲鱼 MCP 渠道接入 ----
+    # 开启后 tools/registry.py 注册 5 个 xianyu_* 工具（list_conversations /
+    # conversation_history / get_item / list_my_items / send_message）
+    # 通过 MCP stdio 协议连 goofish-mcp 子进程，调闲鱼 IM/商品 API
+    # 关闭则所有 xianyu_* 工具返 {"error": "xianyu_tools_disabled"}
+    # 默认 false（灰度用）；需同时配置 GOOFISH_COOKIE_PATH + 装 goofish-cli
+    ENABLE_XIANYU_TOOLS: bool = False
+
     # ---- P1-3: RAG ingest MySQL 失败回滚 Qdrant ----
     # 触发场景：upsert_points 成功 → upsert_knowledge_meta 失败 → 孤儿点残留
     # 开启后：自动 delete_points(chunk_ids) 回滚；rollback 失败仅 log warning（不掩盖 MySQL 错误）

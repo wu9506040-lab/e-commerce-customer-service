@@ -226,6 +226,68 @@ def _run_modify_item_spec(args: dict, ctx: ToolContext) -> dict:
     return OrderModifyTool.modify_item_spec(user_id, order_no, sku, new_qty, confirmed)
 
 
+# =============================================================
+# Sprint V16 · 闲鱼 MCP 接入（5 个 Tool）
+# - 灰度开关：settings.ENABLE_XIANYU_TOOLS=False 时所有方法返 disabled error
+# - 不依赖 ctx.user_id：cookie 是卖家身份（cookie 持哪个账号就是哪个卖家）
+# - 写操作：send_message 必须 confirmed=true 才发（与 modify_address 模式一致）
+# - 错误降级：MCP 不可达 / 超时 / cookie 失效 → 返 error dict（dispatch 容错）
+# =============================================================
+def _run_xianyu_list_conversations(args: dict, ctx: ToolContext) -> dict:
+    """xianyu_list_conversations: 列闲鱼会话（按活动时间倒序，最多 limit 条）。"""
+    from app.integrations import get_xianyu_client
+    limit = int(args.get("limit", 20))
+    if limit < 1 or limit > 100:
+        return {"limit must be 1..100": True} if False else {"error": "limit must be 1..100"}
+    return get_xianyu_client().list_conversations(limit=limit)
+
+
+def _run_xianyu_get_conversation_history(args: dict, ctx: ToolContext) -> dict:
+    """xianyu_conversation_history: 拉取 cid 会话历史消息。"""
+    from app.integrations import get_xianyu_client
+    cid = args.get("cid")
+    if not cid:
+        return {"error": "cid is required"}
+    pages = int(args.get("pages", 1))
+    return get_xianyu_client().get_conversation_history(cid=cid, pages=pages)
+
+
+def _run_xianyu_get_item(args: dict, ctx: ToolContext) -> dict:
+    """xianyu_get_item: 按 item_id 查闲鱼商品详情（API 直签）。"""
+    from app.integrations import get_xianyu_client
+    item_id = args.get("item_id")
+    if not item_id:
+        return {"error": "item_id is required"}
+    return get_xianyu_client().get_item(item_id=item_id)
+
+
+def _run_xianyu_list_my_items(args: dict, ctx: ToolContext) -> dict:
+    """xianyu_list_my_items: 查当前卖家账号在售商品列表。"""
+    from app.integrations import get_xianyu_client
+    return get_xianyu_client().list_my_items()
+
+
+def _run_xianyu_send_message(args: dict, ctx: ToolContext) -> dict:
+    """xianyu_send_message: 向指定 cid 发消息（**写操作**，confirmed=true 才发）。
+
+    confirmed=false 时返 needs_confirmation（与 modify_address 同模式）。
+    """
+    from app.integrations import get_xianyu_client
+    cid = args.get("cid")
+    text = args.get("text")
+    if not cid or not text:
+        return {"error": "cid and text are required"}
+    confirmed = bool(args.get("confirmed", False))
+    if not confirmed:
+        return {
+            "needs_confirmation": True,
+            "preview": {"cid": cid, "text": text[:100]},
+            "hint": "send_message 是写操作；确认发送请设置 confirmed=true",
+        }
+    image_url = args.get("image")
+    return get_xianyu_client().send_message(cid=cid, text=text, image_url=image_url)
+
+
 def _run_merge_orders(args: dict, ctx: ToolContext) -> dict:
     """merge_orders: 合并订单（写操作；需 confirmed=true 才执行）。"""
     from app.tools.order_modify_tool import OrderModifyTool
@@ -501,6 +563,104 @@ REGISTRY: dict[str, ToolSpec] = {
             "required": ["order_nos"],
         },
         runner=_run_merge_orders,
+    ),
+
+    # =============================================================
+    # V16 · 闲鱼 MCP 接入（5 个 Tool · 仅在 ENABLE_XIANYU_TOOLS=True 时启用）
+    # 设计要点：
+    # - 描述里写"闲鱼"明确渠道，便于 LLM 路由用户问"闲鱼/二手/买家咨询"类问题
+    # - 写操作（send_message）必须 confirmed=true（与 modify_address 一致）
+    # - 错误降级：MCP 不可达/超时/cookie 失效 → 返 error dict（dispatch 容错）
+    # =============================================================
+    "xianyu_list_conversations": ToolSpec(
+        name="xianyu_list_conversations",
+        description="列闲鱼（Xianyu/Goofish）会话列表，按活动时间倒序。"
+                    "用户问'闲鱼买家咨询'/'/最近闲鱼消息'/'二手平台问什么'时调用。"
+                    "**只读**；结果含 cid/buyer_nick/last_message/timestamp。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "返回会话数上限（1..100），默认 20",
+                },
+            },
+            "required": [],
+        },
+        runner=_run_xianyu_list_conversations,
+    ),
+    "xianyu_conversation_history": ToolSpec(
+        name="xianyu_conversation_history",
+        description="拉取闲鱼指定 cid 会话的历史消息（翻页）。"
+                    "用户问'买家之前说了什么'/'/历史聊天'时调用。"
+                    "**只读**。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "cid": {"type": "string", "description": "闲鱼会话 ID"},
+                "pages": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "翻页数（1..5），默认 1",
+                },
+            },
+            "required": ["cid"],
+        },
+        runner=_run_xianyu_get_conversation_history,
+    ),
+    "xianyu_get_item": ToolSpec(
+        name="xianyu_get_item",
+        description="按 item_id 查询闲鱼商品详情（API 直签，字段全）。"
+                    "用户问'闲鱼商品信息'/'/在卖什么'时调用。"
+                    "**只读**。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "description": "闲鱼商品 ID"},
+            },
+            "required": ["item_id"],
+        },
+        runner=_run_xianyu_get_item,
+    ),
+    "xianyu_list_my_items": ToolSpec(
+        name="xianyu_list_my_items",
+        description="查询当前闲鱼账号在售商品列表。"
+                    "用户问'我在闲鱼卖什么'/'/在售商品'时调用。"
+                    "**只读**。",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        runner=_run_xianyu_list_my_items,
+    ),
+    "xianyu_send_message": ToolSpec(
+        name="xianyu_send_message",
+        description="向闲鱼指定 cid 会话发送消息（**写操作**）。"
+                    "**写操作前必须设置 confirmed=true**，否则会返回确认提示。"
+                    "用户问'给买家回消息'/'/在闲鱼回复买家'时调用。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "cid": {"type": "string", "description": "闲鱼会话 ID"},
+                "text": {
+                    "type": "string",
+                    "description": "消息正文（必填，≤500 字）",
+                },
+                "image": {
+                    "type": "string",
+                    "description": "可选：图片 URL（与 text 同发）",
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "用户已确认发送（true=执行；false=返回确认提示）",
+                },
+            },
+            "required": ["cid", "text"],
+        },
+        runner=_run_xianyu_send_message,
     ),
 }
 
