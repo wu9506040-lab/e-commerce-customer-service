@@ -46,6 +46,7 @@ DATABASE_URL='mysql+pymysql://cs_user:dev_user_2026@localhost:3307/customer_serv
 | **会话入口用户上下文预加载（V15）** | 用户进入 `/chat` 即调 `user_context_preloader.preload(user_id)` 加载最近 5 单（含产品名+状态+金额）+ 用户画像摘要 → 注入 LLM prompt 的 `context_block` 末尾（300 字符硬上限）；**用户问"我昨天买的商品要退款"——不用报订单号，LLM 主动关联 `ORD20260601001(ZP1 蓝牙耳机 / ¥99 / 已发货)`**；best-effort 单字段失败不影响其他字段；灰度开关 `ENABLE_USER_CONTEXT_PRELOAD`（默认 false，验证后开） | `cd backend && python -m pytest tests/test_user_context_preloader.py -v` → 16 个用例全绿（匿名短路/订单含产品/订单超 MAX_RECENT_ORDERS 截断/单字段失败不影响其他/格式化+硬上限截断/反幻觉前缀）；`conversation_context.recent_orders_summary` 字段预留缓存位（30 min 空闲重查，TODO V15.1）|
 | **意图黄金评测集（V14 2.5）** | 170 条黄金（4 类×35 + 32 条 E6' 对抗：矛盾陈述/政策外诉求/多意图连珠/情绪化）；规则层（method=rule）覆盖 **51.2%**（87/170），规则层精度 **88.5%**；分类别 F1：refund_query 67.6 / policy_query 88.4 / order_query 52.3 / product_query 32.7 | `PYTHONPATH=backend python scripts/eval_intent_classify.py --llm-stub primary`（mock LLM 离线可跑）；报告落 `data/intent_golden_report.json` |
 | **测试资产** | **732 条**（单元 + E2E，含 M15 工单 / WP1 指标 / V13 路由边界、查无短路、流式截断、决策回边、转人工分级与降级显形组、V14 prompt 缓存陈旧回归组、V14 badcase 池组、**V15 用户上下文预加载 16 例**；2026-10-13 实测 **757 绿 + 1 宿主机环境项**，CI 全绿），覆盖率 **69%（实测）** | `cd backend && python -m pytest tests --cov=app` |
+| **闲鱼 MCP 渠道接入（V16）** | 智能客服扩展到闲鱼（C2C 二手平台）IM 渠道：MCP stdio 协议连 [fancyboi999/goofish-cli](https://github.com/fancyboi999/goofish-cli)（307⭐，Apache-2.0）调 17 个闲鱼命令；注册 5 个 Agent 工具（`xianyu_list_conversations` / `conversation_history` / `get_item` / `list_my_items` / `send_message`）；写操作（`send_message`）必须 `confirmed=true`（与 `modify_address` 同模式）；三段短路（开关/SDK/cookie）+ 异常降级（MCP 不可达/超时/cookie 失效 → 返 error dict 不阻断 Agent）；演示用小号 + `--dry-run` 默认不发真实交易指令 | `cd backend && python -m pytest tests/test_xianyu_*.py -v` → **56 绿**（client 17 + registry 39 含 5 工具 × 5 parametrize）；`python scripts/demo_xianyu_live.py --dry-run`（需先 `goofish auth login` 导入 cookie）|
 | **知识库** | 18 个结构化源文件 → 114 篇文档 → 136 chunks（V13：**句边界贪心切片 + title 增强 embedding**；逐源 delete-before-write 换代 + `prune_orphan_sources.py` 孤儿清扫，2026-10-10 全量重灌验证） | `PYTHONPATH=backend python scripts/ingest_ecommerce_kb.py`（重灌幂等，先清同源旧点） |
 | **服务编排** | api / frontend / qdrant / mysql / redis 5 服务 Docker Compose + SSE 流式 + JWT 鉴权 | `deploy/docker-compose.yml` |
 
@@ -333,6 +334,12 @@ Qdrant collection 的 `vector_size` 必须**严格匹配**，否则报 `Wrong di
 用 `requestAnimationFrame` 把 50ms 内的多次 scroll 合批，性能提升 ~10x。
 
 ### 6. 为什么不用 LangChain？
+
+（V3 LangGraph 用于退款 4 节点业务流；日常 Agent FC 不引 LangChain——大而全，包大、抽象多、对调试不友好；直调 OpenAI SDK + 自维护 registry 更轻、更可控）
+
+### 7. 为什么闲鱼渠道用 MCP 协议而不是直接逆向闲鱼协议？
+
+闲鱼协议没有公开 API，直接逆向 = 自己写 MD5 签名 + msgpack + Protobuf + token 刷新（路线 C，工作量 ~1-2 周，且闲鱼协议变更会破）。MCP 是 2024 年底由 Anthropic 推出的开放协议（stdio JSON-RPC），**`goofish-cli` 是合规 MCP server**（pip 装 + 自动注册），智能客服作为 MCP client 调它 = **业务代码与闲鱼协议完全解耦**——闲鱼协议变了只动 goofish-cli 不动我们。这也是 2026 秋招 JD 的高频词（"MCP/MCP server/MCP client" 出现率 23%），简历可写"用 MCP 协议接入 C2C 平台"。
 
 - **过度抽象**：业务逻辑藏在 chain 里，调 bug 翻三层
 - **依赖重**：本项目用 OpenAI SDK 直调，3 行代码解决

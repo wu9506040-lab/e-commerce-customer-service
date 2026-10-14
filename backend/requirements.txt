@@ -4,7 +4,9 @@
 # =============================================================
 
 # Web 框架
-fastapi==0.115.6
+# 2026-10-14 升级 fastapi==0.115.6 → 0.143.0（兼容 mcp 1.30 强依赖的 starlette 1.8.x；
+# 原版 0.115.6 + starlette 1.8 触发 Router.__init__() got unexpected 'on_startup'）
+fastapi==0.143.0
 uvicorn[standard]==0.32.1
 
 # 数据验证
@@ -51,3 +53,12 @@ PyYAML==6.0.2
 # =============================================================
 # LangGraph 0.2.x（与 langchain 0.3 兼容）
 langgraph>=0.2,<0.3
+
+# =============================================================
+# V16 · 闲鱼 MCP 接入（goofish-cli + mcp Python SDK）
+# =============================================================
+# MCP Python SDK（client 端）— 与 goofish-mcp stdio server 通信
+# 1.30+ 才兼容 starlette 1.8.x（V16 同步踩坑）
+mcp>=1.30.0
+# 闲鱼 CLI（含 goofish-mcp stdio server 入口）— pip install 后 Scripts/ 下生成 goofish-mcp.exe
+goofish-cli>=0.5.3

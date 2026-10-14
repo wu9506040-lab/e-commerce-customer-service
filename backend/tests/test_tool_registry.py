@@ -137,15 +137,19 @@ def mock_all_services():
 # =============================================================
 # 验证 REGISTRY 数量
 # =============================================================
-def test_registry_has_13_tools():
-    """Sprint 19: 4 已有 + 9 新增 = 13 Tool"""
-    assert len(REGISTRY) == 13
+def test_registry_has_18_tools():
+    """V16: Sprint 19 的 13 + 闲鱼 MCP 5 = 18 Tool
+
+    历史：Sprint 19 落地后 13 个；V16（2026-10-14）加闲鱼 MCP 5 个 → 18。
+    如再增删工具必须同步更新此断言 + 在 README 战绩卡更新数字。
+    """
+    assert len(REGISTRY) == 18
 
 
-def test_to_openai_tools_returns_13():
-    """to_openai_tools() 输出 13 个 OpenAI FC schema"""
+def test_to_openai_tools_returns_18():
+    """to_openai_tools() 输出 18 个 OpenAI FC schema（与 REGISTRY 同步）"""
     tools = to_openai_tools()
-    assert len(tools) == 13
+    assert len(tools) == 18
     names = {t["function"]["name"] for t in tools}
     # 4 已有
     assert {"lookup_order", "search_product", "search_policy", "check_refundable"} <= names
