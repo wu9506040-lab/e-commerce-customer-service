@@ -85,7 +85,7 @@ class TestGracefulDegradation:
         """send_message 也走短路"""
         monkeypatch.setattr(cli_mod.settings, "ENABLE_XIANYU_TOOLS", False)
         c = XianyuMCPClient()
-        result = c.send_message(cid="abc123", text="hi")
+        result = c.send_message(cid="abc123", toid="u123", text="hi")
         assert result == {"error": "xianyu_tools_disabled"}
 
     def test_cookie_missing_returns_error(self, monkeypatch, tmp_path):
@@ -210,13 +210,23 @@ class TestArgsMapping:
             XianyuMCPClient, "_call_mcp_async", new=AsyncMock(side_effect=fake_call)
         ):
             c = XianyuMCPClient()
-            c.send_message(cid="C123", text="hi")
+            c.send_message(cid="C123", toid="U123", text="hi")
             assert captured_args["tool_name"] == "message_send"
-            assert captured_args["args"] == {"cid": "C123", "text": "hi"}
-
-            c.send_message(cid="C123", text="hi", image_url="https://x.com/a.png")
             assert captured_args["args"] == {
                 "cid": "C123",
+                "toid": "U123",
+                "text": "hi",
+            }
+
+            c.send_message(
+                cid="C123",
+                toid="U123",
+                text="hi",
+                image_url="https://x.com/a.png",
+            )
+            assert captured_args["args"] == {
+                "cid": "C123",
+                "toid": "U123",
                 "text": "hi",
                 "image": "https://x.com/a.png",
             }

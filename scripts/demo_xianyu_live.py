@@ -29,6 +29,18 @@ BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.s
 sys.path.insert(0, BACKEND_DIR)
 os.chdir(BACKEND_DIR)  # 让 .env.dev 可被 Settings 读取
 
+# ---- 脱机占位环境变量（与 conftest.py 同模式）----
+# JWT_SECRET 启动时校验≥32 字符；演示场景用占位绕过（生产绝不允许）
+os.environ.setdefault(
+    "JWT_SECRET", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+)
+# DATABASE_URL 也必须设置（仅占位，本演示不真连 MySQL）
+os.environ.setdefault(
+    "DATABASE_URL",
+    "mysql+pymysql://placeholder:pwd@mysql:3306/customer_service?charset=utf8mb4",
+)
+os.environ.setdefault("APP_ENV", "dev")
+
 from app.integrations import get_xianyu_client  # noqa: E402
 from app.integrations.xianyu_mcp_client import XianyuMCPClient  # noqa: E402
 

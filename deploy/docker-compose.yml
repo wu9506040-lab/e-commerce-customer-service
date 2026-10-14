@@ -56,6 +56,10 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-24}
+      # V16 闲鱼 MCP 渠道接入（2026-10-14）
+      # 容器内 ~/.goofish-cli/cookies.json 需通过 volumes 挂载；
+      # 启用前先在本机 goofish auth login 导出 cookie，再复制到容器
+      ENABLE_XIANYU_TOOLS: ${ENABLE_XIANYU_TOOLS:-false}
     volumes:
       - uploads_data:/app/uploads
       - logs_data:/app/logs
