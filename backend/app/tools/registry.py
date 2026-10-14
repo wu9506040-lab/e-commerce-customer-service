@@ -274,18 +274,21 @@ def _run_xianyu_send_message(args: dict, ctx: ToolContext) -> dict:
     """
     from app.integrations import get_xianyu_client
     cid = args.get("cid")
+    toid = args.get("toid")
     text = args.get("text")
-    if not cid or not text:
-        return {"error": "cid and text are required"}
+    if not cid or not toid or not text:
+        return {"error": "cid, toid and text are required"}
     confirmed = bool(args.get("confirmed", False))
     if not confirmed:
         return {
             "needs_confirmation": True,
-            "preview": {"cid": cid, "text": text[:100]},
+            "preview": {"cid": cid, "toid": toid, "text": text[:100]},
             "hint": "send_message 是写操作；确认发送请设置 confirmed=true",
         }
     image_url = args.get("image")
-    return get_xianyu_client().send_message(cid=cid, text=text, image_url=image_url)
+    return get_xianyu_client().send_message(
+        cid=cid, toid=toid, text=text, image_url=image_url
+    )
 
 
 def _run_merge_orders(args: dict, ctx: ToolContext) -> dict:
@@ -644,6 +647,10 @@ REGISTRY: dict[str, ToolSpec] = {
             "type": "object",
             "properties": {
                 "cid": {"type": "string", "description": "闲鱼会话 ID"},
+                "toid": {
+                    "type": "string",
+                    "description": "接收方 user_id（对方的 unb，可从会话历史 send_user_id 取）",
+                },
                 "text": {
                     "type": "string",
                     "description": "消息正文（必填，≤500 字）",
@@ -658,7 +665,7 @@ REGISTRY: dict[str, ToolSpec] = {
                     "description": "用户已确认发送（true=执行；false=返回确认提示）",
                 },
             },
-            "required": ["cid", "text"],
+            "required": ["cid", "toid", "text"],
         },
         runner=_run_xianyu_send_message,
     ),
