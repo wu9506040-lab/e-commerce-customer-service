@@ -55,6 +55,8 @@ class ReplyScheduler:
         daily_quota: int = 50,
         max_retries: int = 2,
         chat_timeout: float = 60.0,
+        db_session=None,  # V16.3 新增：用于落库 + 退款 handler
+        seller_unb: str = "",  # V16.3 新增：cookie 账号 unb
     ):
         self._client = xianyu_client
         self._chat_api_url = chat_api_url
@@ -64,6 +66,8 @@ class ReplyScheduler:
         self._daily_quota = daily_quota
         self._max_retries = max_retries
         self._chat_timeout = chat_timeout
+        self._db = db_session
+        self._seller_unb = seller_unb
 
         # 限流
         self._recent_send_ts: deque = deque(maxlen=rate_limit_per_minute)
@@ -94,24 +98,62 @@ class ReplyScheduler:
     # 内部：编排
     # =============================================================
     def _handle_fire(self, cid: str, messages: list[dict]) -> None:
-        """异步处理 fire（V16.2 集成：ScenarioRouter + Escalation + MessageGuard + Prompts）"""
-        # 1. 消息去重（取最新一条的 message_id + 累计已发过的）
+        """异步处理 fire（V16.3 集成：落库 + 退款 handler + ScenarioRouter + Escalation + MessageGuard + Prompts）"""
+        # 0. V16.3 落库（先于所有其他逻辑，确保 DB 有订单数据）
+        if self._db is not None and self._seller_unb:
+            try:
+                from app.services.xianyu.tip_parser import XianyuTipParser
+                XianyuTipParser.parse_and_persist(
+                    db=self._db, seller_unb=self._seller_unb, messages=messages
+                )
+                self._db.commit()
+            except Exception as e:
+                logger.warning(f"ReplyScheduler 落库失败: {e}")
+                self._db.rollback()
+
+        # 1. 消息去重
         last_msg = messages[-1] if messages else {}
         if self._is_duplicate(last_msg):
             logger.info(f"ReplyScheduler 重复消息跳过 cid={cid}")
             return
-        # 2. 限流检查
+        # 2. 限流
         if not self._check_rate_limit():
             logger.warning(f"ReplyScheduler 触发限流 cid={cid}")
             return
-        # 3. 解析 toid（从消息里取 send_user_id 字段——是对方）
+        # 3. 解析 toid
         toid = last_msg.get("send_user_id", "")
         if not toid:
             logger.warning(f"ReplyScheduler 缺 toid 跳过 cid={cid}")
             return
         last_text = self._extract_text(last_msg)
 
-        # 4. 拉 BuyerProfile（V16.2 注入 LLM）
+        # 4. **V16.3 退款意图检测**（基于 DB）
+        if self._db is not None and self._seller_unb and self._is_refund_intent(last_text):
+            try:
+                from app.services.xianyu.refund_handler import XianyuRefundHandler
+                handler = XianyuRefundHandler(db=self._db, seller_unb=self._seller_unb)
+                # 拉 buyer profile 拿 nick
+                try:
+                    profile = BuyerProfile().get_profile(unb=toid)
+                    nick = profile.nick or ""
+                except Exception:
+                    nick = ""
+                decision = handler.handle_refund_request(unb=toid, buyer_nick=nick)
+                logger.info(
+                    f"ReplyScheduler 退款决策 cid={cid} unb={toid} "
+                    f"should_reject={decision.should_reject} "
+                    f"order_state={decision.order_state}"
+                )
+                # 已退款：直接发拒绝话术（不调 LLM）
+                # 未退款：直接发转人工话术（不调 LLM）
+                self._send_with_retry(cid=cid, toid=toid, text=decision.reply_text)
+                self._record_sent()
+                self._mark_seen(last_msg)
+                return  # 退款场景不调 LLM
+            except Exception as e:
+                logger.warning(f"ReplyScheduler 退款 handler 失败: {e}")
+
+        # 5. 拉 BuyerProfile
         try:
             profile = BuyerProfile().get_profile(unb=toid)
             profile_ctx = profile.to_prompt_context()
@@ -123,24 +165,22 @@ class ReplyScheduler:
             nick = None
             is_returning = False
 
-        # 5. EscalationDetector 检测（V16.2）
+        # 6. EscalationDetector
         try:
             escalation = XianyuEscalationDetector()
             esc_result = escalation.should_escalate(unb=toid, message=last_text)
-            # 记录消息（异常行为计数）
             escalation.record_message(unb=toid)
         except Exception as e:
             logger.warning(f"ReplyScheduler EscalationDetector 失败: {e}")
             esc_result = None
 
         if esc_result and esc_result.escalate:
-            # 转人工：跳过 /chat，直接发转人工话术
             text_to_send = esc_result.reply
             logger.info(
                 f"ReplyScheduler 转人工 cid={cid} reason={esc_result.reason.value if esc_result.reason else 'unknown'}"
             )
         else:
-            # 6. ScenarioRouter 路由（V16.2）
+            # 7. ScenarioRouter
             try:
                 router = XianyuScenarioRouter()
                 scenario_result = router.route(
@@ -158,7 +198,7 @@ class ReplyScheduler:
                     "should_escalate": False,
                 })()
 
-            # 7. 拼完整 system prompt
+            # 8. 拼 system prompt
             try:
                 prompts = XianyuPrompts()
                 system_prompt = prompts.render(
@@ -171,7 +211,7 @@ class ReplyScheduler:
                 logger.warning(f"ReplyScheduler XianyuPrompts 失败: {e}")
                 system_prompt = f"你是智能客服 Agent\n{profile_ctx}"
 
-            # 8. 随机延迟（人类化）
+            # 9. 随机延迟
             delay = self._compute_delay()
             logger.info(
                 f"ReplyScheduler cid={cid} 场景={scenario_result.scenario.value} "
@@ -179,12 +219,12 @@ class ReplyScheduler:
             )
             time.sleep(delay)
 
-            # 9. 限流后实际发送前再 check（避免延迟期间超额）
+            # 10. 限流后 check
             if not self._check_rate_limit():
                 logger.warning(f"ReplyScheduler 延迟后超额 cid={cid}")
                 return
 
-            # 10. 调智能客服 /chat
+            # 11. /chat
             reply = self._call_chat_api(
                 unb=toid,
                 message=last_text,
@@ -194,7 +234,7 @@ class ReplyScheduler:
                 logger.warning(f"ReplyScheduler /chat 返空 cid={cid}")
                 return
 
-            # 11. MessageGuard 检查（V16.2 防误发）
+            # 12. MessageGuard
             try:
                 guard = XianyuMessageGuard()
                 allowed, text_to_send = guard.check_or_suggest(reply)
@@ -207,7 +247,7 @@ class ReplyScheduler:
                 logger.warning(f"ReplyScheduler MessageGuard 失败: {e}")
                 text_to_send = reply
 
-        # 12. send_message 真发 + 失败重试
+        # 13. send_message 真发
         result = self._send_with_retry(cid=cid, toid=toid, text=text_to_send)
         if result.get("ok") or result.get("message_id"):
             self._record_sent()
@@ -219,6 +259,17 @@ class ReplyScheduler:
             logger.error(
                 f"ReplyScheduler cid={cid} 发送失败: {result.get('error')}"
             )
+
+    @staticmethod
+    def _is_refund_intent(text: str) -> bool:
+        """检测退款意图（基于关键词）"""
+        if not text:
+            return False
+        keywords = [
+            "退款", "退钱", "退一下", "退回来", "我要退",
+            "申请退款", "怎么退", "能退吗", "用不了",
+        ]
+        return any(kw in text for kw in keywords)
 
     def _build_context(self, messages: list[dict]) -> str:
         """拼 LLM context（保留兼容：仅 message history）"""
