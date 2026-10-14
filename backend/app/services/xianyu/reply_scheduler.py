@@ -25,6 +25,12 @@ from typing import Optional
 
 import httpx
 
+from app.services.xianyu.buyer_profile import BuyerProfile
+from app.services.xianyu.escalation_detector import XianyuEscalationDetector
+from app.services.xianyu.message_guard import XianyuMessageGuard
+from app.services.xianyu.scenario_router import XianyuScenarioRouter
+from app.services.xianyu.xianyu_prompts import XianyuPrompts
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,7 +94,7 @@ class ReplyScheduler:
     # 内部：编排
     # =============================================================
     def _handle_fire(self, cid: str, messages: list[dict]) -> None:
-        """异步处理 fire（一条对话）"""
+        """异步处理 fire（V16.2 集成：ScenarioRouter + Escalation + MessageGuard + Prompts）"""
         # 1. 消息去重（取最新一条的 message_id + 累计已发过的）
         last_msg = messages[-1] if messages else {}
         if self._is_duplicate(last_msg):
@@ -103,39 +109,119 @@ class ReplyScheduler:
         if not toid:
             logger.warning(f"ReplyScheduler 缺 toid 跳过 cid={cid}")
             return
-        # 4. 随机延迟（人类化）
-        delay = self._compute_delay()
-        logger.info(f"ReplyScheduler cid={cid} 延迟 {delay:.1f}s 后回复")
-        time.sleep(delay)
-        # 5. 拉 buyer profile + phase（注入 LLM context）
-        context = self._build_context(messages)
-        # 6. 调智能客服 /chat
         last_text = self._extract_text(last_msg)
-        reply = self._call_chat_api(
-            unb=toid, message=last_text, context=context
-        )
-        if not reply:
-            logger.warning(f"ReplyScheduler /chat 返空 cid={cid}")
-            return
-        # 7. 限流后实际发送前再 check 一次（避免延迟期间超额）
-        if not self._check_rate_limit():
-            logger.warning(f"ReplyScheduler 延迟后超额 cid={cid}")
-            return
-        # 8. send_message 真发 + 失败重试
-        result = self._send_with_retry(cid=cid, toid=toid, text=reply)
+
+        # 4. 拉 BuyerProfile（V16.2 注入 LLM）
+        try:
+            profile = BuyerProfile().get_profile(unb=toid)
+            profile_ctx = profile.to_prompt_context()
+            nick = profile.nick
+            is_returning = profile.is_returning_buyer
+        except Exception as e:
+            logger.warning(f"ReplyScheduler BuyerProfile 失败: {e}")
+            profile_ctx = ""
+            nick = None
+            is_returning = False
+
+        # 5. EscalationDetector 检测（V16.2）
+        try:
+            escalation = XianyuEscalationDetector()
+            esc_result = escalation.should_escalate(unb=toid, message=last_text)
+            # 记录消息（异常行为计数）
+            escalation.record_message(unb=toid)
+        except Exception as e:
+            logger.warning(f"ReplyScheduler EscalationDetector 失败: {e}")
+            esc_result = None
+
+        if esc_result and esc_result.escalate:
+            # 转人工：跳过 /chat，直接发转人工话术
+            text_to_send = esc_result.reply
+            logger.info(
+                f"ReplyScheduler 转人工 cid={cid} reason={esc_result.reason.value if esc_result.reason else 'unknown'}"
+            )
+        else:
+            # 6. ScenarioRouter 路由（V16.2）
+            try:
+                router = XianyuScenarioRouter()
+                scenario_result = router.route(
+                    unb=toid, message=last_text, is_returning_buyer=is_returning
+                )
+            except Exception as e:
+                logger.warning(f"ReplyScheduler ScenarioRouter 失败: {e}")
+                from app.services.xianyu.scenario_router import (
+                    XianyuScenarioRouter as _R,
+                    Scenario as _S,
+                )
+                scenario_result = type("S", (), {
+                    "scenario": _S.PRESALE,
+                    "prompt_hint": "你是闲鱼专业卖家",
+                    "should_escalate": False,
+                })()
+
+            # 7. 拼完整 system prompt
+            try:
+                prompts = XianyuPrompts()
+                system_prompt = prompts.render(
+                    scenario=scenario_result.scenario.value,
+                    system_base="你是智能客服 Agent",
+                    buyer_profile=profile_ctx,
+                    nick=nick,
+                )
+            except Exception as e:
+                logger.warning(f"ReplyScheduler XianyuPrompts 失败: {e}")
+                system_prompt = f"你是智能客服 Agent\n{profile_ctx}"
+
+            # 8. 随机延迟（人类化）
+            delay = self._compute_delay()
+            logger.info(
+                f"ReplyScheduler cid={cid} 场景={scenario_result.scenario.value} "
+                f"延迟 {delay:.1f}s 后回复"
+            )
+            time.sleep(delay)
+
+            # 9. 限流后实际发送前再 check（避免延迟期间超额）
+            if not self._check_rate_limit():
+                logger.warning(f"ReplyScheduler 延迟后超额 cid={cid}")
+                return
+
+            # 10. 调智能客服 /chat
+            reply = self._call_chat_api(
+                unb=toid,
+                message=last_text,
+                context=system_prompt,
+            )
+            if not reply:
+                logger.warning(f"ReplyScheduler /chat 返空 cid={cid}")
+                return
+
+            # 11. MessageGuard 检查（V16.2 防误发）
+            try:
+                guard = XianyuMessageGuard()
+                allowed, text_to_send = guard.check_or_suggest(reply)
+                if not allowed:
+                    logger.warning(
+                        f"ReplyScheduler 消息被 guard 拦截 cid={cid} "
+                        f"reply={reply[:50]!r}"
+                    )
+            except Exception as e:
+                logger.warning(f"ReplyScheduler MessageGuard 失败: {e}")
+                text_to_send = reply
+
+        # 12. send_message 真发 + 失败重试
+        result = self._send_with_retry(cid=cid, toid=toid, text=text_to_send)
         if result.get("ok") or result.get("message_id"):
             self._record_sent()
             self._mark_seen(last_msg)
-            logger.info(f"ReplyScheduler cid={cid} 已发 message_id={result.get('message_id')}")
+            logger.info(
+                f"ReplyScheduler cid={cid} 已发 message_id={result.get('message_id')}"
+            )
         else:
             logger.error(
                 f"ReplyScheduler cid={cid} 发送失败: {result.get('error')}"
             )
 
     def _build_context(self, messages: list[dict]) -> str:
-        """拼 LLM context（buyer profile + phase 一起）"""
-        # 简化：实际实现应该从 BuyerProfile + PhaseDetector 拉
-        # 这里只把 message history 拼成 context（避免过重依赖）
+        """拼 LLM context（保留兼容：仅 message history）"""
         lines = []
         last = messages[-1] if messages else {}
         last_text = self._extract_text(last)
@@ -216,9 +302,10 @@ class ReplyScheduler:
     # 内部：智能客服 /chat 调用（SSE 解析）
     # =============================================================
     def _call_chat_api(self, unb: str, message: str, context: str) -> str:
-        """调 /api/chat SSE 流，提取 answer"""
-        # 这里假设智能客服 /api/chat 接受 POST + JSON，返 SSE data: {answer: ...}
-        # 实际 schema 后续接真智能客服时调
+        """调 /api/chat SSE 流，提取 answer
+
+        V16.2 升级：context 直接作 system prompt 喂 LLM（含场景 + 买家画像）
+        """
         try:
             payload = {
                 "query": message,
@@ -226,6 +313,7 @@ class ReplyScheduler:
                 "channel": "xianyu",
                 "buyer_unb": unb,
                 "context_block": context,
+                "system_prompt": context,  # 兼容模式：context 既是 context_block 也是 system
             }
             resp = httpx.post(
                 self._chat_api_url,

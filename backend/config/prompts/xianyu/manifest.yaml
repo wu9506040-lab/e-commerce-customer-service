@@ -1,0 +1,10 @@
+# 闲鱼场景化话术 manifest（V16.2.4）
+
+default_version: v1
+versions:
+  v1:
+    presale: presale.yaml      # 售前话术
+    in_sale: in_sale.yaml      # 售中话术
+    after_sale: after_sale.yaml  # 售后话术
+    note: |
+      V16.2.4 初始版本。售前主打议价差异化 + 老客识别，售中物流透明，售后不含退款。
