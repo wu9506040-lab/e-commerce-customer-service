@@ -151,11 +151,12 @@ class TestWriteConfirmation:
             m.return_value = client
             result = dispatch(
                 "xianyu_send_message",
-                '{"cid": "C123", "text": "您好，欢迎光临"}',
+                '{"cid": "C123", "toid": "U123", "text": "您好，欢迎光临"}',
                 ToolContext(user_id=None),
             )
         assert result["needs_confirmation"] is True
         assert result["preview"]["cid"] == "C123"
+        assert result["preview"]["toid"] == "U123"
         assert result["preview"]["text"].startswith("您好")
         # 关键：未真发
         client.send_message.assert_not_called()
@@ -164,11 +165,11 @@ class TestWriteConfirmation:
         """confirmed=true → 真调 client.send_message"""
         result = dispatch(
             "xianyu_send_message",
-            '{"cid": "C123", "text": "hi", "confirmed": true}',
+            '{"cid": "C123", "toid": "U123", "text": "hi", "confirmed": true}',
             ToolContext(user_id=None),
         )
         mock_client.send_message.assert_called_once_with(
-            cid="C123", text="hi", image_url=None
+            cid="C123", toid="U123", text="hi", image_url=None
         )
         assert result == {"ok": True, "message_id": "M1"}
 
@@ -176,30 +177,30 @@ class TestWriteConfirmation:
         """confirmed=true + image → 透传 image_url"""
         dispatch(
             "xianyu_send_message",
-            '{"cid": "C123", "text": "看图", "image": "https://x.com/a.png", "confirmed": true}',
+            '{"cid": "C123", "toid": "U123", "text": "看图", "image": "https://x.com/a.png", "confirmed": true}',
             ToolContext(user_id=None),
         )
         mock_client.send_message.assert_called_once_with(
-            cid="C123", text="看图", image_url="https://x.com/a.png"
+            cid="C123", toid="U123", text="看图", image_url="https://x.com/a.png"
         )
 
     def test_send_message_missing_cid_returns_error(self, mock_client):
         """cid 缺 → 返 error（不调 client）"""
         result = dispatch(
             "xianyu_send_message",
-            '{"text": "hi"}',
+            '{"toid": "U123", "text": "hi"}',
             ToolContext(user_id=None),
         )
-        assert "cid and text are required" in result["error"]
+        assert "cid, toid and text are required" in result["error"]
         mock_client.send_message.assert_not_called()
 
     def test_send_message_missing_text_returns_error(self, mock_client):
         result = dispatch(
             "xianyu_send_message",
-            '{"cid": "C123"}',
+            '{"cid": "C123", "toid": "U123"}',
             ToolContext(user_id=None),
         )
-        assert "cid and text are required" in result["error"]
+        assert "cid, toid and text are required" in result["error"]
 
 
 # =============================================================

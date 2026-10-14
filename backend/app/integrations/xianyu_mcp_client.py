@@ -60,7 +60,7 @@ _TOOL_MAP: dict[str, tuple[str, set[str]]] = {
     "conversation_history": ("message_history", {"cid", "pages"}),
     "get_item": ("item_get", {"item_id"}),
     "list_my_items": ("item_list", set()),
-    "send_message": ("message_send", {"cid", "text", "image"}),
+    "send_message": ("message_send", {"cid", "toid", "text", "image"}),
 }
 
 
@@ -113,9 +113,17 @@ class XianyuMCPClient:
         return self._call("list_my_items", {})
 
     def send_message(
-        self, cid: str, text: str, image_url: Optional[str] = None
+        self, cid: str, toid: str, text: str, image_url: Optional[str] = None
     ) -> dict:
-        args: dict = {"cid": cid, "text": text}
+        """向闲鱼会话发送消息（**写操作**）
+
+        Args:
+            cid: 闲鱼会话 ID（= conversation_id）
+            toid: 接收方 user_id（对方的 unb，不是 seller 自己的）
+            text: 消息正文
+            image_url: 可选，图片 URL
+        """
+        args: dict = {"cid": cid, "toid": toid, "text": text}
         if image_url:
             args["image"] = image_url
         return self._call("send_message", args)
@@ -135,7 +143,22 @@ class XianyuMCPClient:
     # 内部
     # =============================================================
     def _call(self, method: str, args: dict) -> dict:
-        """sync 入口：灰度短路 + args 白名单 + 异常降级"""
+        """sync 入口：灰度短路 + args 白名单 + 异常降级
+
+        线程隔离 event loop（**解决"asyncio.run() cannot be called from
+        a running event loop"**）：
+
+        - 智能客服是 FastAPI（async web）；每个请求在 async context 跑
+        - agent_runner → dispatch → _run_xianyu_* → client._call 这一路是同步的
+        - 如果直接 asyncio.run()：会触发 RuntimeError，因为外层已有 running loop
+        - 用 ThreadPoolExecutor(1) 把 MCP call 丢到独立线程：thread 内没有
+          outer loop，asyncio.run() 合法
+
+        设计取舍（V16）：
+        - 单飞线程（max_workers=1）= 不并发（避免 cookie 文件被并发读触发闲鱼风控）
+        - 每个方法调用新建 thread（MCP call 频率低，subprocess 启动 ~0.5s 可接受）
+        - 未来 V16.x 可优化：复用持久 thread + queue（待闲鱼 IM 长连接 watch 上线时）
+        """
         if not settings.ENABLE_XIANYU_TOOLS:
             return {"error": "xianyu_tools_disabled"}
         if not _MCP_AVAILABLE:
@@ -147,12 +170,7 @@ class XianyuMCPClient:
         tool_name, valid_args = _TOOL_MAP[method]
         clean_args = {k: v for k, v in args.items() if k in valid_args}
         try:
-            return asyncio.run(
-                asyncio.wait_for(
-                    self._call_mcp_async(tool_name, clean_args),
-                    timeout=self._startup_timeout + self._call_timeout,
-                )
-            )
+            return self._run_in_fresh_thread(tool_name, clean_args)
         except asyncio.TimeoutError:
             logger.warning(
                 f"xianyu_mcp.{method} timeout ({self._startup_timeout + self._call_timeout}s)",
@@ -167,6 +185,29 @@ class XianyuMCPClient:
             return {
                 "error": f"xianyu_{method}_failed: {type(e).__name__}: {str(e)[:200]}"
             }
+
+    def _run_in_fresh_thread(self, tool_name: str, args: dict) -> dict:
+        """在独立线程跑 asyncio.run()，隔离外层 event loop
+
+        失败模式：
+        - thread 内 startup/call 超时 → 抛 concurrent.futures.TimeoutError
+        - thread 内未处理异常 → 抛回主线程，_call 兜住
+        """
+        import concurrent.futures
+
+        total_timeout = self._startup_timeout + self._call_timeout + 5
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="xianyu-mcp"
+        ) as executor:
+            future = executor.submit(
+                lambda: asyncio.run(
+                    asyncio.wait_for(
+                        self._call_mcp_async(tool_name, args),
+                        timeout=self._startup_timeout + self._call_timeout,
+                    )
+                )
+            )
+            return future.result(timeout=total_timeout)
 
     async def _call_mcp_async(self, tool_name: str, args: dict) -> dict:
         """async 入口：起 subprocess + handshake + call_tool + 解析 result"""
