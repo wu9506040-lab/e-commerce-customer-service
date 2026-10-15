@@ -37,7 +37,9 @@ os.environ.setdefault(
 )
 os.environ.setdefault(
     "DATABASE_URL",
-    "mysql+pymysql://placeholder:pwd@mysql:3306/customer_service?charset=utf8mb4",
+    # V16.5: daemon 是宿主机进程,不能用 docker 容器内 'mysql' hostname (DNS 解析失败)
+    # 改用 host-mapped port 127.0.0.1:3307 (compose 暴露 3306→3307)
+    "mysql+pymysql://cs_user:dev_user_2026@127.0.0.1:3307/customer_service?charset=utf8mb4",
 )
 os.environ.setdefault("APP_ENV", "prod")  # daemon 默认 prod
 

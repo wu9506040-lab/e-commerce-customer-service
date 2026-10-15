@@ -70,6 +70,7 @@ class DebounceQueue:
         self._next_window = float(os.environ.get("XIANYU_DEBOUNCE_NEXT", str(window_seconds)))
         # V16.4: 句末标点结尾时的短 window（话已说完快速触发）
         self._short_window = float(os.environ.get("XIANYU_DEBOUNCE_SHORT", str(min(window_seconds, 1.5))))
+        # V16.5: 默认值由 5s/3s 收紧到 3s/3s/1.5s,配合 daemon 让 on_fire 后 27s 阻塞问题（mysql DNS 失败）一并修复
         # 记录每个 cid 是否首次 fire
         self._first_fire_done: set[str] = set()
         # cid → {messages, timer}
