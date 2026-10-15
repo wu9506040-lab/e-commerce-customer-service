@@ -65,6 +65,11 @@ services:
       - logs_data:/app/logs
       # M3 治本（2026-07-19）：KB 文档随容器重建（volume mount），避免 ECS 容器销毁后 Qdrant KB 丢失
       - ./../docs/ecommerce_kb:/app/docs/ecommerce_kb:ro
+      # V16.5 开发体验：源码 bind mount（dev only；prod 应 baked-in）
+      - ./../backend/app:/app/app:ro
+      - ./../backend/config:/app/config:ro
+      - ./../backend/logs:/app/logs
+      - ./../backend/tests:/app/tests:ro
     depends_on:
       mysql:
         condition: service_healthy

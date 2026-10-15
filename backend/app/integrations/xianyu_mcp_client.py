@@ -176,12 +176,45 @@ class XianyuMCPClient:
                 f"xianyu_mcp.{method} timeout ({self._startup_timeout + self._call_timeout}s)",
                 extra={"intent": "xianyu_mcp", "method": method},
             )
+            # V16.5 全链路日志：L2 send_message 失败详情
+            try:
+                from app.core.runtime_log import log_event
+                cid = str(clean_args.get("cid", "-"))
+                toid = str(clean_args.get("toid", "-"))
+                text_preview = str(clean_args.get("text", ""))[:200]
+                if log_event:
+                    log_event("SEND_MESSAGE", "WARNING", cid, toid,
+                              f"mcp timeout error=mcp_call_timeout method={method}",
+                              method=method,
+                              cid=cid,
+                              toid=toid,
+                              timeout_sec=self._startup_timeout + self._call_timeout,
+                              text_preview=text_preview,
+                              error="mcp_call_timeout")
+            except Exception:
+                pass
             return {"error": "mcp_call_timeout"}
         except Exception as e:
             logger.exception(
                 f"xianyu_mcp.{method} failed: {type(e).__name__}: {e}",
                 extra={"intent": "xianyu_mcp", "method": method},
             )
+            # V16.5 全链路日志：L2 异常失败
+            try:
+                from app.core.runtime_log import log_event
+                cid = str(clean_args.get("cid", "-"))
+                toid = str(clean_args.get("toid", "-"))
+                text_preview = str(clean_args.get("text", ""))[:200]
+                if log_event:
+                    log_event("SEND_MESSAGE", "ERROR", cid, toid,
+                              f"mcp failed method={method}",
+                              method=method,
+                              cid=cid,
+                              toid=toid,
+                              error=f"{type(e).__name__}: {str(e)[:200]}",
+                              text_preview=text_preview)
+            except Exception:
+                pass
             return {
                 "error": f"xianyu_{method}_failed: {type(e).__name__}: {str(e)[:200]}"
             }

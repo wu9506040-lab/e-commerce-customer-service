@@ -26,6 +26,9 @@ from app.core.context import (
     intent_var,
 )
 
+# V16.5 全链路日志：相对路径 logs/xianyu_runtime.log，按天滚动保留 7 天
+from app.core.runtime_log import setup_runtime_logging  # noqa: E402
+
 
 # =============================================================
 # 时区（统一北京时间 +8）
@@ -197,3 +200,9 @@ def setup_logging(level: str = "INFO", log_format: str = "text") -> None:
     logging.getLogger(__name__).info(
         f"logging 配置完成: level={level.upper()}, format={log_format}"
     )
+
+    # V16.5 全链路日志：单独的文件 logger（不打 stdout、不污染 root）
+    try:
+        setup_runtime_logging(level=level, log_dir="logs")
+    except Exception as _e:  # 不阻塞主流程
+        logging.getLogger(__name__).warning(f"runtime_log 初始化失败: {_e}")

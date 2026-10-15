@@ -893,6 +893,8 @@ async def _xianyu_channel_chat(
     buyer_unb = payload.buyer_unb
 
     async def _event_gen():
+        # V16.5 全链路日志：L5 SSE 事件计数（结尾一次性汇总，不在每个 token yield 打）
+        sse_counts: dict[str, int] = {}
         try:
             # 1. 退款检测
             refund_keywords = ["退款", "退钱", "退货", "退一下"]
@@ -934,25 +936,62 @@ async def _xianyu_channel_chat(
                 # 3. 非退款 → 调 LLM 简短回复（用 xianyu 场景 prompt）
                 answer = await _xianyu_llm_reply(query, buyer_unb, user_ctx)
 
-            # 4. 返 SSE
+            # 4. 返 SSE（每次 yield 计数，不打日志 — 末尾汇总）
+            sse_counts["meta"] = sse_counts.get("meta", 0) + 1
             yield _sse_format({
                 "type": "meta",
                 "intent": "xianyu_channel",
                 "channel": "xianyu",
             })
             # 分块 token
-            for i in range(0, len(answer), 10):
-                yield _sse_format({"type": "token", "text": answer[i:i+10]})
+            chunks = [answer[i:i+10] for i in range(0, len(answer), 10)]
+            sse_counts["token"] = sse_counts.get("token", 0) + len(chunks)
+            for chunk in chunks:
+                yield _sse_format({"type": "token", "text": chunk})
+            sse_counts["done"] = sse_counts.get("done", 0) + 1
             yield _sse_format({
                 "type": "done",
                 "session_id": session_id,
                 "assistant_message_id": 0,
             })
+            sse_counts["closed"] = sse_counts.get("closed", 0) + 1
             yield _sse_format({"type": "closed"})
+            # V16.5 全链路日志：L5 SSE_SUMMARY（结尾一次性汇总）
+            try:
+                from app.core.runtime_log import log_event as _relog
+                total = sum(sse_counts.values())
+                _relog(
+                    "SSE_SUMMARY", "INFO", str(session_id or "-"), str(buyer_unb or "-"),
+                    f"xianyu fast-path total_events={total} by_type={sse_counts}",
+                    total_events=total,
+                    meta_count=sse_counts.get("meta", 0),
+                    token_count=sse_counts.get("token", 0),
+                    done_count=sse_counts.get("done", 0),
+                    closed_count=sse_counts.get("closed", 0),
+                    error_count=sse_counts.get("error", 0),
+                    channel="xianyu_fast_path",
+                )
+            except Exception:
+                pass
         except Exception as e:
             logger.exception(f"/chat xianyu 渠道异常: {e}")
             yield _sse_format({"type": "error", "message": str(e)[:200]})
             yield _sse_format({"type": "closed"})
+            # V16.5 全链路日志：L5 SSE_SUMMARY（异常路径也汇总）
+            try:
+                from app.core.runtime_log import log_event as _relog
+                total = sum(sse_counts.values()) + 2  # +error +closed
+                _relog(
+                    "SSE_SUMMARY", "WARNING", str(session_id or "-"), str(buyer_unb or "-"),
+                    f"xianyu fast-path ERROR total_events={total} error={type(e).__name__}",
+                    total_events=total,
+                    error_count=sse_counts.get("error", 0) + 1,
+                    by_type=sse_counts,
+                    error=f"{type(e).__name__}: {str(e)[:200]}",
+                    channel="xianyu_fast_path",
+                )
+            except Exception:
+                pass
 
     return StreamingResponse(
         _event_gen(),
@@ -978,12 +1017,46 @@ async def _xianyu_llm_reply(query: str, buyer_unb: str, user_ctx: str) -> str:
         {"role": "system", "content": system},
         {"role": "user", "content": query or "在吗"},
     ]
+    # V16.5 全链路日志：LLM_PROMPT + LLM_RESPONSE（闲鱼渠道不走通用 RAG stream_llm）
+    try:
+        from app.core.runtime_log import log_event as _relog
+        _relog(
+            "LLM_PROMPT", "INFO", "-", str(buyer_unb or "-"),
+            f"xianyu fast-path system_len={len(system)} user_len={len(query or '')}",
+            channel="xianyu_fast_path",
+            system_prompt=system[:3000] + ("...(truncated)" if len(system) > 3000 else ""),
+            user_message=query or "在吗",
+        )
+    except Exception:
+        pass
     try:
         provider = get_llm_provider()
         result = provider.chat(messages=messages, temperature=0.7)
-        return (result.get("reply") or "您好，我在这儿。有什么可以帮您的？")[:200]
+        answer = (result.get("reply") or "您好，我在这儿。有什么可以帮您的？")[:200]
+        try:
+            from app.core.runtime_log import log_event as _relog
+            _relog(
+                "LLM_RESPONSE", "INFO", "-", str(buyer_unb or "-"),
+                f"xianyu fast-path answer_len={len(answer)}",
+                channel="xianyu_fast_path",
+                answer_len=len(answer),
+                final_answer=answer[:500],
+            )
+        except Exception:
+            pass
+        return answer
     except Exception as e:
         logger.warning(f"/chat xianyu LLM 失败: {e}")
+        try:
+            from app.core.runtime_log import log_event as _relog
+            _relog(
+                "LLM_RESPONSE", "ERROR", "-", str(buyer_unb or "-"),
+                f"xianyu fast-path LLM failed: {type(e).__name__}",
+                channel="xianyu_fast_path",
+                error=f"{type(e).__name__}: {str(e)[:200]}",
+            )
+        except Exception:
+            pass
         return _xianyu_fallback_text(query)
 
 

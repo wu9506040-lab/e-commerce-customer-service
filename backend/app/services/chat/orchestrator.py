@@ -181,8 +181,34 @@ class Synthesizer:
         if pre_intent is not None and not was_rewritten:
             intent_result = pre_intent
             logger.debug("synth.intent: 复用 chat 预分类（省一次 LLM 调用）")
+            # V16.5 全链路日志：Intent 复用（来自 pre_intent）
+            try:
+                from app.core.runtime_log import log_event as _relog
+                _relog(
+                    "INTENT_CLASSIFY", "INFO", str(session_id or "-"), str(user_id or "-"),
+                    f"primary={intent_result.get('primary','?')} (reused pre_intent)",
+                    method=pre_intent.get("method", "?"),
+                    primary=pre_intent.get("primary", "?"),
+                    confidence=round(pre_intent.get("confidence", 0), 3),
+                )
+            except Exception:
+                pass
         else:
             intent_result = IntentService.classify(query)
+            # V16.5 全链路日志：Intent 分类结果
+            try:
+                from app.core.runtime_log import log_event as _relog
+                _relog(
+                    "INTENT_CLASSIFY", "INFO", str(session_id or "-"), str(user_id or "-"),
+                    f"primary={intent_result.get('primary','?')} confidence={intent_result.get('confidence', 0):.2f}",
+                    method=intent_result.get("method", "?"),
+                    primary=intent_result.get("primary", "?"),
+                    confidence=round(intent_result.get("confidence", 0), 3),
+                    intents=intent_result.get("intents", []),
+                    entities=intent_result.get("entities", {}),
+                )
+            except Exception:
+                pass
 
         # V13（2.3）：内部事件携带当轮意图决策快照——chat.py 消费后随消息落库
         # （intent_snapshot 列），不外发 SSE。👎/badcase 反查的 join 地基：
@@ -753,6 +779,18 @@ class Synthesizer:
         # M9.5：优先用 context 传来的 sku（用户从商品详情跳转）
         effective_sku = sku or entities.get("sku")
 
+        # V16.5 全链路日志：SENTINEL — _handle_product 入口确认
+        try:
+            from app.core.runtime_log import log_event as _relog
+            _relog(
+                "_HANDLE_PRODUCT_ENTRY", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
+                f"_handle_product ENTER query={query[:80]} sku={effective_sku}",
+                query=query[:200],
+                sku=effective_sku,
+            )
+        except Exception:
+            pass
+
         # 1. 查商品
         # 优先用 sku 实体精确查；查不到时回退到 keyword 搜（MySQL 里 SKU=SKU001，
         # 但商品 name 包含 ZP1，所以 keyword="ZP1" 能命中 SKU001）
@@ -800,6 +838,39 @@ class Synthesizer:
 
         # P0-H：暴露商品 + 知识库命中到 meta
         contexts, scores = prompt_assembler._build_meta_contexts(products=products, policy_docs=kb_docs)
+        # V16.5 全链路日志：L4 RAG 检索 Top-3 + scores
+        try:
+            from app.core.runtime_log import log_event as _relog
+            # Top-3（products + kb_docs 合并，按 scores 排序）
+            merged = []
+            for c, s in zip(contexts, scores):
+                if isinstance(c, dict):
+                    src = c.get("source", c.get("title", ""))
+                    title = c.get("title", "")
+                    preview = (c.get("text_preview", "") or c.get("text", ""))[:200]
+                    merged.append((src, title, s, preview))
+            merged.sort(key=lambda x: x[2] if isinstance(x[2], (int, float)) else 0, reverse=True)
+            top3 = merged[:3]
+            top3_lines = [
+                f"[{i+1}] source={src} score={s:.4f} title={title[:50]} preview={preview[:80]}"
+                for i, (src, title, s, preview) in enumerate(top3)
+            ]
+            _relog(
+                "RAG_RETRIEVE", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
+                f"Top-{len(top3)} retrieved (total={len(contexts)}): " + " | ".join(top3_lines),
+                hits=len(contexts),
+                top1_source=top3[0][0] if top3 else "-",
+                top1_score=top3[0][2] if top3 and isinstance(top3[0][2], (int, float)) else 0,
+                top2_source=top3[1][0] if len(top3) > 1 else "-",
+                top2_score=top3[1][2] if len(top3) > 1 and isinstance(top3[1][2], (int, float)) else 0,
+                top3_source=top3[2][0] if len(top3) > 2 else "-",
+                top3_score=top3[2][2] if len(top3) > 2 and isinstance(top3[2][2], (int, float)) else 0,
+                query=query[:200],
+            )
+        except Exception as _e:
+            # 诊断：让异常可见（CI 看到 stderr）
+            import sys as _sys
+            print(f"[RAG_RETRIEVE_LOG_FAIL] {_e}", file=_sys.stderr)
         meta = {
             "intent": "product_query",
             "entities": entities,
@@ -815,6 +886,20 @@ class Synthesizer:
         #     → 走 stream_llm 兜底：trust V16.3.4 promote-to-system 的事实，LLM 真可答
         #   - 没 context_block → 保留 P0-J 防幻觉 hardcode 模板（前端通用路径行为不变）
         if not products and not kb_docs:
+            # V16.5 全链路日志：L1 P0-J 早返点（RAG 双空 fallback）
+            try:
+                from app.core.runtime_log import log_event as _relog
+                _relog(
+                    "RAG_EMPTY_FALLBACK", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
+                    f"P0-J 兜底: products=0 kb_docs=0 context_block_len={len(context_block)}",
+                    fallback="stream_llm" if context_block else "stream_simple_hardcode",
+                    products=len(products),
+                    kb_docs=len(kb_docs),
+                    context_block_len=len(context_block),
+                    query=query[:200],
+                )
+            except Exception:
+                pass
             if context_block:
                 yield from stream_dispatcher.stream_llm(
                     f"参考资料：（未检索到相关商品 / 知识库；卖家渠道上下文见 system 段）\n\n"
@@ -839,6 +924,23 @@ class Synthesizer:
             context_block=context_block,
             secondary_intent_block=secondary_intent_block,  # V12
         )
+        # V16.5 全链路日志：LLM_PROMPT（system prompt 前 3000 字 + user 完整）
+        try:
+            from app.core.runtime_log import log_event as _relog
+            # context_block 在 V16.3.4 后被 promote-to-system（system 段）
+            system_prompt = context_block[:3000] if context_block else ""
+            if len(context_block) > 3000:
+                system_prompt += "...(截断)"
+            _relog(
+                "LLM_PROMPT", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
+                f"system_len={len(context_block)} user_len={len(query)}",
+                system_prompt=system_prompt,
+                user_message=query,  # user 不截断
+                chars_system=len(context_block),
+                chars_user=len(query),
+            )
+        except Exception:
+            pass
         yield from stream_dispatcher.stream_llm(prompt, context_block=context_block)
 
     @staticmethod
