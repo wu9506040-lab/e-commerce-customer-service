@@ -6,13 +6,15 @@ Chat 相关 Pydantic Schema（RAG + 多轮对话）
     请求：{"query": "...", "session_id": "可选"}
     响应：{"answer": "...", "contexts": [...], "scores": [...], "session_id": "..."}
 """
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatRequest(BaseModel):
     """RAG Chat 请求"""
+    model_config = ConfigDict(extra="allow")  # V16.3.2 允许额外字段（channel/buyer_unb）
+
     query: str = Field(
         ...,
         min_length=1,
@@ -38,6 +40,25 @@ class ChatRequest(BaseModel):
         max_length=64,
         description="当前订单号（从订单卡片跳转携带）",
         examples=["ORD20260622003"],
+    )
+    # V16.3.2 闲鱼 IM 渠道（daemon 调用时填）
+    channel: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description="渠道标识（如 xianyu），非空时走渠道快速分支",
+    )
+    buyer_unb: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description="闲鱼买家 unb（退款决策关键）",
+    )
+    # V16.3.3 闲鱼渠道：daemon/caller 预拼好的渠道 context（BuyerProfile + ItemPrompt）。
+    # 注入 system prompt 头部，优先级最高。缺省 None 时由 chat.py 的
+    # _xianyu_inject_context 兜底填充（用 XianyuBuyerProfileV2 + XianyuItemRepository）。
+    context_block: Optional[str] = Field(
+        default=None,
+        max_length=8000,
+        description="调用方预拼的渠道上下文（闲鱼买家画像+商品话术），注入 system prompt 头部",
     )
 
 

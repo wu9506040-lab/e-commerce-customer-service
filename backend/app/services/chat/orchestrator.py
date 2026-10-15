@@ -72,6 +72,7 @@ class Synthesizer:
         session_id: Optional[str] = None,
         pre_intent: Optional[dict] = None,
         user_context_block: str = "",
+        context_block: str = "",  # V16.3.3：daemon/caller 渠道 context（优先级最高）
     ) -> Generator[Tuple[str, Any], None, None]:
         """
         主入口：分类 → 分派 → 融合 → LLM 流式输出
@@ -157,10 +158,14 @@ class Synthesizer:
                 )
                 profile_block = ""
 
-        context_block = prompt_assembler._build_context_block(
-            sku, order_no, user_id, profile_block=profile_block,
-            user_context_block=user_context_block,  # V15：会话入口预加载
-        )
+        # V16.3.3：caller 已传 context_block → 直接用，跳过 M9.5/V15 内部拼装
+        # （避免 chat.py 透传的渠道 context 被内部 _build_context_block 覆盖。
+        #  缺省 None 时走 M9.5/V15 内部拼装——前端 / 老 daemon 仍按原路径工作）
+        if not context_block:
+            context_block = prompt_assembler._build_context_block(
+                sku, order_no, user_id, profile_block=profile_block,
+                user_context_block=user_context_block,  # V15：会话入口预加载
+            )
         if context_block:
             logger.info(
                 f"synth.context: sku={sku} order_no={order_no} "
