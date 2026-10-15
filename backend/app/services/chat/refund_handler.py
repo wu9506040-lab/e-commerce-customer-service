@@ -208,7 +208,7 @@ def handle_refund_v2(
         context_block=context_block,
         secondary_intent_block=secondary_intent_block,  # V12
     )
-    yield from stream_dispatcher.stream_llm(prompt)
+    yield from stream_dispatcher.stream_llm(prompt, context_block=context_block)
 
 
 def handle_refund_v3(

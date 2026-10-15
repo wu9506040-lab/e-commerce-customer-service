@@ -643,7 +643,7 @@ class Synthesizer:
             context_block=context_block,
             secondary_intent_block=secondary_intent_block,  # V12
         )
-        yield from stream_dispatcher.stream_llm(prompt)
+        yield from stream_dispatcher.stream_llm(prompt, context_block=context_block)
 
         # M14：埋点（DIRECT_ANSWER 走 LLM 综合，card 仅在 N=1 时发 mini）
         # 灰度关闭时 result.total_orders=0 → 计入 zero 分桶（语义：未走 Resolver）
@@ -810,12 +810,23 @@ class Synthesizer:
         }
         yield ("meta", meta)
 
-        # P0-J：商品 + KB 都没命中 → 不调 LLM，直接返兜底文本（防"ZP2 续航怎么样"幻觉）
+        # V16.3.4：商品 + KB 双空时分两路——
+        #   - caller 传了 context_block（渠道上下文里有商品话术/买家画像）
+        #     → 走 stream_llm 兜底：trust V16.3.4 promote-to-system 的事实，LLM 真可答
+        #   - 没 context_block → 保留 P0-J 防幻觉 hardcode 模板（前端通用路径行为不变）
         if not products and not kb_docs:
-            yield from stream_dispatcher.stream_simple(
-                f"抱歉，知识库中暂无「{query}」相关资料，无法回答。"
-                "如需查询具体商品，请提供准确 SKU 或商品名。"
-            )
+            if context_block:
+                yield from stream_dispatcher.stream_llm(
+                    f"参考资料：（未检索到相关商品 / 知识库；卖家渠道上下文见 system 段）\n\n"
+                    f"对话历史：{prompt_assembler._format_history(history)}\n\n"
+                    f"问题：{query}",
+                    context_block=context_block,
+                )
+            else:
+                yield from stream_dispatcher.stream_simple(
+                    f"抱歉，知识库中暂无「{query}」相关资料，无法回答。"
+                    "如需查询具体商品，请提供准确 SKU 或商品名。"
+                )
             return
 
         prompt = prompt_assembler._build_chat_prompt(
@@ -828,7 +839,7 @@ class Synthesizer:
             context_block=context_block,
             secondary_intent_block=secondary_intent_block,  # V12
         )
-        yield from stream_dispatcher.stream_llm(prompt)
+        yield from stream_dispatcher.stream_llm(prompt, context_block=context_block)
 
     @staticmethod
     def _handle_policy(
@@ -859,10 +870,10 @@ class Synthesizer:
         yield ("meta", meta)
 
         if not policy_docs:
-            # 无相关 policy → LLM 用通用知识兜底（也带 context 让 LLM 知道用户场景）
-            ctx_section = f"\n\n【当前场景】\n{context_block}" if context_block else ""
+            # 无相关 policy → LLM 用通用知识兜底（context_block 走 stream_llm 注入 system 不在此重复）
             yield from stream_dispatcher.stream_llm(
-                f"参考资料：\n（未检索到相关政策）{ctx_section}\n\n对话历史：\n{prompt_assembler._format_history(history)}\n\n问题：{query}"
+                f"参考资料：\n（未检索到相关政策）\n\n对话历史：\n{prompt_assembler._format_history(history)}\n\n问题：{query}",
+                context_block=context_block,
             )
             return
 
@@ -873,7 +884,7 @@ class Synthesizer:
             product_block="",
             history_block=prompt_assembler._format_history(history),
             query=query,
-            context_block=context_block,
+            # V16.3.4：context_block 已在下方 stream_llm promote 到 system message（架构修）
             secondary_intent_block=secondary_intent_block,  # V12
         )
-        yield from stream_dispatcher.stream_llm(prompt)
+        yield from stream_dispatcher.stream_llm(prompt, context_block=context_block)
