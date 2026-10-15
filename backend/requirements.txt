@@ -10,7 +10,8 @@ fastapi==0.143.0
 uvicorn[standard]==0.32.1
 
 # 数据验证
-pydantic==2.10.3
+# V16.3.6：mcp 1.30+ 强依赖 pydantic<3.0.0 and >=2.11.0（原 2.10.3 触发 pip resolver 冲突 → docker build 失败）
+pydantic>=2.11.0,<3.0.0
 pydantic-settings==2.7.0
 
 # 配置管理
