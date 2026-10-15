@@ -110,6 +110,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # V16.5: 接入全链路 runtime_log（daemon 是独立进程,uvicorn 的 logger 用不上,
+    # 必须 daemon 自己初始化一份,才能把真实闲鱼买家对话写到 logs/xianyu_runtime.log）
+    try:
+        from app.core.runtime_log import setup_runtime_logging
+        setup_runtime_logging(level=getattr(settings, "LOG_LEVEL", "INFO"), log_dir="logs")
+    except Exception as _e:
+        logger.warning(f"daemon 接入 runtime_log 失败: {_e}")
+
     if not settings.ENABLE_XIANYU_TOOLS:
         logger.error(
             "ENABLE_XIANYU_TOOLS=False，daemon 不会启动。\n"
@@ -127,6 +135,7 @@ def main() -> int:
         ),
         min_delay_seconds=float(os.environ.get("XIANYU_MIN_DELAY", "30")),
         max_delay_seconds=float(os.environ.get("XIANYU_MAX_DELAY", "180")),
+        rate_limit_per_minute=int(os.environ.get("XIANYU_RATE_LIMIT_PER_MIN", "1")),
     )
     debounce = DebounceQueue(
         fire_callback=scheduler.on_fire,

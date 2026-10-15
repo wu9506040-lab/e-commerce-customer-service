@@ -28,6 +28,8 @@ from app.services.context.order_context_resolver import (
     OrderResolverAction,
     get_order_context_resolver,
 )
+from app.core.runtime_log import log_event  # V16.5 全链路日志
+
 from app.services.escalation_service import (
     EscalationReason,
     get_escalation_service,
@@ -104,7 +106,12 @@ def handle_refund_v2(
     context_block: str = "",
     secondary_intent_block: str = "",  # V12：多意图 secondary 提示
 ) -> Generator[Tuple[str, Any], None, None]:
-    """refund_query V2.x：调 RefundService（复合 tool + policy）
+    """refund_query V2.x：调 RefundService（复合 tool + policy）"""
+    # V16.5 全链路日志：HANDLE_REFUND 入口
+    log_event("HANDLE_REFUND", "INFO", str(user_id), str(user_id),
+              f"V2 ENTER query={query[:80]} order_no={order_no} anonymous={user_id==ANONYMOUS_USER_ID}",
+              version="v2", query=query[:200], order_no=order_no,
+              anonymous=user_id == ANONYMOUS_USER_ID)
 
     V3 起作为 fallback：USE_LANGGRAPH_REFUND=false 时使用，或 LangGraph 版异常时回退。
 
@@ -181,8 +188,17 @@ def handle_refund_v2(
             return
 
     result = RefundService.check_refundable_with_policy(user_id, effective_order_no, query)
+    # V16.5 全链路日志：refund 工具调用结果
+    log_event("REFUND_TOOL", "INFO", str(user_id), str(user_id),
+              f"V2 tool_result refundable={result.get('tool_result',{}).get('refundable')}",
+              refundable=result.get('tool_result',{}).get('refundable'),
+              order_no=effective_order_no)
     tool_block = prompt_assembler._format_tool_result("refund_query", result)
     policy_docs = result.get("policy_docs", [])
+    # V16.5 全链路日志：refund 政策检索
+    log_event("RAG_RETRIEVE", "INFO", str(user_id), str(user_id),
+              f"refund policy hits={len(policy_docs)}",
+              hits=len(policy_docs), query=query[:200])
     policy_block = prompt_assembler._format_policy_docs(policy_docs)
 
     # P0-H：把退款判断 + 政策命中一并暴露给 meta
@@ -208,6 +224,17 @@ def handle_refund_v2(
         context_block=context_block,
         secondary_intent_block=secondary_intent_block,  # V12
     )
+    # V16.5 全链路日志：refund_query LLM_PROMPT (v2)
+    try:
+        from app.services.chat.prompt_assembler import SYSTEM_PROMPT_BASE
+        _full_system = (SYSTEM_PROMPT_BASE + context_block) if context_block else SYSTEM_PROMPT_BASE
+        log_event("LLM_PROMPT", "INFO", str(user_id), str(user_id),
+                  f"refund v2 system_len={len(_full_system)} user_len={len(query)}",
+                  system_prompt=_full_system[:3000] + ("...(截断)" if len(_full_system) > 3000 else ""),
+                  user_message=query, version="v2",
+                  chars_system=len(_full_system))
+    except Exception:
+        pass
     yield from stream_dispatcher.stream_llm(prompt, context_block=context_block)
 
 
@@ -218,7 +245,12 @@ def handle_refund_v3(
     history: Optional[list[dict]] = None,
     secondary_intent_block: str = "",  # V12：V3 路径暂不注入（RefundFlow 改造留 V13）
 ) -> Generator[Tuple[str, Any], None, None]:
-    """refund_query V3：委托 RefundFlow.run()（M14 V3 重构）。
+    """refund_query V3：委托 RefundFlow.run()（M14 V3 重构）。"""
+    # V16.5 全链路日志：HANDLE_REFUND 入口 (V3 委托给 RefundFlow)
+    log_event("HANDLE_REFUND", "INFO", str(user_id), str(user_id),
+              f"V3 ENTER query={query[:80]} order_no={order_no}",
+              version="v3", query=query[:200], order_no=order_no,
+              anonymous=user_id == ANONYMOUS_USER_ID)
 
     M14 V3（2026-07-19）历史：
     - 原 V3 实现：直接调 refund_graph_app.stream()，yield judge / fetch_policy / synthesize
