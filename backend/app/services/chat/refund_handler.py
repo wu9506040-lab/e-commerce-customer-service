@@ -106,12 +106,7 @@ def handle_refund_v2(
     context_block: str = "",
     secondary_intent_block: str = "",  # V12：多意图 secondary 提示
 ) -> Generator[Tuple[str, Any], None, None]:
-    """refund_query V2.x：调 RefundService（复合 tool + policy）"""
-    # V16.5 全链路日志：HANDLE_REFUND 入口
-    log_event("HANDLE_REFUND", "INFO", str(user_id), str(user_id),
-              f"V2 ENTER query={query[:80]} order_no={order_no} anonymous={user_id==ANONYMOUS_USER_ID}",
-              version="v2", query=query[:200], order_no=order_no,
-              anonymous=user_id == ANONYMOUS_USER_ID)
+    """refund_query V2.x：调 RefundService（复合 tool + policy）
 
     V3 起作为 fallback：USE_LANGGRAPH_REFUND=false 时使用，或 LangGraph 版异常时回退。
 
@@ -120,6 +115,12 @@ def handle_refund_v2(
         删除本函数 + 关闭 USE_LANGGRAPH_REFUND 开关 + 删除对应测试。
         截止 2026-06-28：chat_e2e #5/#6 已用 V3 路径通过。
     """
+    # V16.5 全链路日志：HANDLE_REFUND 入口
+    log_event("HANDLE_REFUND", "INFO", str(user_id), str(user_id),
+              f"V2 ENTER query={query[:80]} order_no={order_no} anonymous={user_id==ANONYMOUS_USER_ID}",
+              version="v2", query=query[:200], order_no=order_no,
+              anonymous=user_id == ANONYMOUS_USER_ID)
+
     entities = intent_result["entities"]
     # M9.5：优先用 context 传来的 order_no（用户从订单卡片跳转退款）
     effective_order_no = order_no or entities.get("order_no")
@@ -245,12 +246,7 @@ def handle_refund_v3(
     history: Optional[list[dict]] = None,
     secondary_intent_block: str = "",  # V12：V3 路径暂不注入（RefundFlow 改造留 V13）
 ) -> Generator[Tuple[str, Any], None, None]:
-    """refund_query V3：委托 RefundFlow.run()（M14 V3 重构）。"""
-    # V16.5 全链路日志：HANDLE_REFUND 入口 (V3 委托给 RefundFlow)
-    log_event("HANDLE_REFUND", "INFO", str(user_id), str(user_id),
-              f"V3 ENTER query={query[:80]} order_no={order_no}",
-              version="v3", query=query[:200], order_no=order_no,
-              anonymous=user_id == ANONYMOUS_USER_ID)
+    """refund_query V3：委托 RefundFlow.run()（M14 V3 重构）。
 
     M14 V3（2026-07-19）历史：
     - 原 V3 实现：直接调 refund_graph_app.stream()，yield judge / fetch_policy / synthesize
@@ -264,6 +260,12 @@ def handle_refund_v3(
     - escalate Node → yield meta.handoff + 转人工 token
     - done 事件由 RefundFlow 自动 yield
     """
+    # V16.5 全链路日志：HANDLE_REFUND 入口 (V3 委托给 RefundFlow)
+    log_event("HANDLE_REFUND", "INFO", str(user_id), str(user_id),
+              f"V3 ENTER query={query[:80]} order_no={order_no}",
+              version="v3", query=query[:200], order_no=order_no,
+              anonymous=user_id == ANONYMOUS_USER_ID)
+
     # lazy import 避免 refund_flow ↔ refund_handler 循环导入
     # （refund_flow 顶层 import handle_refund_v2 作 V2 fallback 保险丝）
     from app.services.business_flow.refund_flow import RefundFlow
