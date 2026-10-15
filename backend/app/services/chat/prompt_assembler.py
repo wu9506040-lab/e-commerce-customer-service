@@ -129,9 +129,9 @@ def _build_chat_prompt(
        - 让 LLM 知道用户可能还想问 X 类问题，避免 LLM 单方面回答 primary
     """
     sections = []
-    if context_block:
-        # M9.5：context（用户当前在看的商品/订单）放在最前面，LLM 第一时间知道是哪款/哪个订单
-        sections.append(f"【当前场景】(M9.5 用户跳转 context)\n{context_block}")
+    # V16.3.4：context_block 已由 stream_dispatcher.stream_llm 拼到 system message 头部
+    # （架构修法——见 stream_dispatcher._build_system_content），不在 user 段重复。
+    # 参数保留向后兼容：前端/老 caller 仍可传 context_block，但实际生效路径已迁。
     if secondary_intent_block:
         # V12：多意图 secondary 提示（V13 扩 chitchat/complaint 时同步扩展）
         sections.append(f"【用户可能的次要问题】(V12 多意图识别)\n{secondary_intent_block}")
