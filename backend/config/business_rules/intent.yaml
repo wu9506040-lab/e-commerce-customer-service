@@ -92,6 +92,18 @@ INTENT_RULES:
     - '单号'
   # product_query：商品参数/价格/库存/SKU
   product_query:
+    # V16.4 闲聊兜底：短 query（"在吗/你好"）→ 强制走 product_query
+    # 避免 LLM classifier 把"在吗"误判成 order_query 触发 ASK_LOGIN 守卫
+    - '^在吗[？?]?$'
+    - '^在不在[？?]?$'
+    - '^你好'
+    - '^您好'
+    - '^hi[!?。]?$'
+    - '^hello[!?。]?$'
+    - '你好.*想'
+    - '您好.*问'
+    - '请教'
+    - '麻烦.*咨询'
     - '多少钱'
     - '价格'
     - '参数'
