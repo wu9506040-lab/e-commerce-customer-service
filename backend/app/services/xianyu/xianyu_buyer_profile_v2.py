@@ -32,16 +32,32 @@ class XianyuBuyerProfileV2:
 
     def get_or_create(self, unb: str, nick: str = "") -> XianyuBuyerProfile:
         """查买家画像（7 天 TTL）；不存在则建"""
+        # V16.5 全链路日志：L7 cache hit/miss
+        try:
+            from app.core.runtime_log import log_event
+        except Exception:
+            log_event = None  # type: ignore
+
         p = self._db.query(XianyuBuyerProfile).filter_by(unb=unb).first()
         if p:
             # 7 天内 → 用缓存
             if p.updated_at and (datetime.datetime.now() - p.updated_at).days < CACHE_TTL_DAYS:
+                days_since_update = (datetime.datetime.now() - p.updated_at).days
+                if log_event:
+                    log_event("BUYER_PROFILE_CACHE", "INFO", "-", unb,
+                              f"cache hit ttl_days={CACHE_TTL_DAYS}",
+                              result="hit", ttl_days=CACHE_TTL_DAYS,
+                              days_since_update=days_since_update)
                 return p
             # 超 7 天 → 更新
             p.nick = nick or p.nick
             p.last_message_at = datetime.datetime.now()
             p.updated_at = datetime.datetime.now()
             self._db.commit()
+            if log_event:
+                log_event("BUYER_PROFILE_CACHE", "INFO", "-", unb,
+                          "cache expired, refreshed",
+                          result="expired", ttl_days=CACHE_TTL_DAYS)
             return p
         # 新建
         p = XianyuBuyerProfile(
@@ -51,6 +67,10 @@ class XianyuBuyerProfileV2:
         )
         self._db.add(p)
         self._db.commit()
+        if log_event:
+            log_event("BUYER_PROFILE_CACHE", "INFO", "-", unb,
+                      "new buyer profile created",
+                      result="created", ttl_days=CACHE_TTL_DAYS)
         return p
 
     def mark_returning(self, unb: str) -> None:
@@ -65,6 +85,23 @@ class XianyuBuyerProfileV2:
         """记录最近咨询主题（议价/物流/退款/材质 等）"""
         p = self.get_or_create(unb)
         p.last_query_topic = topic[:64]
+        p.updated_at = datetime.datetime.now()
+        self._db.commit()
+
+    def set_customer_type(
+        self,
+        unb: str,
+        customer_type: str,  # engineer | buyer | boss | student | other
+        project_category: str = "",  # 注塑模具/汽车零件/3C 消费/医疗/其他
+        communication_pref: str = "",  # tech_first | price_first | delivery_first | balanced
+    ) -> None:
+        """V16.3.3 标客户类型（工程师/采购员/老板 等）"""
+        p = self.get_or_create(unb)
+        p.customer_type = customer_type[:32]
+        if project_category:
+            p.project_category = project_category[:64]
+        if communication_pref:
+            p.communication_pref = communication_pref[:32]
         p.updated_at = datetime.datetime.now()
         self._db.commit()
 
@@ -124,6 +161,9 @@ class XianyuBuyerProfileV2:
         return {
             "nick": p.nick or "",
             "is_returning": p.is_returning_buyer,
+            "customer_type": p.customer_type or "",  # V16.3.3 B2B
+            "project_category": p.project_category or "",
+            "communication_pref": p.communication_pref or "",
             "last_topic": p.last_query_topic or "",
             "summary": summary,
             "recent": [

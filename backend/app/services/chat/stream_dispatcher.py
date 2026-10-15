@@ -97,6 +97,19 @@ def stream_llm(
     # M8：粗估 token 数（中文 ~1 char ≈ 1.5 token；这里简化为 char 数）
     metrics.record_answer_tokens(len(full_answer))
     metrics.record_llm_stream(truncated=truncated)
+    # V16.5 全链路日志：LLM_RESPONSE（不动业务：仅在 done yield 前打 1 行）
+    try:
+        from app.core.runtime_log import log_event as _relog
+        _relog(
+            "LLM_RESPONSE", "INFO", "-", "-",
+            f"stream done answer_len={len(full_answer)} truncated={truncated}",
+            answer_len=len(full_answer),
+            truncated=truncated,
+            model="qwen-max",
+            final_answer=full_answer[:500],
+        )
+    except Exception:
+        pass
     yield ("done", {"answer": full_answer, "truncated": truncated})
 
 
