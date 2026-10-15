@@ -13,7 +13,7 @@ Stream Dispatcher（Sprint 3 拆分自 synthesizer.py）
 import logging
 import re
 import threading
-from typing import Any, Generator
+from typing import Any, Generator, Optional
 
 from app.core import deadline as _deadline
 from app.core.config import settings
@@ -33,14 +33,42 @@ logger = logging.getLogger(__name__)
 _LLM_SEMAPHORE = threading.Semaphore(settings.LLM_SEMAPHORE_SIZE)
 
 
-def stream_llm(user_prompt: str) -> Generator[tuple[str, Any], None, None]:
+def _build_system_content(context_block: Optional[str]) -> str:
+    """组装 system message content — V16.3.4 把渠道上下文 promote 到 system。
+
+    当 caller 传 context_block（闲鱼/微信/抖音 等渠道 daemon 拼的 买家画像+商品话术），
+    把它作为"系统级结构化事实"拼到 SYSTEM_PROMPT_BASE 之后，让 LLM 真把它当参考
+    资料，避免被原 SYSTEM 措辞"严禁编造参考资料以外"压垮。
+
+    不传则等同于原 SYSTEM_PROMPT_BASE（向后兼容——前端/老 daemon 无影响）。
+    """
+    if not context_block:
+        return SYSTEM_PROMPT_BASE
+    return (
+        f"{SYSTEM_PROMPT_BASE}\n\n"
+        f"【结构化事实-渠道上下文（最高优先级）】\n"
+        f"{context_block}"
+    )
+
+
+def stream_llm(
+    user_prompt: str,
+    context_block: Optional[str] = None,
+) -> Generator[tuple[str, Any], None, None]:
     """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10 + 3.3 预算）
 
     P1：max_tokens=256 压输出长度，与 SYSTEM_PROMPT_BASE "200 字以内" 硬约束对齐
     （512 token ≈ 1500 中文字符，会让 LLM 写长文超出 prompt 字数限制）
+
+    V16.3.4：增 context_block 参数（daemon/caller 渠道上下文）—— **架构修法**：
+    把 context_block 拼到 system message 头部（在 SYSTEM_PROMPT_BASE 之后），让 LLM
+    视为与 SYSTEM_PROMPT_BASE 同级"参考资料"。先前 V16.3.4 改 YAML 措辞验证未
+    生效（context_block 在 user message 的【当前场景】段被 LLM 视为"场景补充"
+    而非"事实"——被 SYSTEM 原"严禁编造参考资料外"规则压垮），故改此处从 stream
+    层 promote。
     """
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT_BASE},
+        {"role": "system", "content": _build_system_content(context_block)},
         {"role": "user", "content": user_prompt},
     ]
     full_answer = ""
