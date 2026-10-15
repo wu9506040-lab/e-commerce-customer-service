@@ -163,6 +163,13 @@ async def chat(
     ip = _client_ip(request)
     ua = _user_agent(request)
 
+    # V16.3.3: 闲鱼渠道——仍走原 RAG 路径，但**前置注入** BuyerProfile + ItemPrompt 到 system_prompt
+    if getattr(payload, "channel", None) == "xianyu" and payload.buyer_unb:
+        _xianyu_inject_context(payload)  # 把 BuyerProfile + ItemPrompt 注入 payload.context_block
+    elif getattr(payload, "channel", None) == "xianyu" and not payload.buyer_unb:
+        # 兜底：channel=xianyu 但缺 buyer_unb（daemon 没填）→ 走通用 RAG
+        pass
+
     # M8：把 session_id / user_id 写入 ContextVar（日志自动带）
     set_session_id(session_id)
     set_user_id(user_id if user else None)
@@ -221,8 +228,10 @@ async def chat(
         )
 
         # M11：InputGuard 3 层防御（在最早期拦住垃圾/闲聊/重复，省 LLM token）
-        guard_result = input_guard.check(payload.query, user_id)
-        if not guard_result.allowed:
+        # V16.3.3 修正：channel=xianyu 时 bypass guard（已注入 BuyerProfile + ItemPrompt，guard 误判率高）
+        is_xianyu = getattr(payload, "channel", None) == "xianyu"
+        guard_result = input_guard.check(payload.query, user_id) if not is_xianyu else None
+        if guard_result is not None and not guard_result.allowed:
             # 黑名单静默不响应；其他走固定话术
             yield _sse_format({
                 "type": "meta",
@@ -483,6 +492,10 @@ async def chat(
             pre_intent=pre_intent,
             # V15：会话入口预加载的用户上下文（最近 5 单 + 画像）
             user_context_block=user_context_block,
+            # V16.3.3：透传 daemon/caller 已拼好的渠道 context（BuyerProfile + ItemPrompt）
+            # 优先级最高——orchestrator 内部不再二次拼装。caller 没传则为空串，
+            # orchestrator 退化为 M9.5/V15 内部拼装（向后兼容）
+            context_block=getattr(payload, "context_block", None) or "",
         ))
 
         try:
@@ -851,3 +864,226 @@ async def chat_resume(
             "Connection": "keep-alive",
         },
     )
+
+# ============================================================
+# V16.3.2 闲鱼渠道快速分支（不走通用 RAG）
+# ============================================================
+async def _xianyu_channel_chat(
+    payload,
+    session_id: str,
+    user_id: int,
+    user_ctx: str,
+    ip: Optional[str],
+    ua: Optional[str],
+):
+    """闲鱼 IM 渠道：直接调 XianyuRefundHandler / XianyuScenarioRouter
+
+    V16.3.2 设计：
+    - 退款关键词 → XianyuRefundHandler 走 DB 决策（已退 → 拒；未退 → 转人工）
+    - 其他 → 简短回复（不在智能客服通用 RAG 路径上跑，避免"用户未登录"模板）
+    - 返 SSE 格式
+    """
+    from app.services.xianyu.refund_handler import XianyuRefundHandler, RefundDecision
+    from app.services.xianyu.scenario_router import (
+        XianyuScenarioRouter, Scenario, ScenarioResult,
+    )
+    from app.services.xianyu.buyer_profile import BuyerProfile, BuyerProfileData
+
+    query = payload.query or ""
+    buyer_unb = payload.buyer_unb
+
+    async def _event_gen():
+        try:
+            # 1. 退款检测
+            refund_keywords = ["退款", "退钱", "退货", "退一下"]
+            is_refund = any(kw in query for kw in refund_keywords)
+
+            # 2. 调 XianyuRefundHandler
+            db_session_factory = None
+            try:
+                from app.clients.mysql_client import get_db
+                # 简化的 DB session 注入
+                from app.core.config import settings
+                from sqlalchemy import create_engine
+                from sqlalchemy.orm import sessionmaker
+                engine = create_engine(settings.DATABASE_URL)
+                SessionLocal = sessionmaker(bind=engine)
+                db_session = SessionLocal()
+            except Exception as e:
+                logger.warning(f"/chat xianyu 渠道 DB 连接失败: {e}")
+                db_session = None
+
+            if is_refund and db_session is not None:
+                try:
+                    handler = XianyuRefundHandler(
+                        db=db_session, seller_unb=user_ctx or "s1"
+                    )
+                    decision: RefundDecision = handler.handle_refund_request(
+                        unb=buyer_unb, buyer_nick=""
+                    )
+                    answer = decision.reply_text
+                    logger.info(
+                        f"/chat xianyu 退款决策 cid={session_id[:12]} unb={buyer_unb} "
+                        f"should_reject={decision.should_reject} "
+                        f"order_state={decision.order_state}"
+                    )
+                except Exception as e:
+                    logger.warning(f"/chat xianyu RefundHandler 失败: {e}")
+                    answer = _xianyu_fallback_text(query)
+            else:
+                # 3. 非退款 → 调 LLM 简短回复（用 xianyu 场景 prompt）
+                answer = await _xianyu_llm_reply(query, buyer_unb, user_ctx)
+
+            # 4. 返 SSE
+            yield _sse_format({
+                "type": "meta",
+                "intent": "xianyu_channel",
+                "channel": "xianyu",
+            })
+            # 分块 token
+            for i in range(0, len(answer), 10):
+                yield _sse_format({"type": "token", "text": answer[i:i+10]})
+            yield _sse_format({
+                "type": "done",
+                "session_id": session_id,
+                "assistant_message_id": 0,
+            })
+            yield _sse_format({"type": "closed"})
+        except Exception as e:
+            logger.exception(f"/chat xianyu 渠道异常: {e}")
+            yield _sse_format({"type": "error", "message": str(e)[:200]})
+            yield _sse_format({"type": "closed"})
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+async def _xianyu_llm_reply(query: str, buyer_unb: str, user_ctx: str) -> str:
+    """闲鱼渠道非退款场景 → 调 LLM 简短回复"""
+    from app.core.providers.llm import get_llm_provider
+
+    system = (
+        "你是闲鱼卖家'中华模具店'的智能客服。"
+        "回复真实、简洁（≤80 字），不要套话。"
+        "如果买家问商品细节，结合本店商品（45 号钢注塑模具，¥10 起）。"
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": query or "在吗"},
+    ]
+    try:
+        provider = get_llm_provider()
+        result = provider.chat(messages=messages, temperature=0.7)
+        return (result.get("reply") or "您好，我在这儿。有什么可以帮您的？")[:200]
+    except Exception as e:
+        logger.warning(f"/chat xianyu LLM 失败: {e}")
+        return _xianyu_fallback_text(query)
+
+
+def _xianyu_fallback_text(query: str) -> str:
+    """LLM 不可用时的兜底回复"""
+    q = (query or "").strip()
+    if "退款" in q or "退钱" in q:
+        return "已为您转接专员，24 小时内会有工作人员与您联系。"
+    if "在吗" in q or "你好" in q:
+        return "您好，我在这儿。请问有什么可以帮您的？"
+    return "您好，我在这儿。请告诉我您想咨询什么？"
+
+
+# ============================================================
+# V16.3.3 闲鱼渠道：注入 BuyerProfile + ItemPrompt 到 context_block
+# ============================================================
+def _xianyu_inject_context(payload) -> None:
+    """闲鱼渠道前置注入（不绕开原 RAG 路径）
+
+    V16.3.3 收尾（关键变更）：
+    - caller (daemon) 已传 payload.context_block → **不覆盖**直接返回
+      （daemon 拼的是 reply_scheduler 上下文：买家昵称/客户类型/沟通偏好 等；
+       chat 自动拼的是 XianyuItemRepository 商品话术——可能与 daemon 已拼的
+       内容不同时被错误覆盖，bug fix）
+    - 否则（前端 / 老 daemon / 没 caller）→ 兜底查 XianyuBuyerProfileV2 +
+      XianyuItemRepository 拼 prefix
+
+    流程（仅在 caller 未传时执行）：
+    1. 查 XianyuBuyerProfileV2（7 天 TTL 缓存）
+    2. 查 XianyuItemRepository（按 item_id 取商品话术）
+    3. 拼 prefix 注入 payload.context_block
+    """
+    # V16.3.3 守护：caller (daemon) 已传 context_block 时跳过覆盖
+    # chat.py 紧随其后会把 payload.context_block 透传到 Synthesizer.run_stream，
+    # 由 orchestrator 在 system prompt 头部原样使用。
+    existing = getattr(payload, "context_block", None)
+    if existing:
+        logger.info(
+            f"xianyu inject 跳过：caller 已传 context_block "
+            f"（len={len(existing)}，chat 端不再覆盖）"
+        )
+        return
+    try:
+        from app.services.xianyu.xianyu_buyer_profile_v2 import XianyuBuyerProfileV2
+        from app.services.xianyu.xianyu_item_repository import XianyuItemRepository
+        from app.clients.mysql_client import get_db
+        from app.core.config import settings
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(settings.DATABASE_URL)
+        Session = sessionmaker(bind=engine)
+        db = Session()
+        try:
+            profile = XianyuBuyerProfileV2(db=db)
+            item_repo = XianyuItemRepository(db=db)
+
+            # 1. 买家画像摘要
+            profile_ctx = profile.build_context(
+                unb=payload.buyer_unb, cid=payload.session_id or "default",
+                current_query=payload.query or "",
+            )
+            nick = profile_ctx.get("nick", "")
+            cust_type = profile_ctx.get("customer_type", "")
+            proj_cat = profile_ctx.get("project_category", "")
+            comm_pref = profile_ctx.get("communication_pref", "")
+            has_order = profile_ctx.get("has_order", False)
+
+            # 2. 商品话术（按 item_id 路由）
+            item_prompt = ""
+            if payload.order_no:  # 闲鱼里 order_no 字段复用为 item_id
+                item_prompt = item_repo.get_item_prompt(payload.order_no)
+                item_title = item_repo.get_item_title(payload.order_no)
+            else:
+                item_title = ""
+
+            # 3. 拼 prefix 注入 payload.context_block
+            prefix_parts = [
+                "【闲鱼 IM 渠道上下文】",
+                f"买家昵称：{nick}" if nick else "",
+                f"客户类型：{cust_type}" if cust_type else "",
+                f"项目类目：{proj_cat}" if proj_cat else "",
+                f"沟通偏好：{comm_pref}" if comm_pref else "",
+                f"当前商品：{item_title}" if item_title else "",
+                "【商品话术】" if item_prompt else "",
+                item_prompt,
+                f"订单状态：{'有接单记录' if has_order else '未查到接单记录'}",
+                "【回复原则】专业、不议价、不催促；引导买家提供图纸/3D 后报价；接单类问题直接转人工。",
+            ]
+            prefix = "\n".join(p for p in prefix_parts if p)
+
+            # 注入到 payload.context_block 前缀
+            if not hasattr(payload, "context_block") or payload.context_block is None:
+                payload.context_block = ""
+            payload.context_block = (prefix + "\n" + payload.context_block).strip()
+            logger.info(
+                f"xianyu inject: unb={payload.buyer_unb} item={payload.order_no} "
+                f"has_order={has_order} item_prompt_len={len(item_prompt)}"
+            )
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"_xianyu_inject_context 失败: {e}")
