@@ -8011,3 +8011,245 @@ OPTIMIZATION §3.4 圈的"意图黄金集"原说"每类 ≥30 条（规则易错
 - "AI 帮你生成黄金集"不是终点，必须跑脚本产生 F1/P/R 这种硬数字；否则弹药卡里只能写"设计原则"
 - mock LLM 路径要逐层 trace：`get_llm_provider` vs `_llm_classify` vs `_llm_classify_multi` 是三条路径，每条都要打补丁——单层 mock 必漏
 - E6' adversarial 是面试真问的："你们的边界场景覆盖了吗"——32 条对抗集就是答案（矛盾陈述 8 / 政策外 8 / 连珠 8 / 情绪化 8）
+
+---
+
+## §74 · 闲鱼 IM 渠道接入（V16 全栈：3 天从 demo 到真实业务闭环）
+
+### 1. What
+把智能客服从"单渠道 demo"升级为"多渠道 24h 业务平台"，首个落地的真实业务渠道是**闲鱼 IM**。完整技术栈：MCP stdio 协议连 goofish-cli（5 工具 → 18 工具） + 24h daemon（5 模块） + 场景化话术（3 模板） + 订单事件落库（5 态状态机） + 智能退款决策（4 类）。**812 passed / 0 failed**，端到端真跑验证（zwyyy ↔ 中华模具店 ORD001 智能拒绝）✅。
+
+### 2. Why
+- 简历需要"真实业务场景"（之前全是 demo 演示）
+- 智能客服的 RAG/LangGraph/716 测试已就绪——缺的是**业务接入层**（薄包装）
+- 闲鱼有 MCP 兼容 CLI（fancyboi999/goofish-cli 307⭐）—— 复用现成 + 不逆向协议
+- 主题不变原则（你拍板）：智能客服核心 0 改动，业务层薄包装即可
+
+### 3. Tech
+- **V16.0**（commit `92e361c`）5 工具：list_conversations / conversation_history / get_item / list_my_items / send_message（5 个 FC 工具复用 ToolSpec + dispatch 模式）
+- **V16.1**（commit `88ca8b7`）daemon 5 模块：XianyuWatcher (subprocess + JSONL + watchdog) + DebounceQueue (30s 静默合并) + BuyerProfile (LRU 缓存) + PhaseDetector (订单+意图两阶段) + ReplyScheduler (随机延迟 + 限流 + 去重)
+- **V16.2**（commit `f17098e`）场景化 6 模块：MessageGuard (敏感词扫描) + EscalationDetector (6 类转人工) + ScenarioRouter (售前/售中/售后/ESCALATE) + 3 个 YAML 话术 + ReplyScheduler 集成
+- **V16.3**（commit `496bdcd`）订单落库 + 智能退款 6 模块：XianyuOrder ORM + Repository (5 态状态机) + TipParser V16.3 (5 态 + 自动落库) + RefundHandler (4 类决策) + ReplyScheduler 集成 + 完整测试
+
+### 4. Flow
+完整端到端链路（已实战验证）：
+```
+[闲鱼 IM] zwyyy 端发消息"申请退款"
+    ↓
+[中华模具店 daemon] XianyuWatcher 收到事件
+    ↓
+[DebounceQueue] 30s 静默合并
+    ↓
+[ReplyScheduler.on_fire]
+    ├─ 0. 落库：parse_and_persist（paid→shipped→signed→refunded）
+    │      ├─ 状态机升级
+    │      └─ refunded 锁定（拒回退） ✅ 已验证
+    ├─ 1. 去重（message_id）
+    ├─ 2. 限流（1/分钟 + 50/日）
+    ├─ 3. 退款意图检测（关键词）
+    │      ↓
+    ├─ 4. XianyuRefundHandler.handle_refund_request
+    │      ├─ 查 DB → get_latest_refunded
+    │      ├─ 已 refunded → ❌ 智能拒绝（不调 LLM）
+    │      ├─ 已 signed/received → 转人工 urgent
+    │      └─ 已 paid/shipped → 转人工 normal
+    ├─ 5. (非退款) BuyerProfile + ScenarioRouter + Prompts
+    ├─ 6. (非退款) EscalationDetector
+    ├─ 7. 调 /chat (SSE)
+    ├─ 8. MessageGuard（防"已退款"误承诺）
+    └─ 9. XianyuMCPClient.send_message
+```
+
+### 5. Problem→Fix（V16 期间踩的真实坑，10 则）
+
+**坑 1：playwright 异步登录 + 跨线程 event loop**
+- 问题：`asyncio.run() cannot be called from a running event loop`（Playwright 想 refresh cookie 但 daemon 已有 running loop）
+- 修：client._call 改 `ThreadPoolExecutor(1)` 隔离 event loop——每个 MCP call 丢到独立线程（不并发，单飞线程防闲鱼风控）
+- 教训：FastAPI 是 async 上下文，agent_runner → dispatch → runner → client._call 这一路是同步路径，必须隔离 loop
+
+**坑 2：Windows Store Python 找不到 goofish-mcp.exe**
+- 问题：`FileNotFoundError: goofish-mcp`（python.exe shim 在 `Microsoft\WindowsApps\`，但 pip 装到 `Packages\...LocalCache\local-packages\Python311\Scripts\`）
+- 修：xianyu_config._default_goofish_cmd() 自动检测 `site.getuserbase() + Python{ver} + Scripts/goofish-mcp.exe`
+- 教训：Windows Store Python 装 pip 包路径不在 sys.executable.parent，需要 site.getuserbase() 拿真实 user site
+
+**坑 3：MCP message_send 缺 toid 必填字段**
+- 问题：`mcp_tool_error: toid Field required`（第一次 send_message 只传 cid + text 缺 toid）
+- 修：client.send_message 签名加 toid 参数 + args 白名单加 toid + tool runner 加 toid 字段 + JSON schema required 加 toid
+- 教训：goofish CLI 命令行参数 ≠ MCP tool 必填字段——必须以 MCP 文档为准（不能猜）
+
+**坑 4：正则 [\d.]* 不匹配空格**
+- 问题：`已退款 50 元` 不被 `r"已退款[\d.]*元"` 匹配（[\d.]* 不跨空格）
+- 修：改 `[\d\s.]*` 允许数字+空格+数字
+- 教训：中文场景正则要预留空格（"已退款 50 元" 中间有空格）
+
+**坑 5：双向 Agent 假设 + 角色判断错**
+- 问题：第一次拿"从小丑到大"会话时，误把它当"自己发给别人的对话"——实际它是**新买家咨询**（unb 4129275618 = 别人）
+- 修：理清——cookie 账号是**卖家**（中华模具店），别人 unb = **买家**
+- 教训：cookie unb ≠ 对方 unb；MCP send_message 的 toid 必须是对方
+
+**坑 6：闲鱼订单数据不开放 + chat 内容有订单信号**
+- 问题：闲鱼不开放 API（淘宝/京东有 webhook，闲鱼没有）；用户最初猜"接 API 拉订单"
+- 修：实际数据在**聊天历史里**——tip.tip 有完整订单事件流（"卖家已发货"/"订单已签收"/"你已确认收货"），textCard.content 含订单号（fleamarket://order_detail?id=...）
+- 教训：用户对业务更熟悉——我之前猜"没数据"是错的，应该**先问用户**不要直接断言
+
+**坑 7：退款话术设计偏差（"AI 帮你写客服话术"）**
+- 问题：第一版退款话术问"商品名称/下单时间/退款原因"——像审讯不像客服
+- 修：真实淘宝/京东客服只问 1 个问题——"退款原因"（质量/尺寸/不想要/收到就坏）；不问商品名/时间（订单里有）
+- 教训：业务设计不能凭空——要先看真实客服话术
+
+**坑 8：场景路由 pattern 边界冲突**
+- 问题：售前/售中/售后 pattern 互踩——"已发货"被售后匹配；"已签收"被售前匹配
+- 修：按优先级排序（退款 > 售中 > 售后 > 售前 default）；keyword 严格化（"质量有问题" vs "质量怎么"）
+- 教训：多分类 pattern 必须有显式优先级 + 单元测试覆盖每条边界
+
+**坑 9：cookie 频繁过期 + Playwright 自动登录**
+- 问题：闲鱼 cookie 1-2 天失效，watch 跑着跑着就拿不到数据
+- 修：goofish-cli 内置 Playwright 免密登录（`passport '快速进入'`）；MCP 触发时自动 refresh；out.log 记录刷新日志
+- 教训：长期 daemon 必须有 cookie 自动续期机制
+
+**坑 10：SQLAlchemy Session 跨线程 + async**
+- 问题：`SQLite objects created in a thread can only be used in that same thread`（on_fire 起异步线程用了主线程 session）
+- 修：测试用 `scheduler._handle_fire(cid, messages)` 同步调（不开线程）；生产用 `scoped_session` 或每线程独立 session
+- 教训：SQLAlchemy Session 不是线程安全的；async 任务用单独 session 上下文
+
+### 6. 真实业务场景（你拍板的核心原则）
+
+| 原则 | 实现 |
+|------|------|
+| **智能客服只读不写** | 落库只通过 tip 自动写，**不调 refund 工具** |
+| **已退过款的订单再次退款 → 直接拒绝** | XianyuRefundHandler.should_reject=True + 拒绝话术带订单号/时间/官方客服 |
+| **聊天记录生成了订单要进数据库** | parse_and_persist 自动从 tip 落库（5 态状态机）|
+| **退款仍推人工** | 未退款的订单 → 转人工 + 登记工单（urgent/normal）|
+| **不调 LLM 处理退款** | 退款场景直接发话术（避免误承诺）|
+| **主战场售前**（差异化）| presale.yaml 含议价策略表（看人让价+送配件+老客 5% 让）|
+
+### 7. 实战端到端验证（zwyyy ↔ 中华模具店 ORD001）
+
+```
+✅ 订单事件落库：4 条 tip 全部落库（paid→shipped→signed→refunded）
+✅ 状态机锁定：3 次"已退款，拒绝回退"日志（防回退攻击）
+✅ 智能拒绝触发：zwyyy 申请退款 → 立即发拒绝话术
+✅ 不调 LLM：端到端测试无 /chat 调用
+✅ 含订单号："您的订单 ORD001"
+✅ 含官方客服："9510202 / 闲鱼 App 订单页"
+
+真实回复：
+"zwyyy 您的订单 ORD001 已于 2026-10-14 10:07 退款成功，
+ 请查银行流水（1-3 工作日到账）。如未到账请联系闲鱼官方客服 9510202，
+ 或在闲鱼 App 订单页查询详情。"
+```
+
+### 8. Role
+- **V16.0** 5 工具集成（10% 工作量，复用 registry 模式）
+- **V16.1** daemon 5 模块（30% 工作量，5 个独立服务 + 启动脚本）
+- **V16.2** 场景化 6 模块（30% 工作量，业务层薄包装）
+- **V16.3** 订单落库 + 智能退款（30% 工作量，DB 设计 + 状态机 + 真实业务规则）
+- **端到端验证 + 日志 + commit**（剩余 10%，10 个 commit + 真实跑通）
+
+### 9. 教训（5 条核心）
+- **业务规则不能凭空设计**：必须先看真实数据（tbNick_xyfls 真实对话截图）+ 真实客服话术
+- **多分类 pattern 必须有显式优先级**：售前/售中/售后的关键词会互踩，要排优先级 + 单元测试
+- **跨线程资源管理是 daemon 的隐形坑**：SQLAlchemy Session / asyncio.run / cookie 都要在主线程或独立 session
+- **真实数据 > 假设**：闲鱼订单数据"不在 API 里"是错的——其实在 chat 历史里（tip + textCard）
+- **用户拍板的原则要严格遵守**："只读不写" + "不调 LLM 处理退款" + "重复退款直接拒"——这些红线保护了智能客服的可信度
+
+### 10. V16 → V17 路线图
+- ✅ V16.0/1/2/3 全部完成（812 测试 + 端到端验证）
+- ✅ **V16.3.3-5 + V16.3.4 context_block 真进 LLM 闭环（2026-10-15，详见 §75）**
+- 🔄 V16.3.5 全量回归验证（pytest tests/ 排除 pre-exist 7 fail）
+- 🔄 V16.4：PlatformAdapter 抽象（多平台扩展——淘宝/京东/企业微信）
+- 🔄 V17：第二个真实业务渠道（淘宝千牛/京东咚咚）—— 复用 V16 模式
+- 🔄 FastAPI `/admin/xianyu/health` 端点（暴露 health check 给运维）
+- 🔄 飞书/邮件 webhook 告警（health 触发后推送）
+
+## §75 · V16 续：context_block 真进 LLM（V16.3.3-5 + V16.3.4，2026-10-15）
+
+### 1. What
+修完"3 夜卡住"的 context_block 注入：daemon 拼好的闲鱼买家画像+商品话术**真进 LLM** 并影响答案。2 个 commit 落地，9 个文件 + ~800 行 + 14 测试新增：
+
+| commit | 范围 | 文件 | 行 |
+|--------|------|------|-----|
+| `66c3328` (V16.3.3-5) | **code 层修复** | schemas/chat.py + orchestrator.py + chat.py + test | +478/-9 |
+| `af3c149` (V16.3.4) | **LLM 真用层修复** | stream_dispatcher.py + orchestrator.py + refund_handler.py + prompt_assembler.py + test | +313/-19 |
+
+### 2. Why
+- 简历/演示价值：闲鱼智能客服必须基于渠道上下文（卖家真实事实）而非通用 KB，否则买家收到「抱歉暂无」无价值回复，无法体现 V16「真实业务场景」设计初衷
+- 不修：买家全问"45 号钢 / 718 / 模具材质"等专属问题都返模板化兜底，演示价值崩塌
+
+### 3. Problem→Fix（3 次尝试避免同思路重试）
+
+**Fix #1（YAML 措辞加强）— 失败**
+- 改 `agent_v1.yaml` SYSTEM 加"渠道【当前场景】段最高优先级"约束
+- 验证：重启 uvicorn + curl → LLM 答一字未变「抱歉知识库暂无」 ❌
+- Revert YAML 回 Sprint 3 严格原版
+- **判断**：措辞加强不足以改 LLM 对段位（user 段 vs system 段）的硬性行为
+
+**Fix #2（架构修：promote-to-system）— code 改对但非 root cause**
+- 改 `stream_dispatcher.stream_llm` 加 `context_block=None` 参数
+- 加 `_build_system_content(ctx)` helper 把 ctx 拼到 `messages[0]`（system）头部
+- 改 5 dispatcher 调用点全传 `context_block=context_block` to `stream_llm`
+- 改 `prompt_assembler._build_chat_prompt` 移除 ctx 在 user 段重复拼装（参数保留向后兼容）
+- TDD: 5/5 tests pass ✅ + grep 验证 source 含 `stream_llm(prompt, context_block=context_block)`
+- 验证：curl → LLM 答仍是「抱歉知识库暂无」 ❌（一字不变）
+- **判断**：TDD green 但 live curl unchanged → bug 在更深层
+
+**Fix #3（真根因：`_handle_product` P0-J hardcode 早返）— ✅ 解决**
+- 真根因定位：`grep "抱歉.*知识库暂无"` → `orchestrator.py:816` 找到硬编码模板
+
+```python
+# orchestrator.py:813-819  P0-J 防幻觉——products 空 + kb_docs 空 → 直接返固定模板
+if not products and not kb_docs:
+    yield from stream_dispatcher.stream_simple(
+        f"抱歉，知识库中暂无「{query}」相关资料，无法回答。"
+        "如需查询具体商品，请提供准确 SKU 或商品名。"
+    )
+    return
+```
+- **核心洞察**：这路径**根本没调 LLM**！products 空 + kb_docs 空 → 直接 yield 固定文本 → LLM 完全没参与 → 永远不可能用 context_block
+- 我之前以为 LLM 看到 system prompt 不接受 context_block，实际是直接 yield 没进 LLM
+- 修法（V16.3.4 配套）：加 `if context_block` 分支 → 调 `stream_llm` 走 LLM 兜底（trust V16.3.4 promote-to-system 的事实）；无 context_block 才保留 P0-J hardcode（前路径行为不变 — 防幻觉保)
+
+```python
+if not products and not kb_docs:
+    if context_block:
+        yield from stream_dispatcher.stream_llm(
+            f"参考资料：（未检索到相关商品/知识库；卖家渠道上下文见 system 段）...",
+            context_block=context_block,
+        )
+    else:
+        yield from stream_dispatcher.stream_simple(f"抱歉，知识库中暂无...")
+    return
+```
+
+- TDD: 1 测试守住（`test_handle_product_with_context_block_calls_stream_llm`）
+- **Live curl 真生效** ✅：POST `/api/chat` channel=xianyu + ctx="45 号钢硬度 HRC58-62 / 718 注塑寿命 50 万模" → LLM 答「45 号钢用于模具基材，硬度 HRC58–...」（不再是「暂无」）
+
+### 4. 教训（下次不再踩）
+
+| # | 教训 | 反模式 | 正解 |
+|---|------|--------|------|
+| 1 | **同一错误 3 次不同根因必须 stop + question architecture** | 我做了 Fix #1 (YAML) → 失败 → Fix #2 (stream_dispatcher) → 失败 → 第 3 次必须 stop，否则同思路会失败第 4 次第 5 次 | 第 3 次 stop + 反问"为什么前 2 次 code 全过 LLM 还是不答" → grep 输出模板字符串 → 立刻定位 P0-J hardcode |
+| 2 | **Test PASS ≠ 修复生效** | TDD 5/5 pass 给 false confidence，因为测的是 signature + 参数 contract，不是 LLM 真实回答 | **evidence-before-completion** 必须有 live curl（不是 unit test 替代） |
+| 3 | **诊断时 grep 输出模板字符串比逐层 trace 高效 10 倍** | 我之前脑子里 trace "context_block 怎么传到 messages" —— 错误焦点 | 改 `grep "抱歉.*知识库"` → 立刻定位 hardcode 行号 |
+| 4 | **业务规则 short-circuit 在算法视角完全看不出** | P0-J 防幻觉是项目历年安全护栏，不是 logic bug；纯算法视角默认"LLM 一定答" | 诊断时区分"逻辑 bug" vs "业务规则 short-circuit" — 后者只看 grep 输出字符串 |
+| 5 | **gradual trust 设计** | 修法抉择："废了 P0-J" (伤老路径) vs "保留 P0-J 但加 trust 路径" (双轨) | **保留 P0-J**，加 `if context_block` 走 LLM 兜底；无 context_block 仍走 hardcode（前端/老 daemon 行为不变） |
+| 6 | **architecture 升级（user→system promote）真生效要靠结构，不是措辞** | 我先改 YAML 措辞以为够用 — 错 | 直接动 `messages` 数组构造：system content 拼 ctx → 拼第一段 → 最稳 |
+
+### 5. Role / 工作量
+- 2 commit（V16.3.3-5 + V16.3.4）→ 9 文件 / +791/-28 / 14 测试 / live curl 验证 / 双 remote push / memory 更新 ≈ 3h
+
+### 6. 验证证据链（4 重）
+1. **TDD fail→fix→green**: V16.3.3-5 5/9 fail 命中 root cause → 改完 9/9 pass；V16.3.4 5/5 pass
+2. **Live curl**: uvicorn `/health 200` + POST `/chat` channel=xianyu + ctx → LLM 真答基于 ctx 的内容
+3. **uvicorn audit log 链路全过**: `xianyu inject 跳过 caller 已传 len=120` → `synth.context context_len=120` → 真调 LLM `total_tokens=338` → `qwen chat done`
+4. **Git 双 remote**: GitHub `66c3328..af3c149 master` + Gitee 同
+
+### 7. Followup（V16.3.x 续）
+- **V16.3.5**：pytest 全量回归验证（1018+9+5=1032 tests — pre-exist 7 fail 与本 commit 无关 stash 验证过）
+- **V16.3.6**：Docker build path 修（`mcp ↔ pydantic` 冲突 → `requirements.txt` 升级/降级），让 `docker compose up -d --build api` 能用
+- **V16.4**：pre-exist test 整改（scheduler_v2 5 + debounce 5 + source_attribution 1 + reply scheduler 1）
+
+### 8. 参考
+- commit: `66c3328` (V16.3.3-5) + `af3c149` (V16.3.4)
+- memory: `~/.claude/projects/C--Users-zw/memory/project_xianyu_v1633_progress.md`
+- 踩坑过程详见 §74 (V16 全栈演进) + 本节"3 次尝试"——下次类似 bug 先 grep 输出模板字符串
