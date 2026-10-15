@@ -1,9 +1,10 @@
 """
-ReplyScheduler — 随机延迟 + Agent 调 + send（V16.1.5）
+ReplyScheduler — V16.3.1 首次 10-15s / 后续 0-3s + Agent 调 + send
 
 职责（核心 24h 客服业务编排）：
 1. 收到 debounce fire (cid, messages) → 异步线程处理
-2. 30s-3min 随机 sleep（人类化，规避风控）
+2. 首次延迟 10-15s（首次可慢点查卖家信息，<30s 总时间）
+   后续延迟 0-3s（已有 BuyerProfile 缓存，<10s 总时间）
 3. 拉 BuyerProfile + PhaseDetector 喂 context 给 LLM
 4. 调智能客服 /api/chat 拿 LLM 回复
 5. 调 XianyuMCPClient.send_message 真发
@@ -15,6 +16,7 @@ ReplyScheduler — 随机延迟 + Agent 调 + send（V16.1.5）
 from __future__ import annotations
 
 import logging
+import os
 import random
 import re
 import threading
@@ -24,11 +26,8 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
+import json as _json  # V16.3 SSE 解析需要
 
-from app.services.xianyu.buyer_profile import BuyerProfile
-from app.services.xianyu.escalation_detector import XianyuEscalationDetector
-from app.services.xianyu.message_guard import XianyuMessageGuard
-from app.services.xianyu.scenario_router import XianyuScenarioRouter
 from app.services.xianyu.xianyu_prompts import XianyuPrompts
 
 logger = logging.getLogger(__name__)
@@ -60,6 +59,14 @@ class ReplyScheduler:
     ):
         self._client = xianyu_client
         self._chat_api_url = chat_api_url
+        # V16.3.1: 首次 vs 后续切换延迟区间
+        # 首次 10-15s（首次可慢点查卖家信息，限 <30s 总）
+        # 后续 0-3s（已有 BuyerProfile 缓存，限 <10s 总）
+        self._first_min_delay = float(os.environ.get("XIANYU_FIRST_MIN_DELAY", "10"))
+        self._first_max_delay = float(os.environ.get("XIANYU_FIRST_MAX_DELAY", "15"))
+        self._next_min_delay = float(os.environ.get("XIANYU_NEXT_MIN_DELAY", "0"))
+        self._next_max_delay = float(os.environ.get("XIANYU_NEXT_MAX_DELAY", "3"))
+        # 保留旧字段（兼容）
         self._min_delay = min_delay_seconds
         self._max_delay = max_delay_seconds
         self._rate_limit = rate_limit_per_minute
@@ -69,23 +76,25 @@ class ReplyScheduler:
         self._db = db_session
         self._seller_unb = seller_unb
 
-        # 限流
-        self._recent_send_ts: deque = deque(maxlen=rate_limit_per_minute)
-        # 日计数（key=日期字符串）
-        self._daily_count: dict[str, int] = {}
-        # 去重
+        # V16.3.1: 跟踪每个 unb 的首次/后续 fire 状态
+        self._unb_first_fire_done: set[str] = set()
+        # V16.3.1: 消息去重（保留旧逻辑）
         self._seen_message_ids: set[str] = set()
+        # 限流（保留）
+        self._recent_send_ts: deque = deque(maxlen=rate_limit_per_minute)
+        self._daily_count: dict[str, int] = {}
         self._lock = threading.Lock()
 
     # =============================================================
     # 公开入口
     # =============================================================
     def on_fire(self, cid: str, messages: list[dict]) -> None:
-        """DebounceQueue 调：30s 静默后触发"""
-        # 异步线程处理（不阻塞 debounce 队列）
-        t = threading.Thread(
-            target=self._handle_fire, args=(cid, messages), daemon=True
-        )
+        """DebounceQueue 调：V16.3.1 首次 5s/后续 3s 静默后触发"""
+        msg_events = [m for m in (messages or []) if m.get("event") == "message"]
+        if not msg_events:
+            logger.info(f"on_fire 0 message 事件 cid={cid}（原 {len(messages or [])} 条）")
+            return
+        t = threading.Thread(target=self._handle_fire, args=(cid, msg_events), daemon=True)
         t.start()
 
     def sent_count(self, day: Optional[str] = None) -> int:
@@ -119,6 +128,24 @@ class ReplyScheduler:
         # 2. 限流
         if not self._check_rate_limit():
             logger.warning(f"ReplyScheduler 触发限流 cid={cid}")
+            # V16.5 全链路日志：L6 限流详情
+            try:
+                from app.core.runtime_log import log_event
+                recent_count = len(self._recent_send_ts)
+                oldest_ts = self._recent_send_ts[0] if self._recent_send_ts else 0
+                oldest_age_sec = (time.time() - oldest_ts) if oldest_ts else 0
+                unb = last_msg.get("send_user_id", "-") if last_msg else "-"
+                if log_event:
+                    log_event("RATE_LIMIT", "WARNING", cid, str(unb),
+                              f"rate limit rejected threshold={self._rate_limit}/min",
+                              reason="per_minute_exceeded",
+                              threshold=self._rate_limit,
+                              recent_count=recent_count,
+                              oldest_send_age_sec=round(oldest_age_sec, 1),
+                              daily_quota=self._daily_quota,
+                              daily_count=self._daily_count.get(datetime.now().strftime("%Y-%m-%d"), 0))
+            except Exception:
+                pass
             return
         # 3. 解析 toid
         toid = last_msg.get("send_user_id", "")
@@ -144,8 +171,6 @@ class ReplyScheduler:
                     f"should_reject={decision.should_reject} "
                     f"order_state={decision.order_state}"
                 )
-                # 已退款：直接发拒绝话术（不调 LLM）
-                # 未退款：直接发转人工话术（不调 LLM）
                 self._send_with_retry(cid=cid, toid=toid, text=decision.reply_text)
                 self._record_sent()
                 self._mark_seen(last_msg)
@@ -153,8 +178,9 @@ class ReplyScheduler:
             except Exception as e:
                 logger.warning(f"ReplyScheduler 退款 handler 失败: {e}")
 
-        # 5. 拉 BuyerProfile
+        # 5. 拉 BuyerProfile（V16.2 注入 LLM）
         try:
+            from app.services.xianyu.buyer_profile import BuyerProfile
             profile = BuyerProfile().get_profile(unb=toid)
             profile_ctx = profile.to_prompt_context()
             nick = profile.nick
@@ -167,6 +193,7 @@ class ReplyScheduler:
 
         # 6. EscalationDetector
         try:
+            from app.services.xianyu.escalation_detector import XianyuEscalationDetector
             escalation = XianyuEscalationDetector()
             esc_result = escalation.should_escalate(unb=toid, message=last_text)
             escalation.record_message(unb=toid)
@@ -182,6 +209,7 @@ class ReplyScheduler:
         else:
             # 7. ScenarioRouter
             try:
+                from app.services.xianyu.scenario_router import XianyuScenarioRouter
                 router = XianyuScenarioRouter()
                 scenario_result = router.route(
                     unb=toid, message=last_text, is_returning_buyer=is_returning
@@ -211,17 +239,31 @@ class ReplyScheduler:
                 logger.warning(f"ReplyScheduler XianyuPrompts 失败: {e}")
                 system_prompt = f"你是智能客服 Agent\n{profile_ctx}"
 
-            # 9. 随机延迟
+            # 9. 随机延迟（V16.3.1：首次 10-15s / 后续 0-3s）
             delay = self._compute_delay()
             logger.info(
                 f"ReplyScheduler cid={cid} 场景={scenario_result.scenario.value} "
                 f"延迟 {delay:.1f}s 后回复"
             )
             time.sleep(delay)
+            # 标记首次 fire 完成（让下次走快路径）
+            with self._lock:
+                self._unb_first_fire_done.add(toid)
 
             # 10. 限流后 check
             if not self._check_rate_limit():
                 logger.warning(f"ReplyScheduler 延迟后超额 cid={cid}")
+                # V16.5 全链路日志：L6 延迟后再次超额（更严格）
+                try:
+                    from app.core.runtime_log import log_event
+                    unb = last_msg.get("send_user_id", "-") if last_msg else "-"
+                    log_event("RATE_LIMIT", "ERROR", cid, str(unb),
+                              "rate limit still exceeded after delay",
+                              reason="post_delay_still_exceeded",
+                              threshold=self._rate_limit,
+                              recent_count=len(self._recent_send_ts))
+                except Exception:
+                    pass
                 return
 
             # 11. /chat
@@ -236,6 +278,7 @@ class ReplyScheduler:
 
             # 12. MessageGuard
             try:
+                from app.services.xianyu.message_guard import XianyuMessageGuard
                 guard = XianyuMessageGuard()
                 allowed, text_to_send = guard.check_or_suggest(reply)
                 if not allowed:
@@ -280,21 +323,54 @@ class ReplyScheduler:
         return "\n".join(lines)
 
     def _extract_text(self, event: dict) -> str:
-        """从事件里提 message text（兼容 goofish 多形状）"""
+        """从事件里提 message text（兼容 goofish 多形状）
+
+        实际 goofish message watch stdout 格式（实测）：
+        {
+          "event": "message",
+          "cid": "...",
+          "send_user_id": "...",
+          "send_user_name": "...",
+          "send_message": "在吗"   ← 文本直接在这里
+        }
+
+        也兼容 history 接口格式：
+        {
+          "message": {"text": {"text": "在吗"}}
+        }
+        """
+        # 格式 1: goofish message watch 直接用 send_message 字段
+        send_msg = event.get("send_message")
+        if send_msg and isinstance(send_msg, str) and send_msg.strip():
+            return send_msg
+        # 格式 2: message history 用 message.text.text 嵌套
         msg = event.get("message") or {}
-        if not isinstance(msg, dict):
-            return ""
-        text = msg.get("text") or {}
-        if isinstance(text, dict):
-            return text.get("text", "")
-        return str(text) if text else ""
+        if isinstance(msg, dict):
+            text = msg.get("text") or {}
+            if isinstance(text, dict):
+                return text.get("text", "") or ""
+            if text:
+                return str(text)
+        # 格式 3: 顶层 text 字段
+        text = event.get("text")
+        if text and isinstance(text, str):
+            return text
+        return ""
 
     # =============================================================
     # 内部：随机延迟
     # =============================================================
     def _compute_delay(self) -> float:
-        """区间内均匀随机"""
-        return random.uniform(self._min_delay, self._max_delay)
+        """区间内均匀随机（V16.3.1：首次 10-15s / 后续 0-3s）
+
+        修复：首次走 _first_min/max（默认 10-15s），后续走 _next_min/max（默认 0-3s）
+        """
+        with self._lock:
+            is_first = len(self._unb_first_fire_done) == 0
+        if is_first:
+            return random.uniform(self._first_min_delay, self._first_max_delay)
+        else:
+            return random.uniform(self._next_min_delay, self._next_max_delay)
 
     # =============================================================
     # 内部：限流
@@ -355,7 +431,15 @@ class ReplyScheduler:
     def _call_chat_api(self, unb: str, message: str, context: str) -> str:
         """调 /api/chat SSE 流，提取 answer
 
-        V16.2 升级：context 直接作 system prompt 喂 LLM（含场景 + 买家画像）
+        智能客服 /chat SSE 实际格式（实测 19:36）：
+          id: N
+          data: {"type": "meta", ...}
+          id: N+1
+          data: {"type": "token", "text": "..."}
+          ... (多个 token chunks)
+          id: M
+          data: {"type": "done", "session_id": "...", "assistant_message_id": N}
+          data: {"type": "closed"}
         """
         try:
             payload = {
@@ -364,7 +448,7 @@ class ReplyScheduler:
                 "channel": "xianyu",
                 "buyer_unb": unb,
                 "context_block": context,
-                "system_prompt": context,  # 兼容模式：context 既是 context_block 也是 system
+                "system_prompt": context,
             }
             resp = httpx.post(
                 self._chat_api_url,
@@ -376,32 +460,46 @@ class ReplyScheduler:
                     f"/chat 返 {resp.status_code}: {resp.text[:200]}"
                 )
                 return ""
-            # 解析 SSE（按 'data: {...}\n\n' 分块）
+            # 解析 SSE（多种格式兼容 + 多行 chunk 兼容）
+            # SSE 实际格式（智能客服 /chat 实测）：
+            #   id: 1
+            #   data: {"type": "token", "text": "..."}
+            #
+            #   id: 2
+            #   data: {"type": "token", "text": "..."}
             full_text = ""
             for chunk in resp.text.split("\n\n"):
-                chunk = chunk.strip()
-                if not chunk.startswith("data:"):
+                # chunk 可能是 "id: 1\ndata: {...}"（多行）
+                # 提取 data: 行
+                data_line = None
+                for line in chunk.split("\n"):
+                    line = line.strip()
+                    if line.startswith("data:"):
+                        data_line = line[5:].strip()
+                        break
+                if data_line is None:
                     continue
-                payload_str = chunk[5:].strip()
-                if payload_str == "[DONE]":
-                    break
+                payload_str = data_line
+                if not payload_str or payload_str == "[DONE]":
+                    continue
                 try:
-                    import json
-                    obj = json.loads(payload_str)
-                    # 智能客服 SSE 事件类型兼容：
-                    # - 标准 V1: {event: "token", text: "..."} / {event: "done", answer: "..."}
-                    # - 简化 V0: 直接 {answer: "..."}（一块到位）
-                    if obj.get("event") == "token" or obj.get("type") == "token":
-                        full_text += obj.get("text", "") or obj.get("data", "")
-                    elif obj.get("event") == "done" or obj.get("type") == "done":
-                        ans = obj.get("answer", "") or obj.get("data", {}).get("answer", "")
-                        if ans:
-                            full_text = ans
-                    elif "answer" in obj and obj["answer"]:
-                        # 简化格式：直接包含 answer 字段
-                        full_text = obj["answer"]
-                except (json.JSONDecodeError, KeyError, TypeError):
+                    obj = _json.loads(payload_str)
+                except (_json.JSONDecodeError, ValueError):
                     continue
+                # 格式 1: {"type": "token", "text": "..."} (实际格式)
+                if obj.get("type") == "token" or obj.get("event") == "token":
+                    full_text += obj.get("text", "") or obj.get("data", "")
+                # 格式 2: {"type": "done", ...} 智能客服 done 事件
+                elif obj.get("type") == "done" or obj.get("event") == "done":
+                    ans = (
+                        obj.get("answer", "")
+                        or obj.get("data", {}).get("answer", "")
+                    )
+                    if ans and not full_text:
+                        full_text = ans
+                # 格式 3: 直接 {answer: "..."}（旧版）
+                elif "answer" in obj and obj["answer"]:
+                    full_text = obj["answer"]
             return full_text.strip()
         except Exception as e:
             logger.warning(

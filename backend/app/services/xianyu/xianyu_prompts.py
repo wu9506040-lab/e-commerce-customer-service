@@ -117,10 +117,20 @@ class XianyuPrompts:
     # =============================================================
     def _load_all(self) -> None:
         """启动时加载所有场景"""
+        # V16.5 全链路日志：L8 启动期加载状态
+        try:
+            from app.core.runtime_log import log_event
+        except Exception:
+            log_event = None  # type: ignore
+
         for scenario in ("presale", "in_sale", "after_sale"):
             path = self._dir / f"{scenario}.yaml"
             if not path.exists():
                 logger.warning(f"闲鱼话术模板缺失：{path}")
+                if log_event:
+                    log_event("YAML_LOAD", "WARNING", "-", "-",
+                              f"template missing scenario={scenario} path={path}",
+                              status="missing")
                 continue
             try:
                 data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -131,8 +141,21 @@ class XianyuPrompts:
                     examples=examples,
                 )
                 self._cache[scenario] = template
+                logger.info(
+                    f"闲鱼话术模板加载成功：{scenario} ({len(examples)} examples)"
+                )
+                if log_event:
+                    log_event("YAML_LOAD", "INFO", "-", "-",
+                              f"template loaded scenario={scenario}",
+                              status="loaded", examples=len(examples),
+                              path=str(path))
             except Exception as e:
                 logger.error(f"加载闲鱼话术失败 {scenario}: {e}")
+                if log_event:
+                    log_event("YAML_LOAD", "ERROR", "-", "-",
+                              f"template failed scenario={scenario}",
+                              status="failed", error=str(e)[:200],
+                              path=str(path))
 
 
 __all__ = ["XianyuPrompts", "XianyuPromptTemplate"]
