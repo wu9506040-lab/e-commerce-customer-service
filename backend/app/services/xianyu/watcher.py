@@ -19,6 +19,7 @@ import logging
 import subprocess
 import sys
 import threading
+import time
 from typing import Callable, Optional
 
 from app.integrations.xianyu_config import GOOFISH_MCP_CMD
@@ -30,6 +31,12 @@ logger = logging.getLogger(__name__)
 MAX_RESTART_COUNT = 5
 # watchdog 心跳间隔（秒）
 WATCHDOG_INTERVAL = 5.0
+# V16.5: Stale event watchdog — 检测 goofish 长连接"假死"（subprocess 进程在但 stdin 静默）
+# 23:15 场景:daemon 显示 WATCHER alive + 23:15:20 new_msg + 23:15:23 read 后 stdin 静默 4 分钟
+# 实际长连接已断,傻瓜 watch 子进程不死,daemon 收不到消息
+# 现在: 60s 无 message 事件 → ERROR 日志 + kill subprocess + 重启
+STALE_EVENT_THRESHOLD_SEC = 60.0
+STALE_WATCHDOG_INTERVAL_SEC = 30.0
 
 
 class WatcherAuthError(RuntimeError):
@@ -95,6 +102,9 @@ class XianyuWatcher:
         self._proc: Optional[subprocess.Popen] = None
         self._reader_thread: Optional[threading.Thread] = None
         self._watchdog_thread: Optional[threading.Thread] = None
+        # V16.5: Stale event 检测 — 上次收到 message 事件的时间
+        self._last_message_event_at: float = 0.0
+        self._stale_watchdog_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._restart_count = 0
         self._lock = threading.Lock()
@@ -140,6 +150,8 @@ class XianyuWatcher:
                 daemon=True,
             )
             self._watchdog_thread.start()
+            # V16.5: Stale event watchdog(独立线程,检测 stdin 静默)
+            self._start_stale_watchdog()
             logger.info(
                 f"XianyuWatcher started: unb={status.get('unb')} "
                 f"tracknick={status.get('tracknick')}"
@@ -186,6 +198,8 @@ class XianyuWatcher:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,  # 行缓冲
+            encoding="utf-8",  # V16.3.1 修：避免 gbk 解码崩溃
+            errors="replace",  # 不可解码字节用 ? 代替
         )
 
     def _reader_loop(self) -> None:
@@ -221,9 +235,14 @@ class XianyuWatcher:
         except json.JSONDecodeError:
             logger.debug(f"XianyuWatcher 跳过坏 JSON: {line[:80]!r}")
             return
+        # DEBUG: 看真实事件格式
+        logger.info(f"XianyuWatcher DEBUG event: {line[:300]}")
         if not isinstance(event, dict):
             return
         event_type = event.get("event", "")
+        # V16.5: Stale watchdog 心跳 — 任何 message 事件都更新"最后收到"时间戳
+        if event_type == "message":
+            self._last_message_event_at = time.time()
         if event_type != "message":
             # 兼容：有些事件可能没 event 字段但有 message 字段
             if "message" not in event and "cid" not in event:
@@ -235,6 +254,88 @@ class XianyuWatcher:
             logger.exception(
                 f"XianyuWatcher callback 异常: {type(e).__name__}: {e}"
             )
+
+    def _start_stale_watchdog(self) -> None:
+        """V16.5: 启动 stale event 检测线程（独立的后台 daemon thread）
+
+        检测场景：subprocess 进程在但 stdin 静默（WebSocket 长连接死了，
+        但 goofish watch 子进程没退出 → 现有 _watchdog_tick 不杀）
+        """
+        if self._stale_watchdog_thread is not None:
+            return  # 幂等
+        self._stale_watchdog_thread = threading.Thread(
+            target=self._stale_watchdog_loop,
+            name="xianyu-watcher-stale-watchdog",
+            daemon=True,
+        )
+        self._stale_watchdog_thread.start()
+        logger.info(
+            f"XianyuWatcher stale watchdog 已启动: "
+            f"threshold={STALE_EVENT_THRESHOLD_SEC}s "
+            f"check_interval={STALE_WATCHDOG_INTERVAL_SEC}s"
+        )
+
+    def _stale_watchdog_loop(self) -> None:
+        """每 30s 检查一次: 最后一次收到 message 事件距现在是否 > 60s
+
+        → 是: kill subprocess + 调 _spawn_subprocess() 重启
+        """
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(timeout=STALE_WATCHDOG_INTERVAL_SEC):
+                break  # stop
+            self._stale_watchdog_tick()
+            # 也开 LOG 标记 watchdog 还在跑(简单健康检查)
+            # 不发到 runtime_log(避免噪音), 仅 stderr
+            logger.debug(
+                f"XianyuWatcher stale watchdog tick: "
+                f"last_msg_age="
+                f"{(time.time() - self._last_message_event_at) if self._last_message_event_at else 'never':.1f}s"
+            )
+
+    def _stale_watchdog_tick(self) -> None:
+        """单次 stale 检查 + 必要时重启 subprocess"""
+        if self._stop_event.is_set() or self._proc is None:
+            return
+        # 还没收到过任何 message → 不判 stale（避免启动时误判）
+        if self._last_message_event_at <= 0:
+            return
+        # 检测 subprocess 是否还活(可能在死状态)
+        if self._proc.poll() is not None:
+            # subprocess 已死,交由 _watchdog_tick 处理
+            return
+        idle_sec = time.time() - self._last_message_event_at
+        if idle_sec <= STALE_EVENT_THRESHOLD_SEC:
+            return
+        # Stale detected — 尝试重启
+        self._restart_count += 1
+        if self._restart_count > self._max_restart:
+            logger.error(
+                f"XianyuWatcher stale 检测到 {idle_sec:.0f}s 无 message 事件,但已超 "
+                f"{self._max_restart} 次重启上限,永久停 (需人工介入)"
+            )
+            self._stop_event.set()
+            return
+        logger.error(
+            f"XianyuWatcher STALE DETECTED: cid=... idle={idle_sec:.0f}s "
+            f"(>{STALE_EVENT_THRESHOLD_SEC}s),重启 subprocess "
+            f"({self._restart_count}/{self._max_restart})"
+        )
+        # kill 当前 subprocess + 重启
+        try:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+                try:
+                    self._proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
+        except Exception as e:
+            logger.warning(f"XianyuWatcher kill subprocess 失败: {e}")
+        # 重启
+        try:
+            self._spawn_subprocess()
+            logger.info(f"XianyuWatcher stale 重启完成 new_pid={self._proc.pid if self._proc else None}")
+        except Exception as e:
+            logger.exception(f"XianyuWatcher stale 重启 subprocess 失败: {type(e).__name__}: {e}")
 
     def _watchdog_loop(self) -> None:
         """watchdog：每 5s 检查 subprocess 状态，死了就重启"""
