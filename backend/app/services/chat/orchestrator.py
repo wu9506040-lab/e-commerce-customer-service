@@ -44,6 +44,7 @@ from app.core.circuit_breaker import CircuitOpenError
 from app.services.query_rewriter import rewrite_query  # M12：指代补全
 from app.services.query_rewriter import rewrite_query_multi  # Phase 4 A4：Multi-Query 多路改写
 from app.services.session_service import ANONYMOUS_USER_ID
+from app.services.chat.prompt_assembler import SYSTEM_PROMPT_BASE  # V16.5 日志取完整 system
 from app.tools.product_tool import ProductTool
 
 # P2 长程记忆：用户画像注入（默认 ENABLE_USER_PROFILE=False 灰度）
@@ -927,13 +928,12 @@ class Synthesizer:
         # V16.5 全链路日志：LLM_PROMPT（system prompt 前 3000 字 + user 完整）
         try:
             from app.core.runtime_log import log_event as _relog
-            # context_block 在 V16.3.4 后被 promote-to-system（system 段）
-            system_prompt = context_block[:3000] if context_block else ""
-            if len(context_block) > 3000:
-                system_prompt += "...(截断)"
+            # V16.5 修：取完整 system 长度（SYSTEM_PROMPT_BASE + context_block,不只是 context_block）
+            _full_system = (SYSTEM_PROMPT_BASE + context_block) if context_block else SYSTEM_PROMPT_BASE
+            system_prompt = _full_system[:3000] + ("...(截断)" if len(_full_system) > 3000 else "")
             _relog(
                 "LLM_PROMPT", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
-                f"system_len={len(context_block)} user_len={len(query)}",
+                f"system_len={len(_full_system)} user_len={len(query)}",
                 system_prompt=system_prompt,
                 user_message=query,  # user 不截断
                 chars_system=len(context_block),
