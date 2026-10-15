@@ -1,0 +1,616 @@
+[
+  {
+    "id": 1,
+    "category": "闲聊",
+    "query": "在吗?",
+    "expected": [
+      "在",
+      "客服"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [],
+    "miss_keywords": [
+      "在",
+      "客服"
+    ],
+    "forbidden_hits": [],
+    "answer": "用户尚未登录，无法查询个人订单/退款信息。请礼貌引导用户登录后再来查询。",
+    "contexts": [],
+    "ctx_has_sku011": false,
+    "latency_sec": 1.6,
+    "verdict": "MISS"
+  },
+  {
+    "id": 2,
+    "category": "参数",
+    "query": "这个充电宝多大容量?输出多少瓦?",
+    "expected": [
+      "20000mAh",
+      "65W"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "20000mAh"
+    ],
+    "miss_keywords": [
+      "65W"
+    ],
+    "forbidden_hits": [],
+    "answer": "容量：20000mAh；能量：74Wh（符合民航登机标准）[2]。  \n不标注“输出多少瓦”，因充电宝输出功率取决于所接设备及协议，其支持多档PD快充（如给iPhone约20W，MacBook约45W），但**最大输出功率未在资料中明确给出**[2]。  \n注：自充输入为Type-C 30W [2]。",
+    "contexts": [
+      {
+        "source": "product_sku002_battery",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "product_sku011_battery",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_compare_004",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": true,
+    "latency_sec": 5.9,
+    "verdict": "PARTIAL"
+  },
+  {
+    "id": 3,
+    "category": "参数/三口",
+    "query": "能同时充笔记本和手机吗?",
+    "expected": [
+      "三口",
+      "65W",
+      "18W"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "三口",
+      "65W",
+      "18W"
+    ],
+    "miss_keywords": [],
+    "forbidden_hits": [],
+    "answer": "能，完全支持同时充笔记本和手机。  \n智选 PB1 充电宝配备三口独立输出：Type-C（65W PD）专供笔记本（如MacBook），两个USB-A（各18W）可同时充手机/平板，互不抢电[1]。  \n实测场景包括“出差时笔记本+手机+平板三台同充”[2]，且74Wh符合民航登机标准，无需申报[2]。  \n本单还赠数据线+充电头+包邮[订单]。",
+    "contexts": [
+      {
+        "source": "product_sku011_ports",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "product_sku011_usage",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_top_004",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "product:SKU008",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": true,
+    "latency_sec": 6.0,
+    "verdict": "PASS"
+  },
+  {
+    "id": 4,
+    "category": "政策/民航",
+    "query": "能带上飞机吗?",
+    "expected": [
+      "民航",
+      "100Wh",
+      "74Wh",
+      "登机"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "民航",
+      "100Wh",
+      "74Wh",
+      "登机"
+    ],
+    "miss_keywords": [],
+    "forbidden_hits": [],
+    "answer": "可以带上飞机。该充电宝额定能量为74Wh，低于民航规定的100Wh上限，符合随身携带登机标准[闲鱼渠道特别提醒]。  \n注意：需随身携带，不可托运；且为个人闲置转让，享卖家承诺的1年质保（非厂家）[闲鱼渠道特别提醒]。  \n其他政策类问题（如退款、售后等），请转接专员处理[闲鱼渠道特别提醒]。",
+    "contexts": [
+      {
+        "source": "faq_top_023",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_top_009",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_pickup_001",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": false,
+    "latency_sec": 5.7,
+    "verdict": "PASS"
+  },
+  {
+    "id": 5,
+    "category": "政策/质保",
+    "query": "1 年坏了找谁?",
+    "expected": [
+      "1 年",
+      "卖家",
+      "质保"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "1 年",
+      "卖家",
+      "质保"
+    ],
+    "miss_keywords": [],
+    "forbidden_hits": [],
+    "answer": "1 年内坏了可找智选科技官方售后 [2]。  \n- 笔记本享整机 2 年保修，电池 1 年；充电宝（PB1）属配件类，享 1 年保修（含电池 6 个月）[2]；  \n- 售后方式：就近网点检测（带发票+保修卡）或拨打 400-888-8888 申请寄修（顺丰上门，运费智选承担）[1][4]；  \n- 注意：需保留原包装、未私自拆机，人为损坏（如摔裂、进水）不免费修 [2]。  \n\n您当前咨询的是闲鱼转让的智选 PB1 充电宝，卖家额外承诺 **1 年质保 + 7 天无理由** [闲鱼渠道特别提醒]。",
+    "contexts": [
+      {
+        "source": "faq_sku_003",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_warranty_main",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "product_sku005_usage",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_warranty_main",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_sku_004",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": false,
+    "latency_sec": 7.3,
+    "verdict": "PASS"
+  },
+  {
+    "id": 6,
+    "category": "议价/价格",
+    "query": "¥99999 怎么这么贵啊?",
+    "expected": [
+      "容量",
+      "卖家",
+      "质保",
+      "不议价"
+    ],
+    "must_not_contain": [
+      "便宜不了",
+      "已经是最低价",
+      "亲亲"
+    ],
+    "hit_keywords": [
+      "容量",
+      "卖家",
+      "质保"
+    ],
+    "miss_keywords": [
+      "不议价"
+    ],
+    "forbidden_hits": [],
+    "answer": "面试官小张~这¥99999是中华模具店（主业做模具，副业转闲置）朋友送的近全新智选PB1，**未拆封95新**，图个吉利数留念，闲鱼全网就这一台[1][2]。  \n对比市价：同配置新机1500+，它含20000mAh/74Wh（可登机）、65W三口PD、智能数显屏[1]；还送数据线+充电头+包邮，并承诺**7天无理由+1年卖家质保+容量保80%**[1][2]。  \n价格不议，但诚意拉满——真闲置，非零售，卖一台少一台[2]。",
+    "contexts": [
+      {
+        "source": "product_sku011_pricing",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "product_sku011_seller_story",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_top_019",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": true,
+    "latency_sec": 7.3,
+    "verdict": "PARTIAL"
+  },
+  {
+    "id": 7,
+    "category": "议价/砍价",
+    "query": "8000 行不行?",
+    "expected": [
+      "不让",
+      "价格",
+      "赠品"
+    ],
+    "must_not_contain": [
+      "可以",
+      "好,8000"
+    ],
+    "hit_keywords": [],
+    "miss_keywords": [
+      "不让",
+      "价格",
+      "赠品"
+    ],
+    "forbidden_hits": [],
+    "answer": "不行，¥99999 是不二价[当前商品]。  \n但为表诚意，下单即赠原装数据线+充电头+包邮，且享7天无理由+1年卖家质保[闲鱼渠道特别提醒]。  \n该充电宝符合民航登机标准（74Wh＜100Wh）[闲鱼渠道特别提醒]。  \n如对交易规则有疑，可随时联系专员处理退款或投诉[闲鱼渠道特别提醒]。",
+    "contexts": [
+      {
+        "source": "policy_dispute_external_complaint_main",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_payment_main",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_dispute_external_complaint_main",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": false,
+    "latency_sec": 6.0,
+    "verdict": "MISS"
+  },
+  {
+    "id": 8,
+    "category": "类比",
+    "query": "跟罗马仕比有什么区别?",
+    "expected": [
+      "容量",
+      "三口",
+      "卖家",
+      "质保"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "质保"
+    ],
+    "miss_keywords": [
+      "容量",
+      "三口",
+      "卖家"
+    ],
+    "forbidden_hits": [],
+    "answer": "智选 PB1 相比罗马仕 20000mAh 65W，核心区别在于：**品牌背书更强（华为智选）、售后更可靠（我店承诺1年质保）**；而罗马仕二手价虽低（600–800元），但无官方售后、品控稳定性弱 [1]。  \n本品为朋友所赠近全新闲置，95新未拆封，支持民航登机（74Wh＜100Wh），且包邮+赠数据线+充电头 [2]。  \n价格¥99999为吉利数不议价，但诚意拉满——卖一台少一台 [商品]。",
+    "contexts": [
+      {
+        "source": "product_sku011_compare",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_shipping_main",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_supplement_shipping_fee_main",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": true,
+    "latency_sec": 6.7,
+    "verdict": "PARTIAL"
+  },
+  {
+    "id": 9,
+    "category": "边界/卖家名",
+    "query": "你是「中华模具店」?怎么卖起充电宝来了?",
+    "expected": [
+      "闲置",
+      "模具",
+      "转让",
+      "朋友"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "闲置",
+      "模具",
+      "转让",
+      "朋友"
+    ],
+    "miss_keywords": [],
+    "forbidden_hits": [],
+    "answer": "是的，我是「中华模具店」[1]——主业做模具设计制造，卖充电宝是副业：这台智选PB1是朋友送的近全新闲置，用不上就挂闲鱼转让。  \n不是厂家零售，不赚差价，纯粹个人诚信转让，坚持“瑕疵坦白、售后我担”[1]。  \n附赠数据线+充电头+包邮，还承诺7天无理由+1年卖家质保[2]，诚意拉满～",
+    "contexts": [
+      {
+        "source": "product_sku011_seller_story",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "product_sku011_warranty",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "product_sku011_pricing",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": true,
+    "latency_sec": 5.7,
+    "verdict": "PASS"
+  },
+  {
+    "id": 10,
+    "category": "退款/转人工",
+    "query": "我要退款",
+    "expected": [
+      "转接",
+      "专员",
+      "24",
+      "小时",
+      "客服"
+    ],
+    "must_not_contain": [
+      "好,马上退款",
+      "已退款"
+    ],
+    "hit_keywords": [],
+    "miss_keywords": [
+      "转接",
+      "专员",
+      "24",
+      "小时",
+      "客服"
+    ],
+    "forbidden_hits": [],
+    "answer": "用户尚未登录，无法查询个人订单/退款信息。请礼貌引导用户登录后再来查询。",
+    "contexts": [],
+    "ctx_has_sku011": false,
+    "latency_sec": 0.0,
+    "verdict": "MISS"
+  },
+  {
+    "id": 11,
+    "category": "参数/单位",
+    "query": "20000 毫安时等于多少瓦时?",
+    "expected": [
+      "74Wh"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "74Wh"
+    ],
+    "miss_keywords": [],
+    "forbidden_hits": [],
+    "answer": "20000mAh 等于 **74Wh**（瓦时）。  \n计算依据：能量（Wh）= 容量（mAh）× 电压（V）÷ 1000 = 20000 × 3.7 ÷ 1000 = 74Wh [2]。  \n该值低于民航规定的100Wh上限，可直接携带登机无需申报 [2]。",
+    "contexts": [
+      {
+        "source": "product_sku011_overview",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "product_sku011_battery",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_warranty_02",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": true,
+    "latency_sec": 5.0,
+    "verdict": "PASS"
+  },
+  {
+    "id": 12,
+    "category": "场景/MacBook",
+    "query": "充 MacBook 多久能充满?",
+    "expected": [
+      "65W",
+      "MacBook",
+      "小时"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "65W",
+      "MacBook",
+      "小时"
+    ],
+    "miss_keywords": [],
+    "forbidden_hits": [],
+    "answer": "给 MacBook 13 寸充满约需 **1.5–2 小时**（65W PD 满血快充）[1]。  \n该充电宝支持 65W PD 输出，兼容 MacBook 原厂快充协议，实测效率高、发热低。  \n注意需搭配 PD 协议的 Type-C to C 线（本单已附赠）[1]。  \n如您的机型为 MacBook Air M1/M2 或 Pro 14/16 寸，充电速度会略有差异，可告知具体型号帮您确认。",
+    "contexts": [
+      {
+        "source": "product_sku011_usage",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_top_005",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_warranty_02",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": true,
+    "latency_sec": 5.8,
+    "verdict": "PASS"
+  },
+  {
+    "id": 13,
+    "category": "政策/退换",
+    "query": "7 天无理由具体怎么操作?",
+    "expected": [
+      "7 天",
+      "原样",
+      "包装",
+      "私聊"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "包装"
+    ],
+    "miss_keywords": [
+      "7 天",
+      "原样",
+      "私聊"
+    ],
+    "forbidden_hits": [],
+    "answer": "7天无理由退货操作流程如下：  \n1. 签收后7天内（含7天），确保商品**未激活、包装完好、配件齐全、无使用痕迹**[1]；  \n2. 在闲鱼订单页申请退款，选择「7天无理由退货」；  \n3. 审核通过后48小时内寄回（需自行承担首重12元运费）[1]；  \n4. 仓库验收合格后，1-3个工作日内原路退款[1]。  \n⚠️注意：本单为闲鱼个人闲置转让，额外承诺**1年卖家质保**，但7天无理由仍须满足未拆封、未激活等条件[商品][闲鱼渠道特别提醒]。",
+    "contexts": [
+      {
+        "source": "policy_return_main",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_extend_receipt_002",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_top_002",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "xlsx_supplement_030",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_return_main",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": false,
+    "latency_sec": 5.4,
+    "verdict": "PARTIAL"
+  },
+  {
+    "id": 14,
+    "category": "议价/老客",
+    "query": "我是老客户,便宜点吧",
+    "expected": [
+      "老客",
+      "不让",
+      "赠品",
+      "数据线"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "老客",
+      "数据线"
+    ],
+    "miss_keywords": [
+      "不让",
+      "赠品"
+    ],
+    "forbidden_hits": [],
+    "answer": "不好意思，这款智选PB1是朋友送的近全新闲置，¥99999为不二价（凑个吉利数，卖一台少一台）[商品]。不过作为诚意，我额外赠送原装数据线+充电头+包邮[渠道上下文]。  \n您是首次在本店咨询，当前昵称“面试官小张”未匹配老客记录，暂无法触发复购券、VIP折扣等老客权益[1]。如后续确认成交，系统将自动为您开通会员并累积等级。",
+    "contexts": [
+      {
+        "source": "faq_top_024",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_top_018",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_compare_refund_only",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_dispute_report_fake_main",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "policy_compare_price_protection",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": false,
+    "latency_sec": 6.0,
+    "verdict": "PARTIAL"
+  },
+  {
+    "id": 15,
+    "category": "瑕疵",
+    "query": "是二手的吗?有什么瑕疵?",
+    "expected": [
+      "闲置",
+      "未拆封",
+      "外包装",
+      "压痕"
+    ],
+    "must_not_contain": [],
+    "hit_keywords": [
+      "闲置",
+      "未拆封"
+    ],
+    "miss_keywords": [
+      "外包装",
+      "压痕"
+    ],
+    "forbidden_hits": [],
+    "answer": "不是二手，是朋友送的近全新闲置，95新、未拆封[商品]。  \n无任何瑕疵，包装完好、配件齐全，支持7天无理由+1年卖家质保[闲鱼渠道特别提醒]。  \n因属个人闲置转让，非厂家零售，故不适用官方售后网点服务，但提供智选旗舰店正品保障：假一赔十[1]。  \n赠数据线+充电头+包邮，¥99999不议价[渠道上下文]。",
+    "contexts": [
+      {
+        "source": "faq_top_006",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_quality_001",
+        "title": "",
+        "score": "?"
+      },
+      {
+        "source": "faq_warranty_03",
+        "title": "",
+        "score": "?"
+      }
+    ],
+    "ctx_has_sku011": false,
+    "latency_sec": 5.5,
+    "verdict": "PARTIAL"
+  }
+]
