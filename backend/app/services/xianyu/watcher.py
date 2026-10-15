@@ -286,10 +286,14 @@ class XianyuWatcher:
             self._stale_watchdog_tick()
             # 也开 LOG 标记 watchdog 还在跑(简单健康检查)
             # 不发到 runtime_log(避免噪音), 仅 stderr
+            # V16.5 fix: 'never':.1f 是非法 f-string 格式('never' 是 str,不能 .1f)
+            # 改为 'never' 文本或 '0.0' float;这里用条件分支输出字符串
+            if self._last_message_event_at:
+                age_str = f"{(time.time() - self._last_message_event_at):.1f}s"
+            else:
+                age_str = "never"
             logger.debug(
-                f"XianyuWatcher stale watchdog tick: "
-                f"last_msg_age="
-                f"{(time.time() - self._last_message_event_at) if self._last_message_event_at else 'never':.1f}s"
+                f"XianyuWatcher stale watchdog tick: last_msg_age={age_str}"
             )
 
     def _stale_watchdog_tick(self) -> None:

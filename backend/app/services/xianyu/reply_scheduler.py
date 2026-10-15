@@ -28,7 +28,9 @@ from typing import Optional
 import httpx
 import json as _json  # V16.3 SSE 解析需要
 
-from app.services.xianyu.xianyu_prompts import XianyuPrompts
+# V16.5: XianyuPrompts 改 lazy import（在 _get_prompts 内）
+# 原顶部 import 会导致 ReplyScheduler 实例化时立即 load 3 个 yaml,延迟启动
+# 改为 lazy 后,YAML 只在第一次 _handle_fire 触发时 load 一次,后续 fire 复用实例
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,14 @@ class ReplyScheduler:
         self._db = db_session
         self._seller_unb = seller_unb
 
+        # V16.5: lazy 模块单例 — 避免每条消息 new 一次（之前 _handle_fire 调 4 次
+        #   BuyerProfile / EscalationDetector / ScenarioRouter / XianyuPrompts 每次
+        #   都 new → 累计 3-5 秒/条 主要性能瓶颈之一）
+        self._buyer_profile_singleton: object | None = None
+        self._escalation_detector_singleton: object | None = None
+        self._scenario_router_singleton: object | None = None
+        self._prompts_singleton: object | None = None
+
         # V16.3.1: 跟踪每个 unb 的首次/后续 fire 状态
         self._unb_first_fire_done: set[str] = set()
         # V16.3.1: 消息去重（保留旧逻辑）
@@ -96,6 +106,34 @@ class ReplyScheduler:
             return
         t = threading.Thread(target=self._handle_fire, args=(cid, msg_events), daemon=True)
         t.start()
+
+    # =============================================================
+    # V16.5: Lazy 模块单例（每个 ReplyScheduler 实例内部，跨 fire 复用）
+    # =============================================================
+    def _get_buyer_profile(self):
+        """BuyerProfile 单例(内部缓存) — 避免每条消息 new"""
+        if self._buyer_profile_singleton is None:
+            from app.services.xianyu.buyer_profile import BuyerProfile
+            self._buyer_profile_singleton = BuyerProfile()
+        return self._buyer_profile_singleton
+
+    def _get_escalation_detector(self):
+        if self._escalation_detector_singleton is None:
+            from app.services.xianyu.escalation_detector import XianyuEscalationDetector
+            self._escalation_detector_singleton = XianyuEscalationDetector()
+        return self._escalation_detector_singleton
+
+    def _get_scenario_router(self):
+        if self._scenario_router_singleton is None:
+            from app.services.xianyu.scenario_router import XianyuScenarioRouter
+            self._scenario_router_singleton = XianyuScenarioRouter()
+        return self._scenario_router_singleton
+
+    def _get_prompts(self):
+        if self._prompts_singleton is None:
+            from app.services.xianyu.xianyu_prompts import XianyuPrompts
+            self._prompts_singleton = XianyuPrompts()
+        return self._prompts_singleton
 
     def sent_count(self, day: Optional[str] = None) -> int:
         """今日已发条数（用于健康检查）"""
@@ -178,10 +216,9 @@ class ReplyScheduler:
             except Exception as e:
                 logger.warning(f"ReplyScheduler 退款 handler 失败: {e}")
 
-        # 5. 拉 BuyerProfile（V16.2 注入 LLM）
+        # 5. 拉 BuyerProfile（V16.5 lazy 单例 — 跨 fire 复用）
         try:
-            from app.services.xianyu.buyer_profile import BuyerProfile
-            profile = BuyerProfile().get_profile(unb=toid)
+            profile = self._get_buyer_profile().get_profile(unb=toid)
             profile_ctx = profile.to_prompt_context()
             nick = profile.nick
             is_returning = profile.is_returning_buyer
@@ -191,10 +228,9 @@ class ReplyScheduler:
             nick = None
             is_returning = False
 
-        # 6. EscalationDetector
+        # 6. EscalationDetector（V16.5 lazy 单例）
         try:
-            from app.services.xianyu.escalation_detector import XianyuEscalationDetector
-            escalation = XianyuEscalationDetector()
+            escalation = self._get_escalation_detector()
             esc_result = escalation.should_escalate(unb=toid, message=last_text)
             escalation.record_message(unb=toid)
         except Exception as e:
@@ -207,28 +243,23 @@ class ReplyScheduler:
                 f"ReplyScheduler 转人工 cid={cid} reason={esc_result.reason.value if esc_result.reason else 'unknown'}"
             )
         else:
-            # 7. ScenarioRouter
+            # 7. ScenarioRouter（V16.5 lazy 单例）
             try:
-                from app.services.xianyu.scenario_router import XianyuScenarioRouter
-                router = XianyuScenarioRouter()
-                scenario_result = router.route(
+                scenario_result = self._get_scenario_router().route(
                     unb=toid, message=last_text, is_returning_buyer=is_returning
                 )
             except Exception as e:
                 logger.warning(f"ReplyScheduler ScenarioRouter 失败: {e}")
-                from app.services.xianyu.scenario_router import (
-                    XianyuScenarioRouter as _R,
-                    Scenario as _S,
-                )
+                from app.services.xianyu.scenario_router import Scenario as _S
                 scenario_result = type("S", (), {
                     "scenario": _S.PRESALE,
                     "prompt_hint": "你是闲鱼专业卖家",
                     "should_escalate": False,
                 })()
 
-            # 8. 拼 system prompt
+            # 8. 拼 system prompt（V16.5 lazy 单例 — 避免每次 on_fire 重读 3 个 yaml）
             try:
-                prompts = XianyuPrompts()
+                prompts = self._get_prompts()
                 system_prompt = prompts.render(
                     scenario=scenario_result.scenario.value,
                     system_base="你是智能客服 Agent",
@@ -511,22 +542,31 @@ class ReplyScheduler:
     # 内部：send_message + 失败重试
     # =============================================================
     def _send_with_retry(self, cid: str, toid: str, text: str) -> dict:
-        """send_message + 指数退避重试"""
+        """send_message + 指数退避重试
+
+        V16.5 fix: 错误日志显示完整 result,不再只 log result.get('error')
+        (因为 goofish 失败时可能返 {'ok': False} 不带 error 字段,旧日志只输出 None)
+        """
         last_result = {"error": "no_attempt"}
         for attempt in range(self._max_retries + 1):
             result = self._client.send_message(
                 cid=cid, toid=toid, text=text
             )
-            if result.get("ok") or result.get("message_id"):
+            # V16.5 fix: 成功判定 — ok=True 即认为成功（message_id 可能为 None）
+            if result.get("ok") is True or result.get("message_id"):
                 return result
             last_result = result
             if attempt < self._max_retries:
                 wait = 1.0 * (2 ** attempt)  # 1s, 2s, 4s
+                # 错误日志显示完整 result,不再只 log result.get('error')
                 logger.warning(
                     f"send_message 失败 (attempt {attempt+1}/{self._max_retries+1}) "
-                    f"等 {wait}s: {result.get('error')}"
+                    f"等 {wait}s: result={result}"
                 )
                 time.sleep(wait)
+        logger.error(
+            f"ReplyScheduler cid={cid} 发送失败 (重试 {self._max_retries+1} 次后): result={last_result}"
+        )
         return last_result
 
 
