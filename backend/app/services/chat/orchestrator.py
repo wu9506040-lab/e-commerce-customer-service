@@ -954,10 +954,39 @@ class Synthesizer:
 
         Phase 4 A4：search_queries 不为空时走多路 RRF；空时单路（保留旧 mock 兼容）
         """
+        # V16.5 全链路日志：HANDLE_POLICY 入口
+        try:
+            from app.core.runtime_log import log_event as _relog
+            _sid = session_id if 'session_id' in dir() else "-"
+            _uid = user_id if 'user_id' in dir() else "-"
+            _relog(
+                "HANDLE_POLICY", "INFO", str(_sid), str(_uid),
+                f"ENTER query={query[:80]} search_queries={search_queries}",
+                query=query[:200], search_queries=search_queries,
+            )
+        except Exception:
+            pass
         if search_queries:
             policy_docs = PolicyService.search_multi_policy(search_queries, top_k=5)
         else:
             policy_docs = PolicyService.search_policy(query, top_k=5)
+        # V16.5 全链路日志：RAG_RETRIEVE（policy 检索 Top）
+        try:
+            from app.core.runtime_log import log_event as _relog
+            _sid = session_id if 'session_id' in dir() else "-"
+            _uid = user_id if 'user_id' in dir() else "-"
+            top3 = policy_docs[:5] if policy_docs else []
+            top3_lines = [
+                f"[{i+1}] title={(d.get('title','') if isinstance(d,dict) else '')[:50]}"
+                for i, d in enumerate(top3)
+            ]
+            _relog(
+                "RAG_RETRIEVE", "INFO", str(_sid), str(_uid),
+                f"policy Top-{len(top3)} retrieved (total={len(policy_docs)}): " + " | ".join(top3_lines),
+                hits=len(policy_docs), query=query[:200],
+            )
+        except Exception:
+            pass
         policy_block = prompt_assembler._format_policy_docs(policy_docs)
 
         # P0-H：暴露政策命中到 meta
@@ -973,6 +1002,19 @@ class Synthesizer:
 
         if not policy_docs:
             # 无相关 policy → LLM 用通用知识兜底（context_block 走 stream_llm 注入 system 不在此重复）
+            try:
+                from app.core.runtime_log import log_event as _relog
+                _sid = session_id if 'session_id' in dir() else "-"
+                _uid = user_id if 'user_id' in dir() else "-"
+                _full_system = (SYSTEM_PROMPT_BASE + context_block) if context_block else SYSTEM_PROMPT_BASE
+                _relog(
+                    "LLM_PROMPT", "INFO", str(_sid), str(_uid),
+                    f"policy fallback system_len={len(_full_system)} user_len={len(query)}",
+                    system_prompt=_full_system[:3000] + ("...(截断)" if len(_full_system) > 3000 else ""),
+                    user_message=query, chars_system=len(_full_system),
+                )
+            except Exception:
+                pass
             yield from stream_dispatcher.stream_llm(
                 f"参考资料：\n（未检索到相关政策）\n\n对话历史：\n{prompt_assembler._format_history(history)}\n\n问题：{query}",
                 context_block=context_block,
@@ -989,4 +1031,18 @@ class Synthesizer:
             # V16.3.4：context_block 已在下方 stream_llm promote 到 system message（架构修）
             secondary_intent_block=secondary_intent_block,  # V12
         )
+        # V16.5 全链路日志：policy_query LLM_PROMPT（完整 system 长度）
+        try:
+            from app.core.runtime_log import log_event as _relog
+            _sid = session_id if 'session_id' in dir() else "-"
+            _uid = user_id if 'user_id' in dir() else "-"
+            _full_system = (SYSTEM_PROMPT_BASE + context_block) if context_block else SYSTEM_PROMPT_BASE
+            _relog(
+                "LLM_PROMPT", "INFO", str(_sid), str(_uid),
+                f"policy_query system_len={len(_full_system)} user_len={len(query)}",
+                system_prompt=_full_system[:3000] + ("...(截断)" if len(_full_system) > 3000 else ""),
+                user_message=query, chars_system=len(_full_system),
+            )
+        except Exception:
+            pass
         yield from stream_dispatcher.stream_llm(prompt, context_block=context_block)
