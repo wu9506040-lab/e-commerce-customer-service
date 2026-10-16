@@ -238,8 +238,8 @@ class XianyuWatcherPoller:
             ts = int(summary.get("ts", 0) or 0)
             return {
                 "event": "message",
-                "cid": session["sessionId"],
-                "send_user_id": user_info.get("userId", ""),
+                "cid": str(session["sessionId"]),  # V16.8 P2-A hotfix: str (MCP 工具期望 string)
+                "send_user_id": str(user_info.get("userId", "") or ""),
                 "send_user_name": user_info.get("nick", "") or user_info.get("fishNick", ""),
                 "send_message": send_message,
                 "ts": ts,

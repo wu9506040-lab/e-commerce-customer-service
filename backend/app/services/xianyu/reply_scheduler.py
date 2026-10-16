@@ -250,6 +250,12 @@ class ReplyScheduler:
             return
         # 3. 解析 toid
         toid = last_msg.get("send_user_id", "")
+        # V16.8 P2-A hotfix: cid/toid 强制 str（MCP 工具 message_send 类型校验：
+        # cid "Input should be a valid string [type=string_type, input_value=40703180655, input_type=int]"）
+        if cid is not None:
+            cid = str(cid)
+        if toid:
+            toid = str(toid)
         if not toid:
             logger.warning(f"ReplyScheduler 缺 toid 跳过 cid={cid}")
             return
