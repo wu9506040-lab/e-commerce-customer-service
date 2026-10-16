@@ -122,6 +122,127 @@ class TestRetry:
         assert result.get("ok") is True
         assert mock_client.send_message.call_count == 1
 
+    def test_rate_limit_parse_wait_seconds(self):
+        """限流响应 message 含 '再等 53.1s' → 解析出 53.1+buffer"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        result = {
+            "ok": False,
+            "error_type": "RateLimitedError",
+            "message": "限流：bucket=message.write 每 60s 上限 1，再等 53.1s",
+        }
+        wait = scheduler._parse_rate_limit_wait(result)
+        assert wait is not None
+        # 53.1 + 0.5 buffer = 53.6
+        assert 53.0 <= wait <= 54.5
+
+    def test_rate_limit_non_rate_limit_returns_none(self):
+        """非限流错误 → 返 None（不视为限流）"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        # 普通错误
+        result = {"ok": False, "error_type": "NetworkError", "message": "timeout"}
+        assert scheduler._parse_rate_limit_wait(result) is None
+        # 完全没有 error_type
+        result = {"ok": False, "message": "something"}
+        assert scheduler._parse_rate_limit_wait(result) is None
+        # message 是 None
+        result = {"ok": False, "error_type": "RateLimitedError", "message": None}
+        assert scheduler._parse_rate_limit_wait(result) is None
+
+    def test_rate_limit_parse_handles_garbage(self):
+        """限流响应 message 解析不出秒数 → 返 None（兜底）"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        result = {
+            "ok": False,
+            "error_type": "RateLimitedError",
+            "message": "限流 but no seconds info",
+        }
+        assert scheduler._parse_rate_limit_wait(result) is None
+
+    def test_send_rate_limit_waits_then_succeeds(self):
+        """限流场景：第一次返限流，第二次成功 → 总共调 2 次"""
+        mock_client = MagicMock()
+        # 第一次限流，第二次成功
+        mock_client.send_message.side_effect = [
+            {
+                "ok": False,
+                "error_type": "RateLimitedError",
+                "message": "限流：再等 0.1s",  # 短 sleep 加速
+            },
+            {"ok": True, "message_id": "M1"},
+        ]
+        scheduler = ReplyScheduler(
+            xianyu_client=mock_client,
+            chat_api_url="http://test",
+            max_retries=0,  # 非限流无重试
+        )
+        with patch("time.sleep") as mock_sleep:  # mock sleep 避免真等
+            result = scheduler._send_with_retry(
+                cid="c1", toid="u1", text="hi"
+            )
+        assert result.get("ok") is True
+        assert mock_client.send_message.call_count == 2
+        # 第一次 sleep 应是限流解析出的 ~0.6s (0.1 + 0.5)
+        first_sleep = mock_sleep.call_args_list[0][0][0]
+        assert 0.5 <= first_sleep <= 1.5
+
+    def test_send_rate_limit_keeps_retrying_until_quota_exhausted(self):
+        """限流 5 次都用完仍限流 → 返限流 result（不抛）"""
+        mock_client = MagicMock()
+        # 永远返限流
+        mock_client.send_message.return_value = {
+            "ok": False,
+            "error_type": "RateLimitedError",
+            "message": "限流：再等 0.1s",
+        }
+        scheduler = ReplyScheduler(
+            xianyu_client=mock_client,
+            chat_api_url="http://test",
+            max_retries=0,
+        )
+        with patch("time.sleep"):
+            result = scheduler._send_with_retry(
+                cid="c1", toid="u1", text="hi"
+            )
+        # 1 次非限流尝试 + 5 次限流尝试 = 6 次
+        assert mock_client.send_message.call_count == 6
+        assert result.get("ok") is False
+        assert result.get("error_type") == "RateLimitedError"
+
+    def test_send_non_rate_limit_keeps_old_exponential_backoff(self):
+        """非限流错误：维持 1s/2s 指数退避（原行为不变）"""
+        mock_client = MagicMock()
+        mock_client.send_message.return_value = {
+            "ok": False,
+            "error_type": "NetworkError",
+            "message": "timeout",
+        }
+        scheduler = ReplyScheduler(
+            xianyu_client=mock_client,
+            chat_api_url="http://test",
+            max_retries=2,  # 3 次尝试
+        )
+        with patch("time.sleep") as mock_sleep:
+            result = scheduler._send_with_retry(
+                cid="c1", toid="u1", text="hi"
+            )
+        # 3 次尝试，2 次 sleep（1s + 2s）
+        assert mock_client.send_message.call_count == 3
+        assert mock_sleep.call_count == 2
+        # 第 1 次 sleep 应是 1s（2^0 * 1.0）
+        assert mock_sleep.call_args_list[0][0][0] == 1.0
+        # 第 2 次 sleep 应是 2s（2^1 * 1.0）
+        assert mock_sleep.call_args_list[1][0][0] == 2.0
+        assert result.get("ok") is False
+
 
 # =============================================================
 # 5. 智能客服 /chat 调用

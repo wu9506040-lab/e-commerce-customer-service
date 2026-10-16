@@ -189,3 +189,132 @@ class TestState:
             w.start()  # 第二次应 no-op
             assert mock_popen.call_count == 1
             w.stop()
+
+
+# =============================================================
+# 6. Stale watchdog 指数退避（V16.6 fix）
+# =============================================================
+class TestStaleWatchdogBackoff:
+    def _make_watcher_with_stale(self, monkeypatch, max_restart=5):
+        """造一个 watcher，subprocess 活、_last_message_event_at 已设置
+
+        同时 monkeypatch _stop_event.wait 立即返回（避免 backoff 真 sleep 卡测试）
+        """
+        # 关键：mock _stop_event.wait 让 backoff 立即返回（不等满 30/60s）
+        import app.services.xianyu.watcher as w_mod
+        original_wait = w_mod.threading.Event.wait
+        # 但 _stop_event 是 instance 上的属性；用 patch.object 替换 instance.wait
+        # 这里用 monkeypatch.setattr 后置到 instance
+        monkeypatch.setattr(
+            "app.services.xianyu.watcher.run_auth_status",
+            lambda: {"unb": "u1", "valid": True},
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.poll.return_value = None
+            mock_proc.stdout = MagicMock()
+            mock_popen.return_value = mock_proc
+            w = XianyuWatcher(
+                callback=lambda e: None,
+                max_restart=max_restart,
+            )
+            w.start()
+            # mock _stop_event.wait 立即返回（不 sleep）
+            # 但仍把 timeout 参数记下来用于断言
+            monkeypatch.setattr(w._stop_event, "wait",
+                                lambda timeout=None: False)  # 立即返回 False = 不被打断
+            # 重新包装记 timeout
+            backoffs = []
+            def wait_capturing(timeout=None):
+                if timeout is not None and timeout > 0.5:  # backoff > 0.5s
+                    backoffs.append(timeout)
+                return False  # False = 不被 stop_event set
+            monkeypatch.setattr(w._stop_event, "wait", wait_capturing)
+            w._test_backoffs = backoffs  # 暴露给外部断言
+            w._last_message_event_at = time.time() - 70.0
+            return w
+
+    def test_stale_first_restart_backoff_30s(self, monkeypatch):
+        """第 1 次 stale → backoff 30s"""
+        w = self._make_watcher_with_stale(monkeypatch)
+        try:
+            w._stale_watchdog_tick()
+            assert w._restart_count == 1
+            assert w._test_backoffs == [30.0]
+        finally:
+            w.stop()
+
+    def test_stale_exponential_backoff_progression(self, monkeypatch):
+        """stale 触发 1→2→3 次，backoff 30s/60s/120s 递增"""
+        w = self._make_watcher_with_stale(monkeypatch)
+        try:
+            for _ in range(3):
+                w._last_message_event_at = time.time() - 70.0
+                w._stale_watchdog_tick()
+            assert w._test_backoffs == [30.0, 60.0, 120.0]
+            assert w._restart_count == 3
+        finally:
+            w.stop()
+
+    def test_stale_caps_backoff_at_480s(self, monkeypatch):
+        """第 5 次 stale → backoff 480s（封顶）"""
+        w = self._make_watcher_with_stale(monkeypatch)
+        try:
+            # 直接打到第 5 次
+            w._restart_count = 4  # 下一次 ++ 后 = 5
+            w._last_message_event_at = time.time() - 70.0
+            w._stale_watchdog_tick()
+            assert w._test_backoffs == [480.0]
+            assert w._restart_count == 5
+        finally:
+            w.stop()
+
+    def test_stale_over_max_restart_does_not_permanently_stop(self, monkeypatch):
+        """超过 max_restart=5 次 stale → 打 ERROR 但不永久停（V16.6 fix）"""
+        w = self._make_watcher_with_stale(monkeypatch, max_restart=5)
+        try:
+            # 触发 7 次 stale（前 5 次 backoff=30/60/120/240/480，第 6/7 次 backoff=0）
+            for _ in range(7):
+                w._last_message_event_at = time.time() - 70.0
+                w._stale_watchdog_tick()
+            assert w._restart_count == 7
+            assert not w._stop_event.is_set()  # V16.6: 不永久停
+            # 前 5 次有 backoff，后 2 次 backoff=0 不过 wait
+            assert w._test_backoffs == [30.0, 60.0, 120.0, 240.0, 480.0]
+        finally:
+            w.stop()
+
+    def test_stale_over_max_restart_skips_backoff(self, monkeypatch):
+        """超 max_restart 后 backoff=0（不浪费时间，wait 不被调）"""
+        w = self._make_watcher_with_stale(monkeypatch, max_restart=5)
+        try:
+            for _ in range(8):
+                w._last_message_event_at = time.time() - 70.0
+                w._stale_watchdog_tick()
+            # 1-5 次 backoff（5 个），6-8 次 backoff=0（_stop_event.wait 不被调）
+            assert len(w._test_backoffs) == 5
+            assert w._restart_count == 8
+        finally:
+            w.stop()
+
+    def test_stale_backoff_can_be_interrupted_by_stop(self, monkeypatch):
+        """backoff sleep 可被 stop 打断（_stop_event.wait 返 True → return）"""
+        monkeypatch.setattr(
+            "app.services.xianyu.watcher.run_auth_status",
+            lambda: {"unb": "u1", "valid": True},
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.poll.return_value = None
+            mock_proc.stdout = MagicMock()
+            mock_popen.return_value = mock_proc
+            w = XianyuWatcher(callback=lambda e: None, max_restart=5)
+            w.start()
+            w._last_message_event_at = time.time() - 70.0
+            # mock _stop_event.wait 返 True（被打断）
+            w._stop_event.set()  # 模拟 stop
+            spawn_count_before = mock_popen.call_count
+            w._stale_watchdog_tick()
+            # wait 返 True → 函数 return，不 spawn
+            assert mock_popen.call_count == spawn_count_before
+            w._stop_event.clear()  # 清理
