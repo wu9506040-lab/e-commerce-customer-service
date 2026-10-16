@@ -68,14 +68,24 @@ LOG_DIR = Path(os.environ.get("XIANYU_LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "xianyu_daemon.log"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
-)
+# V16.8 P1-E1: logger 拆双 handler
+    # - file handler 接 DEBUG+：业务日志全写 logs/xianyu_daemon.log（不打 stdout）
+    # - stderr handler 接 ERROR+：Python 异常 traceback + 主循环异常 → docker logs 可见
+    # 用户要求："业务日志写到文件里，不要打到 stdout"+"Python traceback 打到 stderr"
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+    )
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.ERROR)
+    stderr_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+    )
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[file_handler, stderr_handler],
+    )
 logger = logging.getLogger("xianyu_daemon")
 
 
@@ -181,17 +191,36 @@ def main() -> int:
         if args.once:
             time.sleep(5)  # 给 watcher 时间连上
         else:
+            consecutive_errors = 0
             while not stop_event["stop"]:
                 time.sleep(10)
                 # 定时健康检查 + 持久化
-                status = health.check_all()
-                if status["should_alert"]:
-                    logger.error(
-                        f"XianyuHealth ALERT: errors={status['errors_count']} "
-                        f"last_error={status['last_error']!r} "
-                        f"issues={status.get('issues')}"
+                try:
+                    status = health.check_all()
+                    if status["should_alert"]:
+                        logger.error(
+                            f"XianyuHealth ALERT: errors={status['errors_count']} "
+                            f"last_error={status['last_error']!r} "
+                            f"issues={status.get('issues')}"
+                        )
+                    save_state(health)
+                    consecutive_errors = 0  # 健康跑一圈就清零
+                except Exception as loop_err:
+                    # V16.8 P1-E1: 通用异常兜底 — 旧版仅 catch KeyboardInterrupt
+                    # 导致 health.check_all() / save_state() 抛错时 silent exit，
+                    # 用户侧完全收不到回复。最近 13:01:21 daemon silent death 就是这原因
+                    consecutive_errors += 1
+                    logger.exception(
+                        f"XianyuDaemon 主循环异常 #consecutive={consecutive_errors} "
+                        f"({type(loop_err).__name__}: {loop_err})"
                     )
-                save_state(health)
+                    # 不退出；下轮 sleep 后再试；如连续 10 次异常 → 主动退出让 docker 重启
+                    if consecutive_errors >= 10:
+                        logger.error(
+                            "XianyuDaemon 主循环连续 10 次异常，主动退出让 docker 重启"
+                        )
+                        stop_event["stop"] = True
+                        break
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt，开始关闭")
     finally:
