@@ -37,6 +37,11 @@ WATCHDOG_INTERVAL = 5.0
 # 现在: 60s 无 message 事件 → ERROR 日志 + kill subprocess + 重启
 STALE_EVENT_THRESHOLD_SEC = 60.0
 STALE_WATCHDOG_INTERVAL_SEC = 30.0
+# V16.6: Stale watchdog 指数退避（30s/60s/120s/240s/480s）
+# 旧逻辑：连续重启超 5 次就 stop_event.set() 永久停
+# 实际：限流场景下用户沉默，重启没意义；超次应继续监控不永久停
+STALE_BACKOFF_BASE_SEC = 30.0
+STALE_BACKOFF_MAX_SEC = 480.0
 
 
 class WatcherAuthError(RuntimeError):
@@ -297,7 +302,14 @@ class XianyuWatcher:
             )
 
     def _stale_watchdog_tick(self) -> None:
-        """单次 stale 检查 + 必要时重启 subprocess"""
+        """单次 stale 检查 + 必要时重启 subprocess（V16.6 指数退避）
+
+        V16.6 fix: 旧逻辑超 5 次重启就 stop_event.set() 永久停
+        → 实际场景（限流后用户沉默）会导致 daemon 永久死掉，只能手动重启
+        现在：
+        - 1-5 次重启：指数 backoff 30s/60s/120s/240s/480s（用 _stop_event.wait 可被 stop 打断）
+        - 6+ 次：backoff 0（节省时间），但不再永久停，仅 ERROR 日志持续打
+        """
         if self._stop_event.is_set() or self._proc is None:
             return
         # 还没收到过任何 message → 不判 stale（避免启动时误判）
@@ -310,21 +322,26 @@ class XianyuWatcher:
         idle_sec = time.time() - self._last_message_event_at
         if idle_sec <= STALE_EVENT_THRESHOLD_SEC:
             return
-        # Stale detected — 尝试重启
+        # Stale detected — 重启
         self._restart_count += 1
-        if self._restart_count > self._max_restart:
-            logger.error(
-                f"XianyuWatcher stale 检测到 {idle_sec:.0f}s 无 message 事件,但已超 "
-                f"{self._max_restart} 次重启上限,永久停 (需人工介入)"
+
+        # 1-5 次：指数 backoff（30s/60s/120s/240s/480s）
+        # 6+ 次：backoff 0（节省时间）
+        if self._restart_count <= self._max_restart:
+            backoff_sec = min(
+                STALE_BACKOFF_BASE_SEC * (2 ** (self._restart_count - 1)),
+                STALE_BACKOFF_MAX_SEC,
             )
-            self._stop_event.set()
-            return
+        else:
+            backoff_sec = 0.0
+
         logger.error(
-            f"XianyuWatcher STALE DETECTED: cid=... idle={idle_sec:.0f}s "
-            f"(>{STALE_EVENT_THRESHOLD_SEC}s),重启 subprocess "
-            f"({self._restart_count}/{self._max_restart})"
+            f"XianyuWatcher STALE DETECTED: idle={idle_sec:.0f}s "
+            f"(>{STALE_EVENT_THRESHOLD_SEC}s),"
+            f"重启 subprocess #{self._restart_count}/{self._max_restart} "
+            f"backoff={backoff_sec}s"
         )
-        # kill 当前 subprocess + 重启
+        # kill 当前 subprocess
         try:
             if self._proc and self._proc.poll() is None:
                 self._proc.terminate()
@@ -334,12 +351,29 @@ class XianyuWatcher:
                     self._proc.kill()
         except Exception as e:
             logger.warning(f"XianyuWatcher kill subprocess 失败: {e}")
+        # backoff sleep（用 _stop_event.wait 可被 stop 打断）
+        if backoff_sec > 0:
+            if self._stop_event.wait(timeout=backoff_sec):
+                logger.info("XianyuWatcher stale backoff 被 stop 打断")
+                return
         # 重启
         try:
             self._spawn_subprocess()
-            logger.info(f"XianyuWatcher stale 重启完成 new_pid={self._proc.pid if self._proc else None}")
+            logger.info(
+                f"XianyuWatcher stale 重启完成 restart#{self._restart_count} "
+                f"new_pid={self._proc.pid if self._proc else None}"
+            )
         except Exception as e:
-            logger.exception(f"XianyuWatcher stale 重启 subprocess 失败: {type(e).__name__}: {e}")
+            logger.exception(
+                f"XianyuWatcher stale 重启 subprocess 失败: {type(e).__name__}: {e}"
+            )
+
+        # V16.6 fix: 超 max_restart 不再永久停 — 持续监控 + ERROR 日志
+        if self._restart_count > self._max_restart:
+            logger.error(
+                f"XianyuWatcher 已 stale 重启 {self._restart_count} 次（>{self._max_restart}），"
+                f"继续监控不再永久停"
+            )
 
     def _watchdog_loop(self) -> None:
         """watchdog：每 5s 检查 subprocess 状态，死了就重启"""
