@@ -62,61 +62,57 @@ logger = logging.getLogger("watchdog")
 # =============================================================
 # 检测 + 重启
 # =============================================================
-def _query_daemon_via_wmic() -> list[dict]:
-    """用 wmic 查 python.exe 的 (pid, commandline)；过滤含 run_xianyu_daemon.py
+def _query_daemon_via_powershell() -> list[int]:
+    """用 PowerShell Get-Process 查含 run_xianyu_daemon.py 的 python 进程
 
     Returns:
-        list of {"pid": int, "cmdline": str}，daemon 命中数
+        list of pid，daemon 命中数（通常 1）
+
+    V16.8 P1-E2: 旧版用 wmic — Windows 11 默认移除 wmic（FileNotFoundError）
+    现改 PowerShell（系统自带），CommandLine filter 精准匹配 daemon 脚本
     """
+    ps_script = (
+        "Get-Process python -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.CommandLine -like '*run_xianyu_daemon.py*' } | "
+        "Select-Object -ExpandProperty Id"
+    )
     try:
         result = subprocess.run(
-            ["wmic", "process", "where", "name='python.exe'", "get",
-             "processid,commandline", "/FORMAT:CSV"],
-            capture_output=True, text=True, timeout=8,
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, text=True, timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-        logger.warning(f"wmic 查询失败: {type(e).__name__}: {e}")
+        logger.warning(f"PowerShell 查询失败: {type(e).__name__}: {e}")
         return []
 
-    hits: list[dict] = []
-    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
-    if not lines:
-        return hits
-    # CSV: Node,CommandLine,ProcessId  (or CommandLine,ProcessId depending on column order)
-    for line in lines[1:]:
-        parts = line.split(",")
-        if len(parts) < 2:
-            continue
-        # processid 总是最后一个非空字段（数字）
-        pid_str = parts[-1].strip()
-        cmdline = ",".join(parts[:-1]).strip()  # 含 node, commandline
-        if not pid_str.isdigit():
-            continue
-        if "run_xianyu_daemon.py" in cmdline:
-            hits.append({"pid": int(pid_str), "cmdline": cmdline})
-    return hits
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            pids.append(int(line))
+    return pids
 
 
 def is_daemon_alive() -> bool:
     """返回 True 表示至少 1 个 daemon 进程在跑"""
-    return len(_query_daemon_via_wmic()) >= 1
+    return len(_query_daemon_via_powershell()) >= 1
 
 
 def spawn_daemon() -> int | None:
     """后台启动 daemon，返 PID
 
     - 用 sys.executable (Python 解释器)
-    - 设置 APP_ENV=dev + V16.8 P1 默认延迟参数
+    - **强制**设 APP_ENV=dev（避免 host shell APP_ENV=prod 覆盖）
     - stdout/stderr 重定向到 logs/xianyu_daemon_watchdog_spawn.log
-      （防止 watchdog 拉起的 daemon 占 stdout，被 kill 时留痕）
-    - Windows 下用 DETACHED_PROCESS 让 daemon 独立存在（即使 watchdog 退出，daemon 继续）
+    - Windows 下用 DETACHED_PROCESS 让 daemon 独立存在
     """
     env = os.environ.copy()
-    env.setdefault("APP_ENV", "dev")
+    # V16.8 P1-E2 修正：必须强制覆盖（不只 setdefault，因为 shell 可能已经有 prod）
+    env["APP_ENV"] = "dev"
     # V16.8 P1 默认延迟参数
-    env.setdefault("XIANYU_DEBOUNCE_WINDOW", "8")
-    env.setdefault("XIANYU_FIRST_MIN_DELAY", "0")
-    env.setdefault("XIANYU_FIRST_MAX_DELAY", "3")
+    env["XIANYU_DEBOUNCE_WINDOW"] = "8"
+    env["XIANYU_FIRST_MIN_DELAY"] = "0"
+    env["XIANYU_FIRST_MAX_DELAY"] = "3"
 
     flags = 0
     if hasattr(subprocess, "DETACHED_PROCESS"):
