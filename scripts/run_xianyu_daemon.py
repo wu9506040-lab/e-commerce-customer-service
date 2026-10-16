@@ -46,6 +46,39 @@ os.environ.setdefault("APP_ENV", "prod")  # daemon 默认 prod
 # 配置：必须显式开
 os.environ["ENABLE_XIANYU_TOOLS"] = "true"
 
+# V16.8 P1-E2: 必须先 load .env.dev（settings 在 import 时校验 JWT_SECRET / DATABASE_URL）
+def _load_dotenv():
+    """简陋 .env 解析：读 deploy/.env.dev 加载 KEY=VALUE 到 os.environ
+
+    不覆盖已有值（命令行 export 优先于 .env）
+    daemon 自启时 import settings 前调一次，让 JWT_SECRET/DATABASE_URL 真值进 env
+    """
+    env_path = Path(__file__).resolve().parent.parent / "deploy" / ".env.dev"
+    if not env_path.exists():
+        print(f"[daemon] .env.dev 不存在: {env_path}", file=sys.stderr)
+        return
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except Exception as e:
+        print(f"[daemon] .env.dev 读失败: {e}", file=sys.stderr)
+        return
+    loaded = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        if k not in os.environ or not os.environ[k]:
+            os.environ[k] = v
+            loaded += 1
+    print(f"[daemon] 从 .env.dev 加载 {loaded} 个环境变量", file=sys.stderr)
+
+
+_load_dotenv()
+
 # V16.8 P1-C + P1-D: 端到端延迟优化默认
 # - P1-C: debounce 窗口 30→8s（用户连发合并节奏符合 V16.4 启发式）
 # - P1-D: 首次随机延迟 10-15s → 0-3s（IM 真人客服响应节奏）
@@ -70,6 +103,7 @@ LOG_FILE = LOG_DIR / "xianyu_daemon.log"
 # V16.8 P1-E2 选项 D：daemon 启动时写 PID file，退出时删
 # 让 watchdog 仅靠 PID file 在/不在判定存活（不依赖进程 API）
 PID_FILE = LOG_DIR / "xianyu_daemon.pid"
+
 
 # V16.8 P1-E1: logger 拆双 handler
 # - file handler 接 DEBUG+：业务日志全写 logs/xianyu_daemon.log（不打 stdout）
