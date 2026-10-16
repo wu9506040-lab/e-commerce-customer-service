@@ -81,7 +81,7 @@ class TestIntentModuleLoadsYAML:
         assert yaml_counts["policy_query"] == 33
         assert yaml_counts["order_query"] == 12
         assert yaml_counts["product_query"] == 22
-        assert yaml_counts["chitchat"] == 8
+        assert yaml_counts["chitchat"] == 8  # V16.8 P1-F 加回 "^在么" 8 条
         assert sum(yaml_counts.values()) == 96
 
     def test_intent_rules_constants_match_yaml(self):
