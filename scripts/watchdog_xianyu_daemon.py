@@ -11,7 +11,7 @@ XianyuDaemon Watchdog — V16.8 P1-E2 外部看门狗
 
 调用方式：
   python scripts/watchdog_xianyu_daemon.py
-  或后台启动（DETACHED_PROCESS + 关闭 stdin）：
+  或后台启动（V16.8 P1-E2 选项 D：不 detach + PID file 协议）：
 
 日志：
 - logs/xianyu_daemon_watchdog.log：所有生命周期事件（INFO/WARNING/ERROR）
@@ -36,6 +36,8 @@ _REPO_ROOT = _SCRIPT_DIR.parent
 _LOG_FILE = _REPO_ROOT / "logs" / "xianyu_daemon_watchdog.log"
 _DAEMON_LOG_DIR = _REPO_ROOT / "logs"
 _DAEMON_LOG_FILE = _DAEMON_LOG_DIR / "xianyu_daemon_watchdog_spawn.log"
+# V16.8 P1-E2 选项 D：daemon 写 PID file，watchdog 仅看这个文件存在性
+_PID_FILE = _REPO_ROOT / "logs" / "xianyu_daemon.pid"
 
 # 检测间隔（秒）
 CHECK_INTERVAL_SEC = 30
@@ -62,40 +64,24 @@ logger = logging.getLogger("watchdog")
 # =============================================================
 # 检测 + 重启
 # =============================================================
-def _query_daemon_via_powershell() -> list[int]:
-    """用 PowerShell Get-Process 查含 run_xianyu_daemon.py 的 python 进程
-
-    Returns:
-        list of pid，daemon 命中数（通常 1）
-
-    V16.8 P1-E2: 旧版用 wmic — Windows 11 默认移除 wmic（FileNotFoundError）
-    现改 PowerShell（系统自带），CommandLine filter 精准匹配 daemon 脚本
-    """
-    ps_script = (
-        "Get-Process python -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.CommandLine -like '*run_xianyu_daemon.py*' } | "
-        "Select-Object -ExpandProperty Id"
-    )
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-        logger.warning(f"PowerShell 查询失败: {type(e).__name__}: {e}")
-        return []
-
-    pids: list[int] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if line.isdigit():
-            pids.append(int(line))
-    return pids
-
-
 def is_daemon_alive() -> bool:
-    """返回 True 表示至少 1 个 daemon 进程在跑"""
-    return len(_query_daemon_via_powershell()) >= 1
+    """V16.8 P1-E2 选项 D：仅看 PID file 在不在
+
+    比 PowerShell Get-Process 简单 + 可靠 + 不需要任何进程 API
+    - daemon 启动时写 logs/xianyu_daemon.pid
+    - daemon 退出时（finally）删 PID file
+    - watchdog 只看文件存不存在，不关心 PID 真活与否
+    """
+    return _PID_FILE.exists()
+
+
+def _read_pid_file() -> int | None:
+    """读 PID file 内容（int），失败返 None"""
+    try:
+        text = _PID_FILE.read_text(encoding="utf-8").strip()
+        return int(text) if text else None
+    except (FileNotFoundError, ValueError, OSError):
+        return None
 
 
 def _load_dotenv_into_env(env: dict[str, str]) -> None:
@@ -134,13 +120,12 @@ def _load_dotenv_into_env(env: dict[str, str]) -> None:
 
 
 def spawn_daemon() -> int | None:
-    """后台启动 daemon，返 PID
+    """V16.8 P1-E2 选项 D：subprocess.Popen 启动 daemon（不用 DETACHED_PROCESS）
 
-    - 用 sys.executable (Python 解释器)
-    - **强制**设 APP_ENV=dev（避免 host shell APP_ENV=prod 覆盖）
-    - 从 deploy/.env.dev 加载所有 KEY=VALUE（daemon config 验证需要的 JWT_SECRET 等）
-    - stdout/stderr 重定向到 logs/xianyu_daemon_watchdog_spawn.log
-    - Windows 下用 DETACHED_PROCESS 让 daemon 独立存在
+    - **不**用 DETACHED_PROCESS（V16.8 P1 旧版 spawn log 0 字节 + 空 CommandLine）
+    - stdout/stderr 重定向到 spawn log file
+    - daemon 启动后自己写 PID file；watchdog 用 PID file 检测存活（独立于进程 API）
+    - 子进程与 watchdog 同 process tree（watchdog exit → daemon 也 exit）
     """
     env = os.environ.copy()
     # V16.8 P1-E2 修正：必须强制覆盖（不只 setdefault，因为 shell 可能已经有 prod）
@@ -152,12 +137,7 @@ def spawn_daemon() -> int | None:
     env["XIANYU_FIRST_MIN_DELAY"] = "0"
     env["XIANYU_FIRST_MAX_DELAY"] = "3"
 
-    flags = 0
-    if hasattr(subprocess, "DETACHED_PROCESS"):
-        flags |= subprocess.DETACHED_PROCESS
-    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-        flags |= subprocess.CREATE_NEW_PROCESS_GROUP
-
+    # V16.8 P1-E2 选项 D：不带 creationflags（不 DETACHED_PROCESS，让 daemon 与 watchdog 同 tree）
     log_fh = open(_DAEMON_LOG_FILE, "a", encoding="utf-8")
 
     try:
@@ -168,8 +148,7 @@ def spawn_daemon() -> int | None:
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            creationflags=flags if flags else 0,
-            close_fds=True,
+            # 不带 creationflags — 不 detach，简化 fd 继承
         )
         logger.info(
             f"spawn daemon pid={proc.pid} APP_ENV=dev (jwt_secret={'set' if env.get('JWT_SECRET') else 'MISSING'})"

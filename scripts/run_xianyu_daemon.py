@@ -67,6 +67,9 @@ from app.services.xianyu.watcher import XianyuWatcher  # noqa: E402
 LOG_DIR = Path(os.environ.get("XIANYU_LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "xianyu_daemon.log"
+# V16.8 P1-E2 选项 D：daemon 启动时写 PID file，退出时删
+# 让 watchdog 仅靠 PID file 在/不在判定存活（不依赖进程 API）
+PID_FILE = LOG_DIR / "xianyu_daemon.pid"
 
 # V16.8 P1-E1: logger 拆双 handler
 # - file handler 接 DEBUG+：业务日志全写 logs/xianyu_daemon.log（不打 stdout）
@@ -236,6 +239,12 @@ def main() -> int:
         debounce.shutdown()
         watcher.stop()
         save_state(health)
+        # V16.8 P1-E2 选项 D：退出时删 PID file，让 watchdog 知道 daemon 死了
+        try:
+            PID_FILE.unlink(missing_ok=True)
+            logger.info(f"PID file 已删除: {PID_FILE}")
+        except Exception as e:
+            logger.warning(f"PID file 删除失败: {e}")
         logger.info("XianyuDaemon 已关闭")
     return 0
 
