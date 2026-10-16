@@ -141,7 +141,7 @@ def main() -> int:
     )
     debounce = DebounceQueue(
         fire_callback=scheduler.on_fire,
-        window_seconds=float(os.environ.get("XIANYU_DEBOUNCE_WINDOW", "30")),
+        window_seconds=float(os.environ.get("XIANYU_DEBOUNCE_WINDOW", "12")),
     )
     watcher = XianyuWatcher(callback=debounce.on_message)
 

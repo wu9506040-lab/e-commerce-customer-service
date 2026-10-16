@@ -294,3 +294,136 @@ class TestState:
         scheduler._record_sent()
         scheduler._record_sent()
         assert scheduler.sent_count() == 2
+
+
+# =============================================================
+# 7. 多消息合并（V16.7：debounce 12s 内的多条 → 一条综合回复）
+# =============================================================
+class TestMultiMessageMerge:
+    """用户连发多条 → 拼成单条 query → LLM 一次性综合回答 → 一次发送"""
+
+    def _msg(self, text: str, msg_id: str = "") -> dict:
+        """造一个标准 message 事件"""
+        return {
+            "event": "message",
+            "cid": "c1",
+            "send_user_id": "u1",
+            "send_message": text,
+            "message_id": msg_id,
+        }
+
+    def test_build_query_single_message_unchanged(self):
+        """单条消息 → query 就是原文（向后兼容）"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        msgs = [self._msg("在吗", "m1")]
+        query, is_multi = scheduler._build_query(msgs)
+        assert query == "在吗"
+        assert is_multi is False
+
+    def test_build_query_multiple_messages_merged(self):
+        """多条消息 → 拼成综合 prompt（按用户指定格式）"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        msgs = [
+            self._msg("在吗", "m1"),
+            self._msg("这个充电宝多大容量", "m2"),
+            self._msg("能便宜点吗", "m3"),
+        ]
+        query, is_multi = scheduler._build_query(msgs)
+        # 验证格式（按用户 spec）
+        assert "用户连续发了以下几条消息" in query
+        assert "1. 在吗" in query
+        assert "2. 这个充电宝多大容量" in query
+        assert "3. 能便宜点吗" in query
+        assert "请你综合回答这几个问题" in query
+        assert "一条回复里覆盖所有问题" in query
+        assert is_multi is True
+
+    def test_build_query_skips_empty_messages(self):
+        """空消息（提取不出文本）→ 跳过"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        msgs = [
+            self._msg("", "m1"),  # 空
+            self._msg("在吗", "m2"),
+            self._msg("", "m3"),  # 空
+        ]
+        query, is_multi = scheduler._build_query(msgs)
+        assert query == "在吗"
+        assert is_multi is False
+
+    def test_build_query_all_empty_returns_empty(self):
+        """全空消息 → 返空字符串（让 _handle_fire 走正常流程）"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        msgs = [self._msg(""), self._msg("   ")]
+        query, is_multi = scheduler._build_query(msgs)
+        assert query == ""
+        assert is_multi is False
+
+    def test_is_refund_intent_any_message(self):
+        """退款意图：任一消息含退款关键词 → 命中"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        msgs = [
+            self._msg("在吗"),
+            self._msg("这个充电宝多大容量"),
+            self._msg("我要退款"),  # 第 3 条有退款
+        ]
+        assert scheduler._is_refund_intent_any(msgs) is True
+        # 退款在最前
+        msgs2 = [self._msg("我要退款"), self._msg("在吗")]
+        assert scheduler._is_refund_intent_any(msgs2) is True
+        # 都没退款
+        msgs3 = [self._msg("在吗"), self._msg("多大容量")]
+        assert scheduler._is_refund_intent_any(msgs3) is False
+
+    def test_dedup_any_message_seen(self):
+        """去重：任一消息已 seen → 整批跳过"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        scheduler._seen_message_ids.add("m2")  # 第 2 条已见
+        msgs = [
+            self._msg("在吗", "m1"),
+            self._msg("多大", "m2"),
+            self._msg("便宜点", "m3"),
+        ]
+        assert scheduler._is_duplicate_any(msgs) is True
+        # 全新
+        msgs2 = [
+            self._msg("在吗", "m_new1"),
+            self._msg("多大", "m_new2"),
+        ]
+        assert scheduler._is_duplicate_any(msgs2) is False
+        # 无 message_id 不去重（保守行为）
+        msgs3 = [self._msg("在吗"), self._msg("多大")]
+        assert scheduler._is_duplicate_any(msgs3) is False
+
+    def test_mark_seen_any_message_marks_all(self):
+        """mark_seen：多条消息全部 mark"""
+        scheduler = ReplyScheduler(
+            xianyu_client=MagicMock(),
+            chat_api_url="http://test",
+        )
+        msgs = [
+            self._msg("在吗", "m1"),
+            self._msg("多大", "m2"),
+            self._msg("便宜", "m3"),
+        ]
+        scheduler._mark_seen_any(msgs)
+        assert "m1" in scheduler._seen_message_ids
+        assert "m2" in scheduler._seen_message_ids
+        assert "m3" in scheduler._seen_message_ids

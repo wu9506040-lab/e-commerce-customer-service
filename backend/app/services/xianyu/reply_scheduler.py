@@ -51,6 +51,9 @@ class ReplyScheduler:
     _RATE_LIMIT_PATTERN = re.compile(r"再等\s*([\d.]+)\s*s", re.IGNORECASE)
     # V16.6: 限流场景独立重试配额（避免无限循环）
     _RATE_LIMIT_MAX_RETRIES = 5
+    # V16.7: 多消息合并 prompt 模板（用户连发时拼综合 query）
+    _MULTI_MSG_PROMPT_HEADER = "用户连续发了以下几条消息："
+    _MULTI_MSG_PROMPT_FOOTER = "请你综合回答这几个问题，一条回复里覆盖所有问题。"
 
     def __init__(
         self,
@@ -150,6 +153,55 @@ class ReplyScheduler:
     # =============================================================
     # 内部：编排
     # =============================================================
+    def _build_query(self, messages: list[dict]) -> tuple[str, bool]:
+        """V16.7: 把多条消息拼成单条 query
+
+        Returns:
+            (query, is_multi)
+            - query: 单条消息就是原文；多条拼成综合 prompt
+            - is_multi: 是否为合并后的多消息（True 时下游 hint LLM 综合回答）
+
+        合并格式（用户指定）：
+            用户连续发了以下几条消息：
+            1. 在吗
+            2. 这个充电宝多大容量
+            3. 能便宜点吗
+            请你综合回答这几个问题，一条回复里覆盖所有问题。
+        """
+        texts = [self._extract_text(m) for m in messages]
+        # 去空（保留顺序）
+        texts = [t.strip() for t in texts if t and t.strip()]
+        if not texts:
+            return "", False
+        if len(texts) == 1:
+            return texts[0], False
+        # 多条：拼成综合 prompt
+        lines = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
+        query = (
+            f"{self._MULTI_MSG_PROMPT_HEADER}\n{lines}\n"
+            f"{self._MULTI_MSG_PROMPT_FOOTER}"
+        )
+        return query, True
+
+    def _is_refund_intent_any(self, messages: list[dict]) -> bool:
+        """V16.7: 任一消息含退款关键词 → 命中（合并后批量判断）"""
+        for m in messages:
+            if self._is_refund_intent(self._extract_text(m)):
+                return True
+        return False
+
+    def _is_duplicate_any(self, messages: list[dict]) -> bool:
+        """V16.7: 任一消息已 seen → 整批视为重复（防止部分已处理）"""
+        for m in messages:
+            if self._is_duplicate(m):
+                return True
+        return False
+
+    def _mark_seen_any(self, messages: list[dict]) -> None:
+        """V16.7: 标记所有消息为 seen"""
+        for m in messages:
+            self._mark_seen(m)
+
     def _handle_fire(self, cid: str, messages: list[dict]) -> None:
         """异步处理 fire（V16.3 集成：落库 + 退款 handler + ScenarioRouter + Escalation + MessageGuard + Prompts）"""
         # 0. V16.3 落库（先于所有其他逻辑，确保 DB 有订单数据）
@@ -164,10 +216,10 @@ class ReplyScheduler:
                 logger.warning(f"ReplyScheduler 落库失败: {e}")
                 self._db.rollback()
 
-        # 1. 消息去重
+        # V16.7: 多消息合并 — 拼成单条 query + 任一已见则跳过
         last_msg = messages[-1] if messages else {}
-        if self._is_duplicate(last_msg):
-            logger.info(f"ReplyScheduler 重复消息跳过 cid={cid}")
+        if self._is_duplicate_any(messages):
+            logger.info(f"ReplyScheduler 重复消息跳过 cid={cid} batch={len(messages)}")
             return
         # 2. 限流
         if not self._check_rate_limit():
@@ -177,7 +229,7 @@ class ReplyScheduler:
                 from app.core.runtime_log import log_event
                 recent_count = len(self._recent_send_ts)
                 oldest_ts = self._recent_send_ts[0] if self._recent_send_ts else 0
-                oldest_age_sec = (time.time() - oldest_ts) if oldest_ts else 0
+                oldest_age_sec = time.time() - oldest_ts if oldest_ts else 0
                 unb = last_msg.get("send_user_id", "-") if last_msg else "-"
                 if log_event:
                     log_event("RATE_LIMIT", "WARNING", cid, str(unb),
@@ -196,10 +248,14 @@ class ReplyScheduler:
         if not toid:
             logger.warning(f"ReplyScheduler 缺 toid 跳过 cid={cid}")
             return
-        last_text = self._extract_text(last_msg)
+        # V16.7: 多消息合并 query
+        last_text, is_multi = self._build_query(messages)
+        if not last_text:
+            logger.warning(f"ReplyScheduler 拼 query 为空 cid={cid}")
+            return
 
         # 4. **V16.3 退款意图检测**（基于 DB）
-        if self._db is not None and self._seller_unb and self._is_refund_intent(last_text):
+        if self._db is not None and self._seller_unb and self._is_refund_intent_any(messages):
             try:
                 from app.services.xianyu.refund_handler import XianyuRefundHandler
                 handler = XianyuRefundHandler(db=self._db, seller_unb=self._seller_unb)
@@ -217,7 +273,7 @@ class ReplyScheduler:
                 )
                 self._send_with_retry(cid=cid, toid=toid, text=decision.reply_text)
                 self._record_sent()
-                self._mark_seen(last_msg)
+                self._mark_seen_any(messages)  # V16.7: 合并标记所有
                 return  # 退款场景不调 LLM
             except Exception as e:
                 logger.warning(f"ReplyScheduler 退款 handler 失败: {e}")
@@ -331,7 +387,7 @@ class ReplyScheduler:
         result = self._send_with_retry(cid=cid, toid=toid, text=text_to_send)
         if result.get("ok") or result.get("message_id"):
             self._record_sent()
-            self._mark_seen(last_msg)
+            self._mark_seen_any(messages)  # V16.7: 合并标记所有
             logger.info(
                 f"ReplyScheduler cid={cid} 已发 message_id={result.get('message_id')}"
             )

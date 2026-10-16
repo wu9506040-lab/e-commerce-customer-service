@@ -161,3 +161,28 @@ class TestExceptionIsolation:
         time.sleep(0.1)
         assert "good" in calls
         # bad 应该 fire 但异常被吞（不阻断其他）
+
+
+# =============================================================
+# 6. 默认值（V16.7：debounce 窗口默认 12s，合并用户连发消息）
+# =============================================================
+class TestDefaultWindow:
+    def test_default_window_is_12_seconds(self, monkeypatch):
+        """未指定 window_seconds 且无 env override 时 → 默认 12s"""
+        monkeypatch.delenv("XIANYU_DEBOUNCE_FIRST", raising=False)
+        monkeypatch.delenv("XIANYU_DEBOUNCE_NEXT", raising=False)
+        monkeypatch.delenv("XIANYU_DEBOUNCE_SHORT", raising=False)
+        q = DebounceQueue(fire_callback=lambda cid, msgs: None)
+        assert q._first_window == 12.0
+        assert q._next_window == 12.0
+
+    def test_explicit_window_overrides_default(self, monkeypatch):
+        """显式传 window_seconds → 覆盖默认值（保留测试兼容）"""
+        monkeypatch.delenv("XIANYU_DEBOUNCE_FIRST", raising=False)
+        monkeypatch.delenv("XIANYU_DEBOUNCE_NEXT", raising=False)
+        q = DebounceQueue(
+            fire_callback=lambda cid, msgs: None,
+            window_seconds=0.5,
+        )
+        assert q._first_window == 0.5
+        assert q._next_window == 0.5
