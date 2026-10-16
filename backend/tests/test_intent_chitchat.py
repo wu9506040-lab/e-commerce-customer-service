@@ -61,7 +61,10 @@ class TestChitchatRulePriority:
         result = IntentService.classify(query)
         assert result["primary"] == "chitchat", \
             f"query={query!r} 应该命中 chitchat，实际={result['primary']}"
-        assert result["method"] == "rule"
+        # V16.8 P1-G: 短消息（≤4字不含意图关键词）走 rule_short 兜底，长消息（如 "在吗呀"）
+        # 走原有 rule regex。两种 method 都接受。
+        assert result["method"] in ("rule", "rule_short"), \
+            f"method 应是 rule 或 rule_short，实际={result['method']}"
         assert result["intents"][0]["confidence"] == 1.0
 
     def test_greetings_with_substantive_content_now_classify_as_chitchat(self):
@@ -112,9 +115,9 @@ class TestLLMClassifyPromptContainsChitchat:
 
         prompt = captured["prompt"]
         assert "chitchat" in prompt, "单意图 prompt 必须含 chitchat 类"
-        assert "5 类" in prompt or "5类" in prompt, "单意图 prompt 文案必须更新到 5 类"
-        # LLM 真选了 chitchat 时必须不抛
-        assert "在吗？" in prompt, "prompt 应给 chitchat 示例（'在吗？' → chitchat）"
+        # V16.8 P1-G：去 few-shot 示例后，prompt 不再含示例 Q/A，但 5 类说明 + 输出格式必在
+        assert "5" in prompt and ("order_query" in prompt or "退款" in prompt or "policy_query" in prompt), \
+            "prompt 文案应包含 5 类说明"
 
     def test_multi_intent_prompt_mentions_chitchat(self):
         from app.services import intent_service
@@ -130,7 +133,8 @@ class TestLLMClassifyPromptContainsChitchat:
             __import__("app.core.providers.llm", fromlist=["get_llm_provider"]).get_llm_provider(),
             "chat", side_effect=fake_chat,
         ):
-            IntentService.classify("hab")  # 不命中规则（h + ab 不是 hello/h），走 LLM
+            # V16.8 P1-G: query ≥5 字 + 不含意图关键词，避免 rule_short 兜底短路（仍走 LLM）
+            IntentService.classify("请问这个产品好用吗")  # 不命中规则，走 LLM
 
         prompt = captured["prompt"]
         assert "chitchat" in prompt
