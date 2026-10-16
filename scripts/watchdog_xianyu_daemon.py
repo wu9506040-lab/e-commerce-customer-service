@@ -136,6 +136,10 @@ def spawn_daemon() -> int | None:
     env["XIANYU_DEBOUNCE_WINDOW"] = "8"
     env["XIANYU_FIRST_MIN_DELAY"] = "0"
     env["XIANYU_FIRST_MAX_DELAY"] = "3"
+    # V16.8 P2-A 决策: 当前在 Windows 上 WSS 卡死 + HTTP 轮询不实时
+    # 回退到 XianyuWatcher (WebSocket 长连接) 模式
+    # 部署 Linux 后再考虑切换回 poller 或 WS 短连接方案
+    env["XIANYU_USE_POLLER"] = "false"
 
     # V16.8 P1-E2 选项 D：不带 creationflags（不 DETACHED_PROCESS，让 daemon 与 watchdog 同 tree）
     log_fh = open(_DAEMON_LOG_FILE, "a", encoding="utf-8")
