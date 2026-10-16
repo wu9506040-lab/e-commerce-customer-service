@@ -203,17 +203,25 @@ def main() -> int:
         fire_callback=scheduler.on_fire,
         window_seconds=debounce_window,
     )
-    # V16.8 P2-A: HTTP 轮询版 watcher（替代 XianyuWatcher 的 WebSocket subprocess，
-    # Windows 上 WebSocket 卡 UserRequest/Wait 死锁）
-    # 接口 100% 兼容（start/stop/is_alive/callback event dict 一致）
-    from app.services.xianyu.xianyu_watcher_poller import XianyuWatcherPoller
-    use_poller = os.environ.get("XIANYU_USE_POLLER", "true").lower() in ("1", "true", "yes")
-    if use_poller:
-        watcher = XianyuWatcherPoller(callback=debounce.on_message)
-        logger.info("V16.8 P2-A: 使用 HTTP MTOP 轮询（替代 WebSocket 长连接）")
-    else:
+    # V16.8 P3: 自实现 WebSocket 客户端 (彻底摆脱 goofish-cli 第三方)
+    # 接口 100% 兼容 (start/stop/is_alive/callback event dict 一致)
+    from app.services.xianyu.xianyu_ws_client import XianyuWsClient
+
+    use_mode = os.environ.get("XIANYU_LISTEN_MODE", "ws").lower()
+    # ws = 自实现 WS (推荐, P3)
+    # ws_cli = goofish-cli WS (旧, P0-A)
+    # poll = HTTP MTOP 轮询 (P2-A, 已证明不可用)
+    if use_mode == "ws_cli":
+        from app.services.xianyu.watcher import XianyuWatcher
         watcher = XianyuWatcher(callback=debounce.on_message)
-        logger.info("回退到 WebSocket 长连接（XIANYU_USE_POLLER=false）")
+        logger.info("V16.8 P0-A: goofish-cli WebSocket 长连接 (回退)")
+    elif use_mode == "poll":
+        from app.services.xianyu.xianyu_watcher_poller import XianyuWatcherPoller
+        watcher = XianyuWatcherPoller(callback=debounce.on_message)
+        logger.info("V16.8 P2-A: HTTP MTOP 轮询 (实验性)")
+    else:  # 默认 ws
+        watcher = XianyuWsClient(callback=debounce.on_message)
+        logger.info("V16.8 P3: 自实现 WebSocket (websockets 库直连, 不依赖 Playwright/Chromium)")
 
     # V16.8 P1-E2 选项 D：写 PID file（让 watchdog 仅靠文件存在检测存活）
     try:
