@@ -8,14 +8,26 @@
 #         （与本文件 ORDER_NO_RE_PATTERN 语义相同；M13 同步过）
 #         本次不合并（跨模块 + YAGNI）；后续 Sprint 可单独立项消除双源
 
-# 意图分类规则（顺序敏感：refund_query → policy_query → order_query → product_query → policy_query 兜底）
+# 意图分类规则（顺序敏感：chitchat → refund_query → policy_query → order_query → product_query → policy_query 兜底）
 # 顺序说明：
 #   1. refund_query 必须最先（"我要退款" 不能被 "怎么退款" 误命中 — policy 在前会抢匹配）
 #   2. policy_query 含 "7 天无理由"（询问类应走 policy）+ 流程咨询（"怎么退款"）+ 通用政策（包邮/发票/促销）
 #   3. order_query 订单/物流/快递
 #   4. product_query 商品参数/价格/SKU
-# 未命中前 3 类默认走 policy_query（见 intent_service.classify 默认逻辑）
+# 未命中前 5 类默认走 policy_query（见 intent_service.classify 默认逻辑）
 INTENT_RULES:
+  # V16.8 P0-C：chitchat 闲聊问候（"在吗/你好" 类）— 严格匹配整段，复合 query 留给下面
+  # 设计：单字/单短语，纯问候结尾（[?？!！。,~ \s]*）
+  # "你好请问 ZP1" 这种带后续实质内容的被 ^问|想|请问 关键词接走 product_query（不冲突）
+  chitchat:
+    - '^在吗[？?]?$'           # 在吗 / 在吗？
+    - '^在不在[？?]?$'        # 在不在 / 在不在？
+    - '^在么[？?]?$'           # 在么 / 在么？
+    - '^你好[?？!！。,~ \s啊呀]*$'  # 你好 / 你好呀 / 你好啊
+    - '^您好[?？!！。,~ \s啊呀]*$'
+    - '^hi[!?。,\s]*$'        # hi / hi! / hi,
+    - '^hello[!?。,\s]*$'     # hello / hello! / hello,
+    - '^hey[!?。,\s]*$'
   # refund_query：退款/退货/换货（必须含明确个人意愿，避免询问流程被误命中）
   refund_query:
     - '我要退款'
@@ -92,14 +104,8 @@ INTENT_RULES:
     - '单号'
   # product_query：商品参数/价格/库存/SKU
   product_query:
-    # V16.4 闲聊兜底：短 query（"在吗/你好"）→ 强制走 product_query
-    # 避免 LLM classifier 把"在吗"误判成 order_query 触发 ASK_LOGIN 守卫
-    - '^在吗[？?]?$'
-    - '^在不在[？?]?$'
-    - '^你好'
-    - '^您好'
-    - '^hi[!?。]?$'
-    - '^hello[!?。]?$'
+    # V16.8 P0-C：闲聊兜底 rule 已上移到 chitchat 类（整段问候"你好"等）
+    # 保留"你好.*想/问"+"请教"+"麻烦.*咨询" — 复合 query（含实质意图）
     - '你好.*想'
     - '您好.*问'
     - '请教'
