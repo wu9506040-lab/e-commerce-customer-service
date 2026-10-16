@@ -253,6 +253,19 @@ class ReplyScheduler:
         if not last_text:
             logger.warning(f"ReplyScheduler 拼 query 为空 cid={cid}")
             return
+        # V16.7: 打印合并后的 query（确认 V16.7 合并行为生效）
+        logger.info(
+            f"ReplyScheduler cid={cid} query_merged is_multi={is_multi} "
+            f"batch={len(messages)} text=[{last_text[:200]}]"
+        )
+        try:
+            from app.core.runtime_log import log_event
+            log_event("QUERY_MERGED", "INFO", cid, str(toid),
+                      "merged multi messages into one query for LLM",
+                      is_multi=is_multi, batch_count=len(messages),
+                      query_preview=last_text[:300])
+        except Exception:
+            pass
 
         # 4. **V16.3 退款意图检测**（基于 DB）
         if self._db is not None and self._seller_unb and self._is_refund_intent_any(messages):
