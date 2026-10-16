@@ -64,14 +64,18 @@ class TestChitchatRulePriority:
         assert result["method"] == "rule"
         assert result["intents"][0]["confidence"] == 1.0
 
-    def test_greetings_with_substantive_content_still_classify_as_product(self):
-        """'你好请问 ZP1 价格' 应走 product_query（不被 chitchat 抢走）"""
+    def test_greetings_with_substantive_content_now_classify_as_chitchat(self):
+        """V16.8 P1-F trade-off：'你好请问 ZP1 价格' 现在归 chitchat
+
+        旧（V16.8 P0-C）期望 product_query（chitchat 规则严格 ^你好[标点]*$ 不匹配）
+        新（P1-F）放宽到 ^你好 → 任何"你好..."开头都归 chitchat
+        接受 5% 边界误识别 —— chitchat 短路只回 "在的~"，用户会再追问 ZP1
+        """
         from app.services.intent_service import IntentService
         result = IntentService.classify("你好请问 ZP1 价格")
-        # 命中 product_query 的 '你好.*想/问' 规则（chitchat 的 '^你好...' 是整段匹配，
-        # 不带问号/逗号/空格后的内容）
-        assert result["primary"] == "product_query", \
-            f"复合 query 应仍走 product_query，实际={result['primary']}"
+        # V16.8 P1-F：^你好.* 优先命中 → chitchat 而不是 product_query
+        assert result["primary"] == "chitchat", \
+            f"V16.8 P1-F trade-off：^你好.* 应归 chitchat，实际={result['primary']}"
 
     def test_intent_type_literal_includes_chitchat(self):
         """IntentType Literal 必须含 chitchat（否则 LLM 返 chitchat 会被 _VALID_INTENTS 拒）"""
