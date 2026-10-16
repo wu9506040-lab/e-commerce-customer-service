@@ -242,7 +242,7 @@ class TestStaleWatchdogBackoff:
                 return False  # False = 不被 stop_event set
             monkeypatch.setattr(w._stop_event, "wait", wait_capturing)
             w._test_backoffs = backoffs  # 暴露给外部断言
-            w._last_message_event_at = time.time() - 70.0
+            w._start_time = time.time() - 70.0
             return w
 
     def test_stale_first_restart_backoff_30s(self, monkeypatch):
@@ -260,7 +260,7 @@ class TestStaleWatchdogBackoff:
         w = self._make_watcher_with_stale(monkeypatch)
         try:
             for _ in range(3):
-                w._last_message_event_at = time.time() - 70.0
+                w._start_time = time.time() - 70.0
                 w._stale_watchdog_tick()
             assert w._test_backoffs == [30.0, 60.0, 120.0]
             assert w._restart_count == 3
@@ -273,7 +273,7 @@ class TestStaleWatchdogBackoff:
         try:
             # 直接打到第 5 次
             w._restart_count = 4  # 下一次 ++ 后 = 5
-            w._last_message_event_at = time.time() - 70.0
+            w._start_time = time.time() - 70.0
             w._stale_watchdog_tick()
             assert w._test_backoffs == [480.0]
             assert w._restart_count == 5
@@ -291,7 +291,7 @@ class TestStaleWatchdogBackoff:
         try:
             # 触发 7 次 stale（前 5 次 backoff=30/60/120/240/480，第 6/7 次仍 480）
             for _ in range(7):
-                w._last_message_event_at = time.time() - 70.0
+                w._start_time = time.time() - 70.0
                 w._stale_watchdog_tick()
             assert w._restart_count == 7
             assert not w._stop_event.is_set()  # V16.8 P1-A: 不永久停
@@ -305,7 +305,7 @@ class TestStaleWatchdogBackoff:
         w = self._make_watcher_with_stale(monkeypatch, max_restart=999999)
         try:
             for _ in range(8):
-                w._last_message_event_at = time.time() - 70.0
+                w._start_time = time.time() - 70.0
                 w._stale_watchdog_tick()
             # V16.8 P1-A: 任何次数都 backoff cap 在 480s
             assert len(w._test_backoffs) == 8
@@ -327,7 +327,7 @@ class TestStaleWatchdogBackoff:
             mock_popen.return_value = mock_proc
             w = XianyuWatcher(callback=lambda e: None, max_restart=5)
             w.start()
-            w._last_message_event_at = time.time() - 70.0
+            w._start_time = time.time() - 70.0
             # mock _stop_event.wait 返 True（被打断）
             w._stop_event.set()  # 模拟 stop
             spawn_count_before = mock_popen.call_count
