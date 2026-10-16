@@ -16,13 +16,18 @@ from app.services.xianyu.reply_scheduler import ReplyScheduler
 # =============================================================
 class TestRandomDelay:
     def test_delay_within_range(self):
-        """随机延迟在 [min_seconds, max_seconds] 区间内"""
+        """首次延迟在 [first_min_delay, first_max_delay] 区间内（V16.8 P1-D: 默认 0-3s）
+
+        旧(V16.3.1): 首次 10-15s — 反功能（IM 真人客服响应节奏 < 3s）
+        现(V16.8 P1-D): 首次/后续都 0-3s
+        """
         scheduler = ReplyScheduler(
             xianyu_client=MagicMock(),
             chat_api_url="http://test",
-            min_delay_seconds=0.05,
-            max_delay_seconds=0.1,
         )
+        # 强制 first_delays 为窄区间便于断言
+        scheduler._first_min_delay = 0.05
+        scheduler._first_max_delay = 0.1
         # 测 5 次，每次都在区间
         for _ in range(5):
             t = scheduler._compute_delay()
@@ -93,19 +98,29 @@ class TestDedup:
 # =============================================================
 class TestRetry:
     def test_send_failure_records_error(self):
-        """send_message 返 error → 记录 + 不抛"""
+        """V16.8 P1-B: send_message 永远失败 → 永远重试，daemon 不死就不放弃
+
+        旧(V16.6): 第 N 次放弃 → result["error"] 返回
+        现(V16.8 P1-B): 无限重试 + 5s→60s 指数退避 → 测试必须 mock 最终成功才能 return
+        """
         mock_client = MagicMock()
-        mock_client.send_message.return_value = {"error": "mcp_call_timeout"}
+        # 第一次失败，第二次成功（永远重试直到成功是 V16.8 新语义）
+        mock_client.send_message.side_effect = [
+            {"error": "mcp_call_timeout"},
+            {"ok": True, "message_id": "M1"},
+        ]
         scheduler = ReplyScheduler(
             xianyu_client=mock_client,
             chat_api_url="http://test",
             max_retries=1,
         )
-        result = scheduler._send_with_retry(
-            cid="c1", toid="u1", text="hi"
-        )
-        assert result["error"] == "mcp_call_timeout"
-        assert mock_client.send_message.call_count == 2  # 重试 1 次
+        with patch("time.sleep"):  # mock sleep 不真等
+            result = scheduler._send_with_retry(
+                cid="c1", toid="u1", text="hi"
+            )
+        assert result.get("ok") is True
+        assert result["message_id"] == "M1"
+        assert mock_client.send_message.call_count == 2
 
     def test_send_success_no_retry(self):
         """send_message 成功 → 不重试"""
@@ -195,31 +210,47 @@ class TestRetry:
         assert 0.5 <= first_sleep <= 1.5
 
     def test_send_rate_limit_keeps_retrying_until_quota_exhausted(self):
-        """限流 5 次都用完仍限流 → 返限流 result（不抛）"""
+        """V16.8 P1-B: 限流永远重试（99999 配额 = 实际无限），不再 6 次后放弃"""
         mock_client = MagicMock()
-        # 永远返限流
-        mock_client.send_message.return_value = {
-            "ok": False,
-            "error_type": "RateLimitedError",
-            "message": "限流：再等 0.1s",
-        }
+        # 永远返限流（测试用 break 跳出 while True）
+        rate_limit_count = 0
+        def fake_send(cid, toid, text):
+            nonlocal rate_limit_count
+            rate_limit_count += 1
+            return {
+                "ok": False,
+                "error_type": "RateLimitedError",
+                "message": "限流：再等 0.1s",
+            }
+        mock_client.send_message.side_effect = fake_send
+
         scheduler = ReplyScheduler(
             xianyu_client=mock_client,
             chat_api_url="http://test",
             max_retries=0,
         )
-        with patch("time.sleep"):
-            result = scheduler._send_with_retry(
-                cid="c1", toid="u1", text="hi"
-            )
-        # 1 次非限流尝试 + 5 次限流尝试 = 6 次
-        assert mock_client.send_message.call_count == 6
-        assert result.get("ok") is False
-        assert result.get("error_type") == "RateLimitedError"
+        # V16.8 P1-B: while True — 第 7 次跳出让测试不死循环
+        def fake_sleep(sec):
+            if rate_limit_count >= 7:
+                raise StopIteration("test_exit")
+        with patch("time.sleep", side_effect=fake_sleep):
+            try:
+                result = scheduler._send_with_retry(
+                    cid="c1", toid="u1", text="hi"
+                )
+            except StopIteration:
+                pass
+        # 7 次限流尝试（用 sleep 模拟跳出）
+        assert mock_client.send_message.call_count == 7
 
     def test_send_non_rate_limit_keeps_old_exponential_backoff(self):
-        """非限流错误：维持 1s/2s 指数退避（原行为不变）"""
+        """V16.8 P1-B: 非限流错误指数退避 5s/10s/20s/40s/60s cap（无成功时永远重试）
+
+        旧(V16.6): 1s/2s 退避，3 次后放弃
+        现(V16.8 P1-B): 5s/10s/20s/40s/60s cap 退避，永远重试
+        """
         mock_client = MagicMock()
+        # 永远失败 — 但 mock sleep + 测 sleep 序列
         mock_client.send_message.return_value = {
             "ok": False,
             "error_type": "NetworkError",
@@ -228,20 +259,30 @@ class TestRetry:
         scheduler = ReplyScheduler(
             xianyu_client=mock_client,
             chat_api_url="http://test",
-            max_retries=2,  # 3 次尝试
+            max_retries=2,
         )
-        with patch("time.sleep") as mock_sleep:
-            result = scheduler._send_with_retry(
-                cid="c1", toid="u1", text="hi"
-            )
-        # 3 次尝试，2 次 sleep（1s + 2s）
-        assert mock_client.send_message.call_count == 3
-        assert mock_sleep.call_count == 2
-        # 第 1 次 sleep 应是 1s（2^0 * 1.0）
-        assert mock_sleep.call_args_list[0][0][0] == 1.0
-        # 第 2 次 sleep 应是 2s（2^1 * 1.0）
-        assert mock_sleep.call_args_list[1][0][0] == 2.0
-        assert result.get("ok") is False
+        # V16.8 P1-B: while True 永远循环 — 我们用死循环计数器（只测前 5 次就 break）
+        non_rl_count = 0
+        def fake_send(cid, toid, text):
+            nonlocal non_rl_count
+            non_rl_count += 1
+            return {"ok": False, "error_type": "NetworkError", "message": "timeout"}
+        mock_client.send_message.side_effect = fake_send
+
+        sleeps = []
+        def fake_sleep(sec):
+            sleeps.append(sec)
+            # V16.8 P1-B: 5 次重试后让出（mock 让测试不真等）
+            if len(sleeps) >= 5:
+                raise StopIteration("test_exit")
+        with patch("time.sleep", side_effect=fake_sleep):
+            try:
+                scheduler._send_with_retry(cid="c1", toid="u1", text="hi")
+            except StopIteration:
+                pass
+        # 5 次尝试，5 次 sleep（5s/10s/20s/40s/60s）— 第 5 次 sleep 时 raise 但已记录
+        assert mock_client.send_message.call_count == 5
+        assert sleeps == [5.0, 10.0, 20.0, 40.0, 60.0]
 
 
 # =============================================================

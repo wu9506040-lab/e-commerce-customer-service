@@ -121,24 +121,33 @@ class TestCrashRecovery:
             assert mock_popen.call_count == 2  # 重启了一次
             w.stop()
 
-    def test_max_restart_exceeded_raises(self, monkeypatch):
-        """重启超 5 次 → 永久停止 + 记录 fatal log"""
+    def test_max_restart_no_longer_permanently_stops(self, monkeypatch):
+        """V16.8 P1-A: 重启超 5 次不再永久停（删 stop_event.set 分支）
+
+        旧行为：subprocess 连续死 N 次 → stop_event.set() 永久停 → 用户消息全丢
+        新行为：subprocess 死 → 永远 spawn_subprocess，restart_count 累加但 daemon 不死
+        """
         monkeypatch.setattr(
             "app.services.xianyu.watcher.run_auth_status",
             lambda: {"unb": "u1", "valid": True},
         )
         with patch("subprocess.Popen") as mock_popen:
             mock_proc = MagicMock()
-            mock_proc.poll.return_value = 0  # 总死
+            mock_proc.poll.return_value = 0  # 总死（模拟一直 dead）
             mock_proc.stdout = MagicMock()
             mock_popen.return_value = mock_proc
             w = XianyuWatcher(callback=lambda e: None)
             w.start()
-            # 触发 6 次 watchdog
-            for _ in range(6):
+            # 触发 8 次 watchdog（远超旧 max_restart=5）
+            for _ in range(8):
                 w._watchdog_tick()
-            assert w.is_alive() is False
-            assert w._restart_count >= 5
+            # V16.8 P1-A: stop_event 不被永久 set（仍然 set 在原状态）
+            assert not w._stop_event.is_set(), "V16.8 P1-A: stop_event 不应被永久 set"
+            assert w._restart_count == 8
+            # mock_proc.poll() 总返 0，所以 is_alive() 一直 False（这是 mock 的副作用）
+            # 但这不重要 — 关键是 restart_count 累加 + stop_event 未 set
+            assert mock_popen.call_count >= 9  # start 1 次 + watchdog 8 次
+            w.stop()
 
 
 # =============================================================
@@ -195,14 +204,16 @@ class TestState:
 # 6. Stale watchdog 指数退避（V16.6 fix）
 # =============================================================
 class TestStaleWatchdogBackoff:
-    def _make_watcher_with_stale(self, monkeypatch, max_restart=5):
+    def _make_watcher_with_stale(self, monkeypatch, max_restart=999999):
         """造一个 watcher，subprocess 活、_last_message_event_at 已设置
 
         同时 monkeypatch _stop_event.wait 立即返回（避免 backoff 真 sleep 卡测试）
+
+        V16.8 P1-A: 阈值已抬到 180s（生产值）；测试用 60s（旧值）触发快，逻辑不变
         """
-        # 关键：mock _stop_event.wait 让 backoff 立即返回（不等满 30/60s）
         import app.services.xianyu.watcher as w_mod
-        original_wait = w_mod.threading.Event.wait
+        # V16.8 P1-A: 抬高阈值到 180s — 测试用 60s 旧值便于触发
+        monkeypatch.setattr(w_mod, "STALE_EVENT_THRESHOLD_SEC", 60.0)
         # 但 _stop_event 是 instance 上的属性；用 patch.object 替换 instance.wait
         # 这里用 monkeypatch.setattr 后置到 instance
         monkeypatch.setattr(
@@ -270,29 +281,35 @@ class TestStaleWatchdogBackoff:
             w.stop()
 
     def test_stale_over_max_restart_does_not_permanently_stop(self, monkeypatch):
-        """超过 max_restart=5 次 stale → 打 ERROR 但不永久停（V16.6 fix）"""
-        w = self._make_watcher_with_stale(monkeypatch, max_restart=5)
+        """V16.8 P1-A: 多次 stale 后 → 打 ERROR 但不永久停 + backoff 一律 480s cap
+
+        旧 V16.6 fix: 超 5 次后 backoff=0（省时间）
+        现 V16.8 P1-A: MAX_RESTART=999999，超 5 后 backoff 仍计算但 cap 在 480s
+        （语义：长时静默买家场景不浪费 sleep 时间，但 daemon 永不永久停）
+        """
+        w = self._make_watcher_with_stale(monkeypatch, max_restart=999999)
         try:
-            # 触发 7 次 stale（前 5 次 backoff=30/60/120/240/480，第 6/7 次 backoff=0）
+            # 触发 7 次 stale（前 5 次 backoff=30/60/120/240/480，第 6/7 次仍 480）
             for _ in range(7):
                 w._last_message_event_at = time.time() - 70.0
                 w._stale_watchdog_tick()
             assert w._restart_count == 7
-            assert not w._stop_event.is_set()  # V16.6: 不永久停
-            # 前 5 次有 backoff，后 2 次 backoff=0 不过 wait
-            assert w._test_backoffs == [30.0, 60.0, 120.0, 240.0, 480.0]
+            assert not w._stop_event.is_set()  # V16.8 P1-A: 不永久停
+            # V16.8 P1-A: max_restart=999999，所以一直 cap 在 480s（不再有 backoff=0 阶段）
+            assert w._test_backoffs == [30.0, 60.0, 120.0, 240.0, 480.0, 480.0, 480.0]
         finally:
             w.stop()
 
-    def test_stale_over_max_restart_skips_backoff(self, monkeypatch):
-        """超 max_restart 后 backoff=0（不浪费时间，wait 不被调）"""
-        w = self._make_watcher_with_stale(monkeypatch, max_restart=5)
+    def test_stale_keeps_restarting_unlimited(self, monkeypatch):
+        """V16.8 P1-A: 8 次 stale 后 backoff 仍是 [30,60,120,240,480,480,480,480]（永远 cap 480）"""
+        w = self._make_watcher_with_stale(monkeypatch, max_restart=999999)
         try:
             for _ in range(8):
                 w._last_message_event_at = time.time() - 70.0
                 w._stale_watchdog_tick()
-            # 1-5 次 backoff（5 个），6-8 次 backoff=0（_stop_event.wait 不被调）
-            assert len(w._test_backoffs) == 5
+            # V16.8 P1-A: 任何次数都 backoff cap 在 480s
+            assert len(w._test_backoffs) == 8
+            assert w._test_backoffs == [30.0, 60.0, 120.0, 240.0, 480.0, 480.0, 480.0, 480.0]
             assert w._restart_count == 8
         finally:
             w.stop()
