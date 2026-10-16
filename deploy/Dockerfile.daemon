@@ -1,59 +1,50 @@
-# =============================================================
-# 闲鱼自动化 daemon 镜像 — V16.8 P1 容器化
-#
-# 设计：
-# - 与 backend 共用 python:3.11-slim 基础镜像（依赖一致）
-# - COPY 闲鱼 daemon 运行所需最小代码：
-#   * scripts/run_xianyu_daemon.py（启动入口）
-#   * backend/app/（daemon 通过 sys.path 找 app.* 模块）
-#   * backend/config/（YAML 业务规则）
-# - ENTRYPOINT 直接调脚本，无 entrypoint.sh 中间层（无 KB 检测/ingest）
-# - 健康检查用 ps 检查 daemon 主进程（无 HTTP 端点）
-#
-# 跨重启保留：
-# - cookies 命名卷（~/.goofish-cli/cookies.json 持久化）
-# - logs/ 主机卷（运维侧看日志）
-# =============================================================
+# V16.8 P1 daemon container image
+# - goofish-cli 走纯 python, 但 cookie 登录需要 Playwright + Chromium
+# - Linux 容器内 Playwright + google-chrome-stable 跨 OS 行为一致 (无 Windows WSS bug)
 
-FROM python:3.11-slim AS base
+FROM python:3.12-slim AS base
 
-# 环境变量（与 backend/Dockerfile 一致）
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TZ=Asia/Shanghai
 
-# 工作目录
 WORKDIR /app
 
-# 系统依赖（curl 用于 healthcheck；goofish-cli 走纯 python 不需要额外依赖）
+# 系统依赖: curl / procps (健康检查) + Playwright 浏览器依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         procps \
         tzdata \
+        # Playwright Chromium 运行时依赖
+        libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+        libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+        libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+        # 字符编码
+        fonts-noto-cjk fonts-noto-cjk-extra \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
-    && echo $TZ > /etc/timezone
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Python 依赖（先复制 requirements 利用 Docker 缓存）
+# goofish-cli (含 playwright 依赖)
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip install -i https://mirrors.aliyun.com/pypi/simple/ \
         --trusted-host mirrors.aliyun.com \
         -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
-# 应用代码（daemon 需要 app.* 模块路径）
-COPY backend/app/ /app/app/
-COPY backend/config/ /app/config/
+# 应用代码 (daemon 需要 app.* 模块路径)
+COPY backend/app/ /app/backend/app/
+COPY backend/config/ /app/backend/config/
 
 # Daemon 启动脚本
-COPY scripts/run_xianyu_daemon.py /app/scripts/run_xianyu_daemon.py
+COPY scripts/run_xianyu_daemon.py /app/run_xianyu_daemon.py
+RUN chmod +x /app/run_xianyu_daemon.py
 
-# 健康检查（无 HTTP 端点，用 pgrep 验证 main loop 在跑）
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=30s \
-    CMD pgrep -f "scripts/run_xianyu_daemon.py" >/dev/null 2>&1 || exit 1
+# QR 登录辅助脚本 (容器内手动跑一次生成 cookie)
+COPY deploy/do_qr_login.py /app/do_qr_login.py
+RUN chmod +x /app/do_qr_login.py
 
-# Daemon 启动入口（不带 args = 长驻模式）
-ENTRYPOINT ["python", "-u", "scripts/run_xianyu_daemon.py"]
+# 入口
+ENTRYPOINT ["python", "-u", "/app/run_xianyu_daemon.py"]
 CMD []
