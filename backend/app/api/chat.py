@@ -496,6 +496,11 @@ async def chat(
             # 优先级最高——orchestrator 内部不再二次拼装。caller 没传则为空串，
             # orchestrator 退化为 M9.5/V15 内部拼装（向后兼容）
             context_block=getattr(payload, "context_block", None) or "",
+            # V16.8 P0-A：channel + buyer_unb 透传，orchestrator 内 refund_query
+            # 分支据此路由（channel=xianyu 走闲鱼版 XianyuRefundHandler，
+            # 避免被商城 OrderService 的登录检查拦截）
+            channel=getattr(payload, "channel", None),
+            buyer_unb=getattr(payload, "buyer_unb", None),
         ))
 
         try:

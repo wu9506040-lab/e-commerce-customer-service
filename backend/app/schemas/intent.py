@@ -11,8 +11,9 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
-# 4 类意图字面量（前端可枚举）
-IntentType = Literal["order_query", "refund_query", "product_query", "policy_query"]
+# V16.8 P0-C：5 类意图字面量（前端可枚举）
+# - chitchat 新增：整段问候/纯闲聊（"在吗/你好" 等），orchestrator 短路不走 LLM
+IntentType = Literal["order_query", "refund_query", "product_query", "policy_query", "chitchat"]
 
 
 class IntentRequest(BaseModel):
