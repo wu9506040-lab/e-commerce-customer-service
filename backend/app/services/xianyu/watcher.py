@@ -108,8 +108,13 @@ class XianyuWatcher:
         self._proc: Optional[subprocess.Popen] = None
         self._reader_thread: Optional[threading.Thread] = None
         self._watchdog_thread: Optional[threading.Thread] = None
+        self._stale_watchdog_thread: Optional[threading.Thread] = None  # V16.8 P1-H 占位（编译期声明）
         # V16.5: Stale event 检测 — 上次收到 message 事件的时间
         self._last_message_event_at: float = 0.0
+        # V16.8 P1-H: daemon 启动时间（用作 stale 检测 reference_time）
+        # 之前 `_last_message_event_at=0` 让 stale_watchdog 在首事件前跳过 detection，
+        # 现在用 max(last_event, start_time) — 启动后 ≥180s 无事件 也判 stale
+        self._start_time: float = time.time()
         self._stale_watchdog_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._restart_count = 0
@@ -310,17 +315,23 @@ class XianyuWatcher:
         现在：
         - 1-5 次重启：指数 backoff 30s/60s/120s/240s/480s（用 _stop_event.wait 可被 stop 打断）
         - 6+ 次：backoff 0（节省时间），但不再永久停，仅 ERROR 日志持续打
+
+        V16.8 P1-H: 启动即开始计时 — 没收到过 message 也判 stale
+        之前 `_last_message_event_at=0` 让 stale_watchdog 跳过 detection（goofish 长连接
+        死了但 daemon 不知道）。现用 max(last_event, start_time) 作 reference_time：
+        - 启动后 ≥180s 没事件 → STALE_DETECTED 重启 subprocess
+        - 收到 message 后 → idle 以 last_event 算（启动时间不参与）
         """
         if self._stop_event.is_set() or self._proc is None:
-            return
-        # 还没收到过任何 message → 不判 stale（避免启动时误判）
-        if self._last_message_event_at <= 0:
             return
         # 检测 subprocess 是否还活(可能在死状态)
         if self._proc.poll() is not None:
             # subprocess 已死,交由 _watchdog_tick 处理
             return
-        idle_sec = time.time() - self._last_message_event_at
+        # V16.8 P1-H：reference_time 用 max(last_event, start_time)
+        # 让"启动后一条消息都没收到"也能判 stale（之前 0 跳过）
+        reference_time = max(self._last_message_event_at or 0, self._start_time)
+        idle_sec = time.time() - reference_time
         if idle_sec <= STALE_EVENT_THRESHOLD_SEC:
             return
         # Stale detected — 重启
