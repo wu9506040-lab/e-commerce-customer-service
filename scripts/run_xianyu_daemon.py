@@ -46,6 +46,13 @@ os.environ.setdefault("APP_ENV", "prod")  # daemon 默认 prod
 # 配置：必须显式开
 os.environ["ENABLE_XIANYU_TOOLS"] = "true"
 
+# V16.8 P1-C + P1-D: 端到端延迟优化默认
+# - P1-C: debounce 窗口 30→8s（用户连发合并节奏符合 V16.4 启发式）
+# - P1-D: 首次随机延迟 10-15s → 0-3s（IM 真人客服响应节奏）
+os.environ.setdefault("XIANYU_DEBOUNCE_WINDOW", "8")
+os.environ.setdefault("XIANYU_FIRST_MIN_DELAY", "0")
+os.environ.setdefault("XIANYU_FIRST_MAX_DELAY", "3")
+
 from app.core.config import settings  # noqa: E402
 from app.integrations import get_xianyu_client  # noqa: E402
 from app.services.xianyu.debounce_queue import DebounceQueue  # noqa: E402
