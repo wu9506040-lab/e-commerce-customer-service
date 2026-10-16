@@ -60,7 +60,7 @@ class DebounceQueue:
     def __init__(
         self,
         fire_callback: Callable[[str, list[dict]], None],
-        window_seconds: float = 12.0,  # V16.7: 默认 12s（用户连发合并窗口）
+        window_seconds: float = 8.0,  # V16.8 P1-C: 默认 8s（V16.7 是 12s，实测太长）
     ):
         self._fire_cb = fire_callback
         # V16.7: 默认 12s（用户连发消息合并窗口），env 可覆盖

@@ -49,8 +49,13 @@ class ReplyScheduler:
     # V16.6: 限流响应里的"再等 X.Xs"模式（用于解析剩余秒数）
     # 实际响应：'限流：bucket=message.write 每 60s 上限 1，再等 53.1s'
     _RATE_LIMIT_PATTERN = re.compile(r"再等\s*([\d.]+)\s*s", re.IGNORECASE)
-    # V16.6: 限流场景独立重试配额（避免无限循环）
-    _RATE_LIMIT_MAX_RETRIES = 5
+    # V16.8 P1-B: 限流场景独立重试配额（实际"无上限"，daemon 不死就一定能发出）
+    # 旧：5 次后放弃 → 用户消息丢失
+    # 新：99999 次（实际等同无限，保留计数器只为日志/监控可观测）
+    _RATE_LIMIT_MAX_RETRIES = 99999
+    # V16.8 P1-B: 非限流错误指数退避（5s/10s/20s/40s/60s cap）
+    _NON_RATE_LIMIT_BACKOFF_BASE_SEC = 5.0
+    _NON_RATE_LIMIT_BACKOFF_MAX_SEC = 60.0
     # V16.7: 多消息合并 prompt 模板（用户连发时拼综合 query）
     _MULTI_MSG_PROMPT_HEADER = "用户连续发了以下几条消息："
     _MULTI_MSG_PROMPT_FOOTER = "请你综合回答这几个问题，一条回复里覆盖所有问题。"
@@ -70,11 +75,11 @@ class ReplyScheduler:
     ):
         self._client = xianyu_client
         self._chat_api_url = chat_api_url
-        # V16.3.1: 首次 vs 后续切换延迟区间
-        # 首次 10-15s（首次可慢点查卖家信息，限 <30s 总）
-        # 后续 0-3s（已有 BuyerProfile 缓存，限 <10s 总）
-        self._first_min_delay = float(os.environ.get("XIANYU_FIRST_MIN_DELAY", "10"))
-        self._first_max_delay = float(os.environ.get("XIANYU_FIRST_MAX_DELAY", "15"))
+        # V16.8 P1-D: 首次 vs 后续统一延迟区间
+        # 旧(V16.3.1)：首次 10-15s（"显得像真人"）—— 反功能：买家期望 < 3s 真人响应
+        # 新：首次/后续都 0-3s — 真人客服 IM 响应节奏
+        self._first_min_delay = float(os.environ.get("XIANYU_FIRST_MIN_DELAY", "0"))
+        self._first_max_delay = float(os.environ.get("XIANYU_FIRST_MAX_DELAY", "3"))
         self._next_min_delay = float(os.environ.get("XIANYU_NEXT_MIN_DELAY", "0"))
         self._next_max_delay = float(os.environ.get("XIANYU_NEXT_MAX_DELAY", "3"))
         # 保留旧字段（兼容）
@@ -643,23 +648,25 @@ class ReplyScheduler:
             return None
 
     def _send_with_retry(self, cid: str, toid: str, text: str) -> dict:
-        """send_message + 智能退避（V16.6 fix）
+        """send_message + 智能退避（V16.6 fix / V16.8 P1-B 无限重试）
 
         区分限流 vs 普通错误：
         - 限流：从 error message 解析 "再等 X.Xs"，sleep 那个时间再重试
-                （独立配额：5 次，避免无限循环）
-        - 普通错误：1s/2s/fail 指数退避（max_retries 配额，默认 2 = 3 次）
+                （独立配额：99999 = 实际无限，daemon 不死就一定能发出）
+        - 普通错误：5s/10s/20s/40s/60s 指数退避（cap 60s，无限循环）
 
         V16.5 fix: 错误日志显示完整 result
         V16.6 fix: 限流场景下不立即放弃，等剩余窗口过
+        V16.8 P1-B: 旧版 5 次后放弃 → 用户消息丢失。现无限重试，daemon stop 才停
         """
         max_attempts = self._max_retries + 1   # 非限流尝试配额（默认 3）
-        rate_limit_left = self._RATE_LIMIT_MAX_RETRIES  # 限流额外配额（5）
+        rate_limit_left = self._RATE_LIMIT_MAX_RETRIES  # 限流额外配额（99999）
         last_result: dict = {"error": "no_attempt"}
         non_rl_count = 0  # 非限流尝试计数
 
-        # 兜底总尝试上限：max_attempts + 5（防意外无限循环）
-        while non_rl_count < max_attempts + rate_limit_left:
+        # V16.8 P1-B: 无限重试（直到 daemon stop 被外部触发）
+        # 兜底逻辑：限流配额耗尽也只是日志告警不退出（生产中 1 分钟 / 50 配额够用 8 小时重试）
+        while True:
             result = self._client.send_message(
                 cid=cid, toid=toid, text=text
             )
@@ -674,23 +681,31 @@ class ReplyScheduler:
                 rate_limit_left -= 1
                 logger.warning(
                     f"send_message 限流 等 {wait_sec:.1f}s "
-                    f"(限流配额剩 {rate_limit_left}/5): result={result}"
+                    f"(限流配额剩 {rate_limit_left}/{self._RATE_LIMIT_MAX_RETRIES}): "
+                    f"result={result}"
+                )
+                time.sleep(wait_sec)
+                continue
+            # 限流配额耗尽 — 日志告警但继续（实际生产中限流配额 99999 不会出现耗尽）
+            if wait_sec is not None:
+                logger.error(
+                    f"send_message 限流配额 {self._RATE_LIMIT_MAX_RETRIES} 用尽，"
+                    f"但继续重试（daemon 不死就不放弃）: result={result}"
                 )
                 time.sleep(wait_sec)
                 continue
 
-            # 非限流路径：指数退避（原行为）
+            # 非限流路径：5s/10s/20s/40s/60s 指数退避（V16.8 P1-B）
             non_rl_count += 1
-            if non_rl_count < max_attempts:
-                wait = 1.0 * (2 ** (non_rl_count - 1))  # 1s, 2s, 4s
-                logger.warning(
-                    f"send_message 失败 (attempt {non_rl_count}/{max_attempts}) "
-                    f"等 {wait}s: result={result}"
-                )
-                time.sleep(wait)
-                continue
-            # 非限流配额用完
-            break
+            wait = min(
+                self._NON_RATE_LIMIT_BACKOFF_BASE_SEC * (2 ** (non_rl_count - 1)),
+                self._NON_RATE_LIMIT_BACKOFF_MAX_SEC,
+            )  # 5s, 10s, 20s, 40s, 60s, 60s, ...
+            logger.warning(
+                f"send_message 失败 (attempt {non_rl_count}) "
+                f"等 {wait:.1f}s (V16.8 P1-B 5s→60s cap): result={result}"
+            )
+            time.sleep(wait)
 
         logger.error(
             f"ReplyScheduler cid={cid} 发送失败 (非限流{non_rl_count}次+"

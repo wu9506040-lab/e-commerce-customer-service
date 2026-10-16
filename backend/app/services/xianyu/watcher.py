@@ -27,19 +27,20 @@ from app.integrations.xianyu_mcp_client import XianyuMCPClient
 
 logger = logging.getLogger(__name__)
 
-# 最大重启次数（5 次后永久停，避免雪崩）
-MAX_RESTART_COUNT = 5
+# V16.8 P1-A: 大值代表无限重启（实际语义：不要永久停服）
+MAX_RESTART_COUNT = 999999
 # watchdog 心跳间隔（秒）
 WATCHDOG_INTERVAL = 5.0
-# V16.5: Stale event watchdog — 检测 goofish 长连接"假死"（subprocess 进程在但 stdin 静默）
+# V16.8 P1-A: Stale event watchdog — 检测 goofish 长连接"假死"
 # 23:15 场景:daemon 显示 WATCHER alive + 23:15:20 new_msg + 23:15:23 read 后 stdin 静默 4 分钟
 # 实际长连接已断,傻瓜 watch 子进程不死,daemon 收不到消息
-# 现在: 60s 无 message 事件 → ERROR 日志 + kill subprocess + 重启
-STALE_EVENT_THRESHOLD_SEC = 60.0
+# 旧值: 60s（实测太敏感，goofish 长连接在用户静默时偶发 60s 无消息，导致 daemon 频繁重启）
+# V16.8 P1-A: 抬到 180s (3 分钟)，让长时静默买家不触发 false-positive stale death
+STALE_EVENT_THRESHOLD_SEC = 180.0
 STALE_WATCHDOG_INTERVAL_SEC = 30.0
-# V16.6: Stale watchdog 指数退避（30s/60s/120s/240s/480s）
-# 旧逻辑：连续重启超 5 次就 stop_event.set() 永久停
-# 实际：限流场景下用户沉默，重启没意义；超次应继续监控不永久停
+# V16.8 P1-A: Stale watchdog 指数退避（30s/60s/120s/240s/480s）
+# 旧逻辑（V16.6）: 连续重启超 5 次就 stop_event.set() 永久停 → 实际场景（限流后用户沉默）导致 daemon 永久死掉
+# V16.8 P1-A: 改 MAX_RESTART_COUNT=999999，配合 _watchdog_tick 删永久停分支 → daemon 不死就一定能收消息
 STALE_BACKOFF_BASE_SEC = 30.0
 STALE_BACKOFF_MAX_SEC = 480.0
 
@@ -384,22 +385,22 @@ class XianyuWatcher:
             self._watchdog_tick()
 
     def _watchdog_tick(self) -> None:
-        """单次 watchdog 检查（测试用，方便 mock time）"""
+        """单次 watchdog 检查（测试用，方便 mock time）
+
+        V16.8 P1-A: 删掉「连续重启超 N 次永久停」分支
+        - 旧行为：subprocess 连续死 N 次 → stop_event.set()，daemon 永远停 → 用户发消息彻底丢失
+        - 现行为：subprocess 死 → 永远尝试 spawn（实际生产：goofish cookie 没死极少触发；最坏情况是网络抖动）
+        - 重启计数仍累加（日志/监控/上限指标用），但不阻塞后续重启
+        """
         if self._stop_event.is_set():
             return
         if not self._proc:
             return
         if self._proc.poll() is not None:
-            # subprocess 死
+            # subprocess 死 — V16.8 P1-A: 永远尝试重启（不再永久停）
             self._restart_count += 1
-            if self._restart_count > self._max_restart:
-                logger.error(
-                    f"XianyuWatcher 重启超 {self._max_restart} 次，永久停"
-                )
-                self._stop_event.set()
-                return
             logger.warning(
-                f"XianyuWatcher subprocess 死，{self._restart_count}/{self._max_restart} 次重启"
+                f"XianyuWatcher subprocess 死，第 {self._restart_count} 次重启（无上限）"
             )
             # 重新拉起（不重新探活——已探过）
             try:
