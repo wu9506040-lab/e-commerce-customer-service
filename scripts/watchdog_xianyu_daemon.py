@@ -105,6 +105,9 @@ def spawn_daemon() -> int | None:
     - **强制**设 APP_ENV=dev（避免 host shell APP_ENV=prod 覆盖）
     - stdout/stderr 重定向到 logs/xianyu_daemon_watchdog_spawn.log
     - Windows 下用 DETACHED_PROCESS 让 daemon 独立存在
+    - 写 PID file（logs/xianyu_daemon.pid）供 watchdog 检测 PID alive
+    - 用 PowerShell 重定向而非 DETACHED_PROCESS 单独 file handle
+      （避免 detach 后 fd inheritance 问题，0 字节 spawn log 不再出现）
     """
     env = os.environ.copy()
     # V16.8 P1-E2 修正：必须强制覆盖（不只 setdefault，因为 shell 可能已经有 prod）
