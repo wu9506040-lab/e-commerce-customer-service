@@ -72,7 +72,7 @@ class TestClassifyV12NewStructure:
 
         result = IntentService.classify("我要退款")
         assert "primary" in result
-        assert result["primary"] in ("order_query", "refund_query", "product_query", "policy_query")
+        assert result["primary"] in ("order_query", "refund_query", "product_query", "policy_query", "chitchat")
 
     def test_classify_intents_sorted_by_confidence_desc(self):
         """intents[] 必按 confidence 降序。"""
@@ -372,9 +372,21 @@ class TestSecondaryIntentBlockInjection:
         assert "【用户可能的次要问题】" not in prompt
 
     def test_secondary_block_after_context_block(self):
-        """secondary_intent_block 位于 context_block 之后、tool_block 之前。"""
-        from app.services.chat.prompt_assembler import _build_chat_prompt
+        """V16.3.4 双层优先级：
+        - system 层：context_block（最高优先级，由 _build_system_content 拼到 SYSTEM 头部）
+        - user 层：secondary_intent_block 仍位于 tool_block 之前（V12 语义保留）
 
+        V16.3.3-5 之前：context_block 在 user 段【当前场景】，
+        V16.3.4 之后：context_block 已迁 system 段，故 user 段断言改"secondary 在 tool 前"。"""
+        from app.services.chat.prompt_assembler import _build_chat_prompt
+        from app.services.chat.stream_dispatcher import _build_system_content
+
+        # system 层：context_block 真进了 system message（最高优先级）
+        sys_content = _build_system_content("【当前场景】M9.5 context")
+        assert "【当前场景】M9.5 context" in sys_content
+        assert "【结构化事实-渠道上下文（最高优先级）】" in sys_content
+
+        # user 层：secondary_intent_block 在 tool_block 之前（V12 语义保留）
         prompt = _build_chat_prompt(
             intent="order_query",
             tool_block="[事实陈述] 订单数据",
@@ -382,13 +394,13 @@ class TestSecondaryIntentBlockInjection:
             product_block="",
             history_block="",
             query="订单状态",
-            context_block="【当前场景】M9.5 context",
+            context_block="【当前场景】M9.5 context",  # V16.3.4 向后兼容但实际不拼
             secondary_intent_block="【用户可能的次要问题】",
         )
-
-        # 优先级：context > secondary > tool
-        assert prompt.index("【当前场景】") < prompt.index("【用户可能的次要问题】")
+        # secondary 在 tool 前
         assert prompt.index("【用户可能的次要问题】") < prompt.index("【事实陈述】")
+        # V16.3.4 关键变更：ctx 不再出现在 user 段
+        assert "【当前场景】" not in prompt, "V16.3.4 后 ctx 不应再出现在 user 段"
 
 
 # =============================================================

@@ -35,6 +35,9 @@ CHITCHAT_RESPONSES:
   too_long: "您的问题较长，建议精简后重新提问，或联系人工客服。"
   spam: "您已多次发送相同内容，请稍候再试。"
   english_no_sku: "请用中文描述您的问题，方便我更快为您解答。"
+  # V16.8 P0-C：chitchat 意图短回复（intent 规则命中整段问候 / LLM 兜底分类为 chitchat）
+  # orchestrator.Synthesizer.run_stream 短路时直接 yield 该文案，省 LLM token
+  chitchat_template: "在的~请问您想咨询什么？规格、售后还是价格？"
 
 # === V13（1.5）：转人工词表与优先级（覆盖 escalation_service 内置默认）===
 # 启动期一次加载；本段缺失时服务用代码内置兜底（两处一致性由

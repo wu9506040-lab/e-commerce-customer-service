@@ -303,11 +303,13 @@ class IntentService:
     def _llm_classify(query: str) -> dict:
         """LLM 兜底分类（V11 旧行为：单意图；V12 默认走 _llm_classify_multi）"""
         # 注意：让 LLM 输出严格 JSON，避免解析失败
-        prompt = f"""你是电商客服意图分类器。判断用户问题属于以下 4 类之一：
+        # V16.8 P0-C：5 类（含 chitchat）— 闲聊问候单独成类
+        prompt = f"""你是电商客服意图分类器。判断用户问题属于以下 5 类之一：
 - order_query: 订单状态、物流、快递、发货、签收
 - refund_query: 退款、退货、换货、不想要了
 - product_query: 商品参数、价格、库存、SKU、推荐
 - policy_query: 保修、活动、促销、包邮、发票、通用规则
+- chitchat: 纯问候 / 闲聊（"在吗""你好""hi"）；不调工具，简短回应引导用户提问
 
 只输出 JSON，不要解释。格式：
 {{"intent": "类别", "confidence": 0.0~1.0}}
@@ -316,6 +318,8 @@ class IntentService:
 Q: ZP1 现在有货吗？ → {{"intent": "product_query", "confidence": 0.95}}
 Q: 保修多久？ → {{"intent": "policy_query", "confidence": 0.9}}
 Q: 我的快递怎么还没到 → {{"intent": "order_query", "confidence": 0.93}}
+Q: 在吗？ → {{"intent": "chitchat", "confidence": 0.92}}
+Q: 你好 → {{"intent": "chitchat", "confidence": 0.92}}
 
 用户问题：{query}
 JSON："""
@@ -358,13 +362,15 @@ JSON："""
         让 LLM 输出 JSON 数组，按 confidence 降序截断到 top-K。
         primary = confidence 最高的 intent。
         """
+        # V16.8 P0-C：5 类（含 chitchat）— 多意图版本也加 chitchat
         prompt = f"""你是电商客服意图分类器。判断用户问题可能涉及的多个意图（按可能性从高到低排序，最多 2 个）。
 
-4 类意图：
+5 类意图：
 - order_query: 订单状态、物流、快递、发货、签收
 - refund_query: 退款、退货、换货、不想要了
 - product_query: 商品参数、价格、库存、SKU、推荐
 - policy_query: 保修、活动、促销、包邮、发票、通用规则
+- chitchat: 纯问候 / 闲聊（"在吗""你好""hi"）；不调工具，简短回应引导用户提问
 
 只输出 JSON，不要解释。格式：
 {{"intents": [{{"intent": "类别", "confidence": 0.0~1.0}}, ...]}}

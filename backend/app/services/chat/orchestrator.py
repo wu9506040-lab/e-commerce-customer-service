@@ -56,8 +56,16 @@ from app.services.chat.refund_handler import handle_refund_v2, handle_refund_v3
 from app.services.audit_service import try_log_action
 # M14 Stage 3：BusinessFlow 抽象（仅 refund_query 接入；其他 intent 暂不抽象）
 from app.services.business_flow import create_business_flow
+# V16.8 P0-A：闲鱼退款 bridge（channel=xianyu 时调，绕过商城 OrderService 登录拦截）
+from app.services.xianyu.orchestrator_bridge import handle_xianyu_refund
 
 logger = logging.getLogger(__name__)
+
+
+# V16.8 P0-C：chitchat 意图短回复（不走 LLM/RAG）
+# - 替代 product_query 兜底："在吗/你好" 不再回一长串产品参数
+# - 与 config/business_rules/guard.yaml 的 CHITCHAT_RESPONSES.chitchat_template 保持一致（前端如需扩展从 guard.yaml 拉）
+CHITCHAT_SHORT_REPLY = "在的~请问您想咨询什么？规格、售后还是价格？"
 
 
 class Synthesizer:
@@ -74,6 +82,8 @@ class Synthesizer:
         pre_intent: Optional[dict] = None,
         user_context_block: str = "",
         context_block: str = "",  # V16.3.3：daemon/caller 渠道 context（优先级最高）
+        channel: Optional[str] = None,  # V16.8 P0-A：渠道标签（"xianyu" / None=商城）
+        buyer_unb: Optional[str] = None,  # V16.8 P0-A：闲鱼买家 unb（refund 路由用）
     ) -> Generator[Tuple[str, Any], None, None]:
         """
         主入口：分类 → 分派 → 融合 → LLM 流式输出
@@ -87,6 +97,8 @@ class Synthesizer:
             session_id: 会话 ID（M14：OrderContextResolver 用其加载会话上下文）
             pre_intent: chat 入口已分类结果（透传省一次 LLM 调用）
             user_context_block: V15 用户上下文预加载块（最近 5 单 + 画像），chat 入口注入
+            channel: V16.8 P0-A 渠道标签；"xianyu" 时 refund_query 路由到闲鱼版
+            buyer_unb: V16.8 P0-A 闲鱼买家 unb，refund 路由用
 
         Yields:
             ("meta", {intent, entities, ...})
@@ -250,6 +262,31 @@ class Synthesizer:
         # 修复前：token 已推给客户端后 handler 抛异常 → 从头再跑 V1.2 整流 fallback，
         # chat.py 的 full_answer=半截+重答全文 拼接落库（双 meta/双份答案）。
         # 现在：已发过 token 就不再重答，只追加固定收尾话术+done；未发过才允许整流 fallback。
+        #
+        # V16.8 P0-C：chitchat 短路 — "在吗/你好" 类不再调 LLM，直接 1 个短 token + done
+        # - 替代 product_query 的长篇 RAG 兜底，省 token 提升响应
+        # - meta.intent="chitchat" 字面返回（前端可识别）
+        # - 已发过 token 才进入的兜底分支与 chitchat 短路互不干扰（chitchat 全程未调 LLM）
+        if primary == "chitchat":
+            logger.info(
+                f"synth.chitchat_short_circuit: query={query[:40]} user_id={user_id}",
+                extra={"intent": "chitchat", "channel": channel},
+            )
+            metrics.inc_chat("chitchat", v3_engine="-")  # M8：chitchat 路径独立计数
+            yield ("meta", {
+                "intent": "chitchat",
+                "entities": intent_result.get("entities", {}),
+                "contexts": [],
+                "scores": [],
+                "channel": channel,
+                "chitchat_short_circuit": True,
+            })
+            yield ("token", CHITCHAT_SHORT_REPLY)
+            yield ("done", {
+                "answer": CHITCHAT_SHORT_REPLY,
+                "chitchat_short_circuit": True,
+            })
+            return
         try:
             if primary == "order_query":
                 metrics.inc_chat(primary, v3_engine="-")  # M8
@@ -262,32 +299,48 @@ class Synthesizer:
                     session_id=session_id, secondary_intent_block=secondary_intent_block,
                 )
             elif primary == "refund_query":
-                # M14 Stage 3：BusinessFlow 抽象（灰度 ENABLE_BUSINESS_FLOW=True 时走 RefundFlow）
-                # RefundFlow 包装 V3 LangGraph + yield flow_stage meta；与 handle_refund_v3 行为兼容
-                flow = create_business_flow(
-                    intent="refund_query",
-                    query=query,
-                    user_id=user_id,
-                    intent_result=intent_result,
-                    order_no=order_no,
-                    context_block=context_block,
-                    history=history,
-                )
-                if flow is not None:
+                # V16.8 P0-A：channel=xianyu 走闲鱼 refund_handler（避免商城的
+                # OrderService → ASK_LOGIN 拦截把咸鱼买家挡在外面）
+                # 设计原则：智能客服不操作退款，XianyuRefundHandler 直接读
+                # xianyu_orders 表 + 转人工/拒绝/无订单记录 三个分支
+                if channel == "xianyu":
                     logger.info(
-                        f"refund_query → {flow.name}",
-                        extra={"intent": primary, "flow": flow.name},
+                        "refund_query → xianyu (P0-A channel branch)",
+                        extra={"intent": primary, "channel": "xianyu"},
                     )
-                    metrics.inc_chat(primary, v3_engine="flow")  # M8：Flow 路径独立计数
-                    dispatch_gen = flow.run()
-                elif settings.USE_LANGGRAPH_REFUND:
-                    # 灰度关闭 Flow → V3/V2 二选一
-                    logger.info("refund_query → LangGraph V3", extra={"intent": primary})
-                    metrics.inc_chat(primary, v3_engine="v3")  # M8
-                    dispatch_gen = handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block, history=history, secondary_intent_block=secondary_intent_block)
+                    metrics.inc_chat(primary, v3_engine="xianyu")  # M8：xianyu 路径独立计数
+                    dispatch_gen = handle_xianyu_refund(
+                        query=query,
+                        buyer_unb=buyer_unb or "",
+                        intent_result=intent_result,
+                    )
                 else:
-                    metrics.inc_chat(primary, v3_engine="v2")  # M8
-                    dispatch_gen = handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block, secondary_intent_block=secondary_intent_block)
+                    # M14 Stage 3：BusinessFlow 抽象（灰度 ENABLE_BUSINESS_FLOW=True 时走 RefundFlow）
+                    # RefundFlow 包装 V3 LangGraph + yield flow_stage meta；与 handle_refund_v3 行为兼容
+                    flow = create_business_flow(
+                        intent="refund_query",
+                        query=query,
+                        user_id=user_id,
+                        intent_result=intent_result,
+                        order_no=order_no,
+                        context_block=context_block,
+                        history=history,
+                    )
+                    if flow is not None:
+                        logger.info(
+                            f"refund_query → {flow.name}",
+                            extra={"intent": primary, "flow": flow.name},
+                        )
+                        metrics.inc_chat(primary, v3_engine="flow")  # M8：Flow 路径独立计数
+                        dispatch_gen = flow.run()
+                    elif settings.USE_LANGGRAPH_REFUND:
+                        # 灰度关闭 Flow → V3/V2 二选一
+                        logger.info("refund_query → LangGraph V3", extra={"intent": primary})
+                        metrics.inc_chat(primary, v3_engine="v3")  # M8
+                        dispatch_gen = handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block, history=history, secondary_intent_block=secondary_intent_block)
+                    else:
+                        metrics.inc_chat(primary, v3_engine="v2")  # M8
+                        dispatch_gen = handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block, secondary_intent_block=secondary_intent_block)
             elif primary == "product_query":
                 metrics.inc_chat(primary, v3_engine="-")  # M8
                 # V12：传 secondary_intent_block 注入 prompt

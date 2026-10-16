@@ -60,17 +60,19 @@ class TestIntentModuleLoadsYAML:
         assert "SKU_RE_FLAGS" in yaml_data
 
     def test_intent_yaml_has_all_4_intents(self):
-        """YAML 含 4 类意图（refund / policy / order / product）。"""
+        """YAML 含 5 类意图（V16.8 P0-C 加 chitchat：chitchat / refund / policy / order / product）。"""
         from app.services.config_loader import get_config_loader
 
         yaml_data = get_config_loader().load("intent")
         yaml_intents = set(yaml_data["INTENT_RULES"].keys())
-        assert yaml_intents == {"refund_query", "policy_query", "order_query", "product_query"}
+        assert yaml_intents == {
+            "chitchat", "refund_query", "policy_query", "order_query", "product_query",
+        }
 
     def test_intent_yaml_pattern_counts_preserved(self):
-        """pattern 数量守卫：基线 21+30+12+18=81；V13（2026-10-10 I2 修复）
-        policy 段 +3 条时效 pattern（退款.*到账/工作日/多久）→ 84。
-        改数量必须是有意的（防误删/误加），同步更新此断言。"""
+        """pattern 数量守卫：基线 21+33+12+18=84；V16.8 P0-C
+        + chitchat 8 条 + product_query 上 6 闲聊兜底上移到 chitchat（-6+0=12，复合 query 5 条仍留）
+        → 21+33+12+22+8 = 96。改数量必须是有意的，同步更新此断言。"""
         from app.services.config_loader import get_config_loader
 
         yaml_data = get_config_loader().load("intent")
@@ -78,8 +80,9 @@ class TestIntentModuleLoadsYAML:
         assert yaml_counts["refund_query"] == 21
         assert yaml_counts["policy_query"] == 33
         assert yaml_counts["order_query"] == 12
-        assert yaml_counts["product_query"] == 18
-        assert sum(yaml_counts.values()) == 84
+        assert yaml_counts["product_query"] == 22
+        assert yaml_counts["chitchat"] == 8
+        assert sum(yaml_counts.values()) == 96
 
     def test_intent_rules_constants_match_yaml(self):
         """intent_service.INTENT_RULES 与 YAML 字段一一对应（防偏移）。"""
@@ -87,21 +90,24 @@ class TestIntentModuleLoadsYAML:
         from app.services.config_loader import get_config_loader
 
         yaml_data = get_config_loader().load("intent")
-        # 4 intents 完整
+        # V16.8 P0-C：5 intents 完整（含 chitchat）
         assert set(intent_service.INTENT_RULES.keys()) == {
-            "refund_query", "policy_query", "order_query", "product_query",
+            "chitchat", "refund_query", "policy_query", "order_query", "product_query",
         }
         # 每条 intent 的 pattern 数量与 YAML 一致
         for intent, patterns in intent_service.INTENT_RULES.items():
             assert len(patterns) == len(yaml_data["INTENT_RULES"][intent])
 
     def test_intent_rules_order_preserved(self):
-        """INTENT_RULES 顺序敏感：refund_query → policy_query → order_query → product_query。
-        与原 tuple 列表顺序完全一致；dict 保序（Python 3.7+）。"""
+        """INTENT_RULES 顺序敏感：chitchat → refund_query → policy_query → order_query → product_query。
+        V16.8 P0-C 把 chitchat 加到最前（短路问候），与原 tuple 列表顺序兼容 + 新类位置正确。
+        dict 保序（Python 3.7+）。"""
         from app.services import intent_service
 
         order = list(intent_service.INTENT_RULES.keys())
-        assert order == ["refund_query", "policy_query", "order_query", "product_query"]
+        assert order == [
+            "chitchat", "refund_query", "policy_query", "order_query", "product_query",
+        ]
 
     def test_order_no_re_and_sku_re_match_yaml(self):
         """ORDER_NO_RE / SKU_RE 的 pattern + flags 与 YAML 一致。"""
