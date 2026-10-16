@@ -80,6 +80,9 @@ class XianyuWatcherPoller:
         self._prev_unread_by_cid: dict[str, int] = {}
         # cid → 已处理过的 event_key，防止重复触发（unread 多次异常）
         self._last_event_key_by_cid: dict[str, str] = {}
+        # V16.8 P2-A 选项 C: 首次 poll 不触发 callback（只 seed prev_unread）
+        # 否则启动会立刻处理所有历史未读 → 撞 MCP server 1/min 限流窗口
+        self._seeded: bool = False
         self._session: Optional[Session] = None
         self._last_refresh_login_at: float = 0.0
 
@@ -198,6 +201,15 @@ class XianyuWatcherPoller:
             summary = s.get("message", {}).get("summary") or {}
             if sid:
                 curr_unread[sid] = int(summary.get("unread") or 0)
+        # V16.8 P2-A 选项 C: 首次 poll 不触发 callback（seed 阶段）
+        # 历史 unread 全部跳过；之后才检测增量
+        if not self._seeded:
+            self._prev_unread_by_cid = curr_unread
+            self._seeded = True
+            logger.info(
+                f"V16.8 P2-A 选项 C: 首次 poll seed 完成，{len(curr_unread)} 个 session 跳过历史未读"
+            )
+            return
         # 3. 检测 unread 增量 → 触发 callback
         new_unread_cids = [
             cid for cid, n in curr_unread.items()
