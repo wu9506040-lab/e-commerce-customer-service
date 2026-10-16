@@ -98,21 +98,56 @@ def is_daemon_alive() -> bool:
     return len(_query_daemon_via_powershell()) >= 1
 
 
+def _load_dotenv_into_env(env: dict[str, str]) -> None:
+    """简陋的 .env.dev 解析（不引入依赖）
+
+    V16.8 P1-E2: daemon config 验证需要 JWT_SECRET/DATABASE_URL/QWEN_API_KEY 等
+    host shell 通常无这些变量，watchdog 必须 source .env.dev 才能 spawn 成功 daemon
+    """
+    env_path = _REPO_ROOT / "deploy" / ".env.dev"
+    if not env_path.exists():
+        logger.warning(f".env.dev 不存在: {env_path}")
+        return
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning(f".env.dev 读失败: {e}")
+        return
+    loaded = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        # 去引号
+        if (v.startswith('"') and v.endswith('"')) or (
+            v.startswith("'") and v.endswith("'")
+        ):
+            v = v[1:-1]
+        # 不覆盖强制的关键变量
+        if k not in env or not env[k]:
+            env[k] = v
+            loaded += 1
+    logger.info(f"从 {env_path.name} 加载 {loaded} 个环境变量（不覆盖已设值）")
+
+
 def spawn_daemon() -> int | None:
     """后台启动 daemon，返 PID
 
     - 用 sys.executable (Python 解释器)
     - **强制**设 APP_ENV=dev（避免 host shell APP_ENV=prod 覆盖）
+    - 从 deploy/.env.dev 加载所有 KEY=VALUE（daemon config 验证需要的 JWT_SECRET 等）
     - stdout/stderr 重定向到 logs/xianyu_daemon_watchdog_spawn.log
     - Windows 下用 DETACHED_PROCESS 让 daemon 独立存在
-    - 写 PID file（logs/xianyu_daemon.pid）供 watchdog 检测 PID alive
-    - 用 PowerShell 重定向而非 DETACHED_PROCESS 单独 file handle
-      （避免 detach 后 fd inheritance 问题，0 字节 spawn log 不再出现）
     """
     env = os.environ.copy()
     # V16.8 P1-E2 修正：必须强制覆盖（不只 setdefault，因为 shell 可能已经有 prod）
     env["APP_ENV"] = "dev"
-    # V16.8 P1 默认延迟参数
+    # 加载 .env.dev（关键：JWT_SECRET / QWEN_API_KEY / DATABASE_URL 等不在 host shell）
+    _load_dotenv_into_env(env)
+    # V16.8 P1 默认延迟参数（覆盖 .env 里的可能值）
     env["XIANYU_DEBOUNCE_WINDOW"] = "8"
     env["XIANYU_FIRST_MIN_DELAY"] = "0"
     env["XIANYU_FIRST_MAX_DELAY"] = "3"
@@ -123,7 +158,6 @@ def spawn_daemon() -> int | None:
     if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
         flags |= subprocess.CREATE_NEW_PROCESS_GROUP
 
-    # 打开 log file 用 line buffering（Python 端 flush 即可）
     log_fh = open(_DAEMON_LOG_FILE, "a", encoding="utf-8")
 
     try:
@@ -132,14 +166,17 @@ def spawn_daemon() -> int | None:
             cwd=str(_BACKEND_DIR),
             env=env,
             stdout=log_fh,
-            stderr=subprocess.STDOUT,  # 合并到 stdout file
+            stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             creationflags=flags if flags else 0,
             close_fds=True,
         )
+        logger.info(
+            f"spawn daemon pid={proc.pid} APP_ENV=dev (jwt_secret={'set' if env.get('JWT_SECRET') else 'MISSING'})"
+        )
         return proc.pid
     finally:
-        log_fh.close()  # 子进程已继承 fd，关闭父进程 fd 安全
+        log_fh.close()
 
 
 # =============================================================
