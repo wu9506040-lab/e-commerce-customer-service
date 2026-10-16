@@ -16,6 +16,7 @@ V12 升级（2026-07-22）：
 """
 import json
 import logging
+import os
 import re
 from typing import Optional
 
@@ -25,6 +26,12 @@ from app.services.config_loader import get_config_loader
 from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)
+
+
+# V16.8 P1-G：意图分类用独立轻量模型（qwen-turbo）— 4B 参数 vs qwen-plus 30B，
+# 实测 intent 任务快 5-8x（35s → 5-8s）。其他阶段（synthesize / rerank / qa）仍用 QWEN_MODEL（qwen-plus）
+# 设 env 变量 INTENTION_MODEL 可覆盖（测试用）
+INTENT_LLM_MODEL = os.environ.get("INTENTION_MODEL", "qwen-turbo")
 
 
 # =============================================================
@@ -219,6 +226,28 @@ class IntentService:
         """
         entities = IntentService._extract_entities(query)
 
+        # V16.8 P1-G: 短消息兜底短路 — 用户发"？""哦""嗯"等 ≤4 字常见回复秒回
+        # 直接归 chitchat 走模板回复，不调规则匹配、不调 LLM
+        # 设计：短路必须 (≤4 字 且 不含意图关键词) 或 全标点
+        # 不能纯按长度阈值——"我要退款"3字但意图明确，应走 refund_query
+        stripped = query.strip()
+        _NON_CHITCHAT_KEYWORDS = frozenset([
+            "退款", "退货", "换货", "退钱", "申请",
+            "订单", "物流", "快递", "发货", "签收", "发货", "到货", "下单",
+            "价格", "库存", "型号", "规格", "续航", "颜色", "多大", "几个",
+            "保修", "活动", "促销", "包邮", "发票", "折扣",
+        ])
+        has_meaningful_keyword = any(kw in stripped for kw in _NON_CHITCHAT_KEYWORDS)
+        _PUNCT_SET = frozenset("?.？！。,~ ")
+        is_punct_only = 0 < len(stripped) and all(c in _PUNCT_SET for c in stripped)
+        if (0 < len(stripped) <= 4 and not has_meaningful_keyword) or is_punct_only:
+            return {
+                "intents": [{"intent": "chitchat", "confidence": 1.0}],
+                "primary": "chitchat",
+                "method": "rule_short",
+                "entities": entities,
+            }
+
         # 1. 规则匹配（天然单意图 → intents 长度为 1）
         rule_result = IntentService._rule_classify(query)
         if rule_result:
@@ -303,31 +332,25 @@ class IntentService:
     def _llm_classify(query: str) -> dict:
         """LLM 兜底分类（V11 旧行为：单意图；V12 默认走 _llm_classify_multi）"""
         # 注意：让 LLM 输出严格 JSON，避免解析失败
-        # V16.8 P0-C：5 类（含 chitchat）— 闲聊问候单独成类
-        prompt = f"""你是电商客服意图分类器。判断用户问题属于以下 5 类之一：
-- order_query: 订单状态、物流、快递、发货、签收
-- refund_query: 退款、退货、换货、不想要了
-- product_query: 商品参数、价格、库存、SKU、推荐
-- policy_query: 保修、活动、促销、包邮、发票、通用规则
-- chitchat: 纯问候 / 闲聊（"在吗""你好""hi"）；不调工具，简短回应引导用户提问
+        # V16.8 P1-G：去 few-shot 示例（占 prompt 一半长度；qwen-turbo 对类目说明已足）
+        # prompt 从 ~700 字符压到 ~250 字符，输入 token 减半，LLM 推断时间 -50%
+        prompt = f"""判断用户问题属于以下 5 类之一（输出严格 JSON，不要解释）：
+- order_query: 订单状态/物流/快递/发货/签收
+- refund_query: 退款/退货/换货
+- product_query: 商品参数/价格/库存/SKU
+- policy_query: 保修/活动/促销/包邮/发票
+- chitchat: 闲聊/问候
 
-只输出 JSON，不要解释。格式：
-{{"intent": "类别", "confidence": 0.0~1.0}}
+JSON：{{"intent":"类别","confidence":0.0~1.0}}
 
-示例：
-Q: ZP1 现在有货吗？ → {{"intent": "product_query", "confidence": 0.95}}
-Q: 保修多久？ → {{"intent": "policy_query", "confidence": 0.9}}
-Q: 我的快递怎么还没到 → {{"intent": "order_query", "confidence": 0.93}}
-Q: 在吗？ → {{"intent": "chitchat", "confidence": 0.92}}
-Q: 你好 → {{"intent": "chitchat", "confidence": 0.92}}
-
-用户问题：{query}
-JSON："""
+Q：{query}"""
 
         result = get_llm_provider().chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,  # 分类任务低温度
-            max_tokens=80,
+            max_tokens=60,  # V16.8 P1-G：80→60（输出 ~30 token）
+            model=INTENT_LLM_MODEL,  # V16.8 P1-G：qwen-turbo
+            stage="intent",
         )
 
         reply = result["reply"].strip()
@@ -353,6 +376,7 @@ JSON："""
             "intents": [{"intent": intent, "confidence": confidence}],
             "primary": intent,
             "method": "llm",
+            "model": INTENT_LLM_MODEL,  # V16.8 P1-G：记录用了哪个模型
         }
 
     @staticmethod
@@ -362,32 +386,22 @@ JSON："""
         让 LLM 输出 JSON 数组，按 confidence 降序截断到 top-K。
         primary = confidence 最高的 intent。
         """
-        # V16.8 P0-C：5 类（含 chitchat）— 多意图版本也加 chitchat
-        prompt = f"""你是电商客服意图分类器。判断用户问题可能涉及的多个意图（按可能性从高到低排序，最多 2 个）。
+        # V16.8 P1-G：缩 prompt 到 ~250 字符（去 few-shot）+ qwen-turbo 模型路由
+        # 闲鱼 IM 实际：2 个 intent 命中足够（典型：商品问续航+问分期 → product_query + policy_query）
+        prompt = f"""判断用户问题可能涉及的多个意图（最多 2 个，按可能性从高到低排序）。
 
-5 类意图：
-- order_query: 订单状态、物流、快递、发货、签收
-- refund_query: 退款、退货、换货、不想要了
-- product_query: 商品参数、价格、库存、SKU、推荐
-- policy_query: 保修、活动、促销、包邮、发票、通用规则
-- chitchat: 纯问候 / 闲聊（"在吗""你好""hi"）；不调工具，简短回应引导用户提问
+5 类：order_query（订单/物流）/refund_query（退款/退货）/product_query（商品/价格）/policy_query（保修/活动）/chitchat（闲聊）。
 
-只输出 JSON，不要解释。格式：
-{{"intents": [{{"intent": "类别", "confidence": 0.0~1.0}}, ...]}}
+只输出 JSON：{{"intents":[{{"intent":"类别","confidence":0.0~1.0}}, ...]}}
 
-示例：
-Q: ZP1 现在有货吗？ → {{"intents": [{{"intent": "product_query", "confidence": 0.95}}]}}
-Q: 这台电脑续航怎么样，能分期吗 → {{"intents": [{{"intent": "product_query", "confidence": 0.9}}, {{"intent": "policy_query", "confidence": 0.65}}]}}
-Q: 订单怎么退款 → {{"intents": [{{"intent": "refund_query", "confidence": 0.92}}, {{"intent": "order_query", "confidence": 0.6}}]}}
-Q: 保修多久？ → {{"intents": [{{"intent": "policy_query", "confidence": 0.9}}]}}
-
-用户问题：{query}
-JSON："""
+Q：{query}"""
 
         result = get_llm_provider().chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=200,  # 略放宽，多意图 JSON 更长
+            max_tokens=140,  # V16.8 P1-G：200→140（多意图 JSON 实际 ~80 token）
+            model=INTENT_LLM_MODEL,  # V16.8 P1-G：qwen-turbo
+            stage="intent_multi",
         )
 
         reply = result["reply"].strip()
