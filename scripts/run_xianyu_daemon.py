@@ -41,7 +41,9 @@ os.environ.setdefault(
     # 改用 host-mapped port 127.0.0.1:3307 (compose 暴露 3306→3307)
     "mysql+pymysql://cs_user:dev_user_2026@127.0.0.1:3307/customer_service?charset=utf8mb4",
 )
-os.environ.setdefault("APP_ENV", "prod")  # daemon 默认 prod
+# V16.8 P1-E2: 默认 dev 而非 prod —— host 一行 python 跑不传 APP_ENV 也能跑
+# prod 验证会查 '占位符密码'：dev_user_2026 真值在 dev 模式可通过
+os.environ.setdefault("APP_ENV", "dev")
 
 # 配置：必须显式开
 os.environ["ENABLE_XIANYU_TOOLS"] = "true"
@@ -97,7 +99,10 @@ from app.services.xianyu.watcher import XianyuWatcher  # noqa: E402
 # =============================================================
 # 日志
 # =============================================================
-LOG_DIR = Path(os.environ.get("XIANYU_LOG_DIR", "logs"))
+# V16.8 P1-E2: 用 _REPO_ROOT 强制绝对路径（daemon cwd=backend，watchdog 写 E:/智能客服/logs）
+# 避免 daemon 写 backend/logs/xianyu_daemon.pid 而 watchdog 找 E:/智能客服/logs/xianyu_daemon.pid
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+LOG_DIR = _REPO_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "xianyu_daemon.log"
 # V16.8 P1-E2 选项 D：daemon 启动时写 PID file，退出时删
@@ -199,6 +204,13 @@ def main() -> int:
         window_seconds=debounce_window,
     )
     watcher = XianyuWatcher(callback=debounce.on_message)
+
+    # V16.8 P1-E2 选项 D：写 PID file（让 watchdog 仅靠文件存在检测存活）
+    try:
+        PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        logger.info(f"PID file 写入: {PID_FILE} = {os.getpid()}")
+    except Exception as e:
+        logger.warning(f"PID file 写入失败: {e}")
 
     # 信号处理：优雅关闭
     stop_event = {"stop": False}
