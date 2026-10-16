@@ -60,10 +60,10 @@ class DebounceQueue:
     def __init__(
         self,
         fire_callback: Callable[[str, list[dict]], None],
-        window_seconds: float = 30.0,
+        window_seconds: float = 12.0,  # V16.7: 默认 12s（用户连发合并窗口）
     ):
         self._fire_cb = fire_callback
-        # V16.3.1: 首次 5s / 后续 3s（按 BuyerProfile 缓存判断）
+        # V16.7: 默认 12s（用户连发消息合并窗口），env 可覆盖
         self._window = window_seconds
         # V16.4 fix: window_seconds 作兜底默认,env 覆盖；不破坏老测试（window_seconds=0.1 加速）
         self._first_window = float(os.environ.get("XIANYU_DEBOUNCE_FIRST", str(window_seconds)))
