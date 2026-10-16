@@ -104,7 +104,8 @@ class TestClassifyV12NewStructure:
 
         result = IntentService.classify("我要退款")
         assert "method" in result
-        assert result["method"] in ("rule", "llm", "default")
+        # V16.8 P1-G：rule_short 是新增的短消息兜底 method
+        assert result["method"] in ("rule", "rule_short", "llm", "default")
 
     def test_classify_entities_preserved(self):
         """entities 字段仍存在（含 order_no / sku / keywords）。"""
