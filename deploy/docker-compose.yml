@@ -209,6 +209,77 @@ services:
       retries: 5
       start_period: 30s
 
+# ---------------------------------------------------------
+  # 闲鱼自动化 daemon（V16.8 P1 容器化）
+  # - 失败自动重启（restart: unless-stopped）：死循环 / OOM / exit code != 0 都拉起
+  # - bind mount host logs/ → 容器 /app/logs（运维侧查日志）
+  # - 命名卷 cookies_data → 容器 ~/.goofish-cli，cookies.json 跨重启持久化
+  # - 容器内 DATABASE_URL 用 service name `mysql`（不是 127.0.0.1:3307）
+  # - depends_on api（health）确保 /api/chat 可用再启 daemon
+  # ---------------------------------------------------------
+  xianyu-daemon:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.daemon
+    image: customer-service-xianyu-daemon:dev
+    container_name: customer-service-xianyu-daemon
+    restart: unless-stopped
+    environment:
+      # LLM
+      QWEN_API_KEY: ${QWEN_API_KEY}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL}
+      QWEN_MODEL: ${QWEN_MODEL}
+      # 数据库（容器内 service name）
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}?charset=utf8mb4
+      # 缓存（容器内 service name）
+      REDIS_URL: redis://redis:6379/0
+      # 向量库
+      QDRANT_URL: http://customer-service-qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION}
+      # Daemon 调 /api/chat（容器内用 service name 而非 localhost）
+      XIANYU_CHAT_API_URL: http://customer-service-api:8000/api/chat
+      # V16 闲鱼 MCP
+      ENABLE_XIANYU_TOOLS: ${ENABLE_XIANYU_TOOLS:-true}
+      # 应用
+      APP_ENV: ${APP_ENV:-dev}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # 鉴权
+      JWT_SECRET: ${JWT_SECRET}
+      # 延迟参数（V16.8 P1 默认值；可被镜像内 .env.* 覆盖）
+      XIANYU_DEBOUNCE_WINDOW: ${XIANYU_DEBOUNCE_WINDOW:-8}
+      XIANYU_FIRST_MIN_DELAY: ${XIANYU_FIRST_MIN_DELAY:-0}
+      XIANYU_FIRST_MAX_DELAY: ${XIANYU_FIRST_MAX_DELAY:-3}
+      # 时区
+      TZ: Asia/Shanghai
+    volumes:
+      # V16.8 P1: 宿主机 cookie.txt 挂到容器 — 容灾 backup / 手动导入用
+      # （运行时由 goofish CLI 用 ~/.goofish-cli/cookies.json）
+      - ./../cookie.txt:/app/cookie.txt:ro
+      # 持久化 cookies.json（命名卷跨重启保留）
+      - cookies_data:/root/.goofish-cli
+      # 宿主机 logs 目录（host 看日志无需 docker cp；biz 日志走文件不走 stdout）
+      - ./../logs:/app/logs
+      # V16.5 dev 体验：源码 bind mount（hot reload 改代码立即生效）
+      - ./../backend/app:/app/app:ro
+      - ./../backend/config:/app/config:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    networks:
+      - backend
+    # 不限内存（让 LLM 生成等长任务能跑完；OOM 由 daemon process 自我退出触发重启）
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
 # =============================================================
 # Volumes - bind mount 到 E 盘，避免占 C 盘
 # =============================================================
@@ -243,6 +314,14 @@ volumes:
       type: none
       o: bind
       device: ${DATA_ROOT}/logs
+  # V16.8 P1: 闲鱼 daemon cookies 持久化（bind 容器内 /root/.goofish-cli）
+  # 因为 Windows HOME 路径不稳定，用命名卷更可控；首次需手动注入 cookies
+  cookies_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${USERPROFILE}/.goofish-cli
 
 # =============================================================
 # Networks - 前端/后端网络隔离
