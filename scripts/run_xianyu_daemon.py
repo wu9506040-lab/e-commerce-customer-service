@@ -139,9 +139,10 @@ def main() -> int:
         max_delay_seconds=float(os.environ.get("XIANYU_MAX_DELAY", "180")),
         rate_limit_per_minute=int(os.environ.get("XIANYU_RATE_LIMIT_PER_MIN", "1")),
     )
+    debounce_window = float(os.environ.get("XIANYU_DEBOUNCE_WINDOW", "12"))
     debounce = DebounceQueue(
         fire_callback=scheduler.on_fire,
-        window_seconds=float(os.environ.get("XIANYU_DEBOUNCE_WINDOW", "12")),
+        window_seconds=debounce_window,
     )
     watcher = XianyuWatcher(callback=debounce.on_message)
 
@@ -162,7 +163,7 @@ def main() -> int:
         logger.info(
             f"XianyuDaemon 启动: chat_api={os.environ.get('XIANYU_CHAT_API_URL', 'http://localhost:8000/api/chat')} "
             f"delay={os.environ.get('XIANYU_MIN_DELAY', '30')}-{os.environ.get('XIANYU_MAX_DELAY', '180')}s "
-            f"debounce={os.environ.get('XIANYU_DEBOUNCE_WINDOW', '30')}s"
+            f"debounce={debounce_window}s"
         )
     except Exception as e:
         logger.exception(f"watcher 启动失败: {e}")
