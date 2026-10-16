@@ -69,23 +69,23 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "xianyu_daemon.log"
 
 # V16.8 P1-E1: logger 拆双 handler
-    # - file handler 接 DEBUG+：业务日志全写 logs/xianyu_daemon.log（不打 stdout）
-    # - stderr handler 接 ERROR+：Python 异常 traceback + 主循环异常 → docker logs 可见
-    # 用户要求："业务日志写到文件里，不要打到 stdout"+"Python traceback 打到 stderr"
-    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
-    )
-    stderr_handler = logging.StreamHandler(sys.stderr)
-    stderr_handler.setLevel(logging.ERROR)
-    stderr_handler.setFormatter(
-        logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
-    )
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[file_handler, stderr_handler],
-    )
+# - file handler 接 DEBUG+：业务日志全写 logs/xianyu_daemon.log（不打 stdout）
+# - stderr handler 接 ERROR+：Python 异常 traceback + 主循环异常 → docker logs 可见
+# 用户要求："业务日志写到文件里，不要打到 stdout"+"Python traceback 打到 stderr"
+file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(
+    logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+)
+stderr_handler = logging.StreamHandler(sys.stderr)
+stderr_handler.setLevel(logging.ERROR)
+stderr_handler.setFormatter(
+    logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+)
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, stderr_handler],
+)
 logger = logging.getLogger("xianyu_daemon")
 
 
@@ -174,17 +174,25 @@ def main() -> int:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _on_signal)
 
-    # 启动
-    try:
-        watcher.start()
-        logger.info(
-            f"XianyuDaemon 启动: chat_api={os.environ.get('XIANYU_CHAT_API_URL', 'http://localhost:8000/api/chat')} "
-            f"delay={os.environ.get('XIANYU_MIN_DELAY', '30')}-{os.environ.get('XIANYU_MAX_DELAY', '180')}s "
-            f"debounce={debounce_window}s"
-        )
-    except Exception as e:
-        logger.exception(f"watcher 启动失败: {e}")
-        return 1
+    # 启动（V16.8 P1-E2: 自愈 — watcher 启动失败不 return 1，sleep 重试）
+    # 旧版本：WatcherAuthError 等异常 → return 1 → daemon 立即 exit → 用户无回复
+    # 现版本：daemon 进程不退出，等 30s 重试 watcher.start()，让外部 watchdog
+    # （scripts/watchdog_xianyu_daemon.py）只在 daemon 进程真死时 spawn 一个新的
+    while not stop_event["stop"]:
+        try:
+            watcher.start()
+            logger.info(
+                f"XianyuDaemon 启动: chat_api={os.environ.get('XIANYU_CHAT_API_URL', 'http://localhost:8000/api/chat')} "
+                f"delay={os.environ.get('XIANYU_MIN_DELAY', '30')}-{os.environ.get('XIANYU_MAX_DELAY', '180')}s "
+                f"debounce={debounce_window}s"
+            )
+            break  # watcher 启动成功，跳出
+        except Exception as e:
+            logger.exception(f"watcher 启动失败: {e}")
+            logger.warning(
+                "P1-E2: daemon 30s 后自愈重试 watcher.start()（不退进程）"
+            )
+            time.sleep(30)
 
     # 主循环
     try:
