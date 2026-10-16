@@ -66,7 +66,7 @@ class ReplyScheduler:
         chat_api_url: str = "http://localhost:8000/api/chat",
         min_delay_seconds: float = 30.0,
         max_delay_seconds: float = 180.0,  # 3 分钟
-        rate_limit_per_minute: int = 1,
+        rate_limit_per_minute: int = 6,  # V16.8 P1-F：默认 1/min → 6/min（IM 1s/条正常节奏）
         daily_quota: int = 50,
         max_retries: int = 2,
         chat_timeout: float = 60.0,

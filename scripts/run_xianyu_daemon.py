@@ -196,7 +196,7 @@ def main() -> int:
         ),
         min_delay_seconds=float(os.environ.get("XIANYU_MIN_DELAY", "30")),
         max_delay_seconds=float(os.environ.get("XIANYU_MAX_DELAY", "180")),
-        rate_limit_per_minute=int(os.environ.get("XIANYU_RATE_LIMIT_PER_MIN", "1")),
+        rate_limit_per_minute=int(os.environ.get("XIANYU_RATE_LIMIT_PER_MIN", "6")),
     )
     debounce_window = float(os.environ.get("XIANYU_DEBOUNCE_WINDOW", "12"))
     debounce = DebounceQueue(
