@@ -203,6 +203,9 @@ class XianyuWatcherPoller:
             cid for cid, n in curr_unread.items()
             if n > self._prev_unread_by_cid.get(cid, 0)
         ]
+        # V16.8 P2-A hotfix: poll_once 成功（拿到 sessions）就更新 self._last_success_poll_at
+        # 之前只初始化一次，导致 180s 后 STALE 永远触发（idle=180s 锁死）
+        self._last_success_poll_at = time.time()
         for cid in new_unread_cids:
             sess = next(
                 (s for s in sessions if s.get("session", {}).get("sessionId") == cid),
