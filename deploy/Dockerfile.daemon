@@ -46,5 +46,8 @@ COPY deploy/do_qr_login.py /app/do_qr_login.py
 RUN chmod +x /app/do_qr_login.py
 
 # 入口
-ENTRYPOINT ["python", "-u", "/app/run_xianyu_daemon.py"]
+# QR 登录引导 (cookie 缺失时阻塞等用户扫码)
+COPY deploy/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD []
