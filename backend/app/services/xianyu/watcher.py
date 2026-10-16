@@ -205,6 +205,7 @@ class XianyuWatcher:
         goofish_cli = cmd.replace("goofish-mcp.exe", "goofish.exe")
         self._proc = subprocess.Popen(
             [goofish_cli, "message", "watch", "--format", "json"],
+            stdin=subprocess.DEVNULL,  # V16.8 P1-I：Windows 下不设 stdin 会卡 UserRequest/Wait（goofish 不连）
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
