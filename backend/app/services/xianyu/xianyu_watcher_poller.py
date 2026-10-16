@@ -252,27 +252,27 @@ class XianyuWatcherPoller:
     # 内部：P1-H stale watchdog（启动即开始计时）
     # ============================================================
     def _stale_watchdog_loop(self) -> None:
-        """每 30s 检查最近一次 poll 是否成功（避免长时静默死锁）"""
+        """每 30s 检查最近一次 poll 是否成功（避免长时静默死锁）
+
+        V16.8 P2-A hotfix: 必须用 self._last_success_poll_at（之前局部变量是 bug）
+        """
         check_interval = 30.0
         stale_threshold_sec = 180.0
-        last_success_poll_at = time.time()
+        # V16.8 P2-A hotfix: 用 self attr（之前是局部变量导致 STALE 永远触发）
+        self._last_success_poll_at = time.time()
         while not self._stop_event.is_set():
             if self._stop_event.wait(timeout=check_interval):
                 break
-            idle_sec = time.time() - last_success_poll_at
+            # idle = 距上次成功 poll 的时间（不是距 daemon 启动）
+            idle_sec = time.time() - self._last_success_poll_at
             if idle_sec > stale_threshold_sec:
                 logger.error(
                     f"XianyuWatcherPoller STALE: idle={idle_sec:.0f}s "
-                    f"(>{stale_threshold_sec}s),recent poll 失败——"
-                    f"重启 daemon 让 watchdog spawn 新进程"
+                    f"(>{stale_threshold_sec}s) — poller 失败或静默"
                 )
-                # 不重启自己（在线程里 reset 易出 race），让外部 watchdog 检测
-                # 通过 _stop_event 触发自然退出
+                # 设 stop 让外层 watchdog spawn 新 daemon
                 self._stop_event.set()
                 break
-            # 探测到 idle_sec 正常（poll 还在跑）
-
-        # 重置 _last_success_poll_at 在 _poll_once 成功时调用
 
 
 # ============================================================
