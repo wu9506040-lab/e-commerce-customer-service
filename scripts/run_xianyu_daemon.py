@@ -203,7 +203,17 @@ def main() -> int:
         fire_callback=scheduler.on_fire,
         window_seconds=debounce_window,
     )
-    watcher = XianyuWatcher(callback=debounce.on_message)
+    # V16.8 P2-A: HTTP 轮询版 watcher（替代 XianyuWatcher 的 WebSocket subprocess，
+    # Windows 上 WebSocket 卡 UserRequest/Wait 死锁）
+    # 接口 100% 兼容（start/stop/is_alive/callback event dict 一致）
+    from app.services.xianyu.xianyu_watcher_poller import XianyuWatcherPoller
+    use_poller = os.environ.get("XIANYU_USE_POLLER", "true").lower() in ("1", "true", "yes")
+    if use_poller:
+        watcher = XianyuWatcherPoller(callback=debounce.on_message)
+        logger.info("V16.8 P2-A: 使用 HTTP MTOP 轮询（替代 WebSocket 长连接）")
+    else:
+        watcher = XianyuWatcher(callback=debounce.on_message)
+        logger.info("回退到 WebSocket 长连接（XIANYU_USE_POLLER=false）")
 
     # V16.8 P1-E2 选项 D：写 PID file（让 watchdog 仅靠文件存在检测存活）
     try:
