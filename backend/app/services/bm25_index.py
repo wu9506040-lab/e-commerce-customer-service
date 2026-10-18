@@ -23,7 +23,7 @@ import re
 import threading
 from typing import List, Dict, Any, Optional, Tuple
 
-from app.clients.qdrant import search as qdrant_search, QDRANT_COLLECTION
+from app.clients.vector_db import search as qdrant_search, QDRANT_COLLECTION
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -114,8 +114,7 @@ def _build_index() -> Dict[str, Any]:
     注意：scroll 整个 collection 会拉所有点，67 条 policy 约 <100KB，
     内存压力可忽略。如未来 KB 增长到 1 万+，考虑分批 + 增量。
     """
-    from qdrant_client import QdrantClient
-    from app.clients.qdrant import get_client
+    from app.clients.vector_db import get_client
 
     client = get_client()
     logger.info(f"BM25 索引构建开始：从 '{QDRANT_COLLECTION}' 全量拉取")

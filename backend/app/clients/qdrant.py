@@ -47,7 +47,7 @@ DISTANCE = Distance.COSINE
 _client: Optional[QdrantClient] = None
 
 # 断路器：3 次连续失败开路，30s 后探活
-_qdrant_breaker = CircuitBreaker(
+vector_db_breaker = CircuitBreaker(
     name="qdrant",
     failure_threshold=3,
     recovery_timeout=30.0,
@@ -140,7 +140,7 @@ def upsert_points(
         return len(points)
 
     try:
-        result = _qdrant_breaker.call(_do_upsert)
+        result = vector_db_breaker.call(_do_upsert)
         metrics.inc_qdrant_search("success")  # M8：upsert 也复用此计数器（M8 简化）
         return result
     except CircuitOpenError as e:
@@ -209,7 +209,7 @@ def search(
         ]
 
     try:
-        result = _qdrant_breaker.call(_do_search)
+        result = vector_db_breaker.call(_do_search)
         metrics.inc_qdrant_search("success")
         return result
     except CircuitOpenError as e:
@@ -311,7 +311,7 @@ def health_check(timeout: float = 2.0) -> Dict[str, Any]:
         "ok": False,
         "latency_ms": 0.0,
         "points_count": None,
-        "circuit": _qdrant_breaker.stats(),
+        "circuit": vector_db_breaker.stats(),
         "error": None,
     }
     t0 = time.perf_counter()
@@ -323,3 +323,6 @@ def health_check(timeout: float = 2.0) -> Dict[str, Any]:
         result["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     result["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     return result
+
+
+__all__ = ["vector_db_breaker"]

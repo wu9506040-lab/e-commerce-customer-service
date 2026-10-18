@@ -19,7 +19,7 @@ from typing import Dict, List, Any, Optional, Generator, Tuple
 
 from app.core.providers.embedding import get_embedding_provider
 from app.core.providers.llm import get_llm_provider
-from app.clients.qdrant import search as qdrant_search
+from app.clients.vector_db import search as qdrant_search
 from app.services.metrics import metrics
 
 logger = logging.getLogger(__name__)

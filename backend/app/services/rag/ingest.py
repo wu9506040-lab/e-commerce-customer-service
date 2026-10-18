@@ -20,7 +20,7 @@ from qdrant_client.models import PointStruct
 from sqlalchemy import select
 
 from app.clients.mysql_client import with_safe_session
-from app.clients.qdrant import (
+from app.clients.vector_db import (
     delete_points,
     delete_source_points,
     ensure_collection,

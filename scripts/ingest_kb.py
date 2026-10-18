@@ -95,7 +95,52 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     raise RuntimeError(f"embedding 失败 3 次: {last_err}")
 
 
+VECTOR_DB = os.getenv("VECTOR_DB", "milvus")  # V18.3: 默认 milvus
+MILVUS_URI = os.getenv("MILVUS_URI", "http://127.0.0.1:19530")
+
+
+def _milvus_ensure(collection: str) -> None:
+    """确保 collection 存在（varchar pk + 1024 维 COSINE + dynamic field）"""
+    from pymilvus import MilvusClient, DataType
+    mc = MilvusClient(uri=MILVUS_URI)
+    if mc.has_collection(collection):
+        return
+    schema = mc.create_schema(auto_id=False, enable_dynamic_field=True)
+    schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=64)
+    schema.add_field("vector", DataType.FLOAT_VECTOR, dim=1024)
+    for f in ("text", "channel", "source", "section", "title", "doc_type", "category"):
+        schema.add_field(f, DataType.VARCHAR, max_length=8192, nullable=True)
+    schema.add_field("page", DataType.INT64, nullable=True)
+    idx = mc.prepare_index_params()
+    idx.add_index(field_name="vector", index_type="HNSW", metric_type="COSINE",
+                  params={"M": 16, "efConstruction": 128})
+    mc.create_collection(collection_name=collection, dimension=1024, schema=schema, index_params=idx, id_type="varchar", primary_field_name="id", vector_field_name="vector", metric_type="COSINE")
+    print(f"  [milvus] collection '{collection}' 创建成功")
+
+
 def qdrant_upsert(points: list[dict]) -> bool:
+    """V18.3: VECTOR_DB=milvus 时走 pymilvus；qdrant 保留原 REST 路径可切回"""
+    if VECTOR_DB == "milvus":
+        try:
+            from pymilvus import MilvusClient
+            _milvus_ensure(COLLECTION)
+            mc = MilvusClient(uri=MILVUS_URI)
+            rows = []
+            for pt in points:
+                payload = dict(pt.get("payload") or {})
+                # nullable 字段缺省补全（Milvus 对缺失/None 的标量字段严格）
+                for f in ("text", "channel", "source", "section", "title", "doc_type", "category"):
+                    payload.setdefault(f, "")
+                if not isinstance(payload.get("page"), int):
+                    payload["page"] = 0
+                payload["id"] = str(pt["id"])
+                payload["vector"] = pt["vector"]
+                rows.append(payload)
+            mc.upsert(collection_name=COLLECTION, data=rows)
+            return True
+        except Exception as e:
+            print(f"  [milvus] upsert 失败: {e}")
+            return False
     req = urllib.request.Request(
         f"{QDRANT_URL}/collections/{COLLECTION}/points?wait=true",
         data=json.dumps({"points": points}, ensure_ascii=False).encode("utf-8"),

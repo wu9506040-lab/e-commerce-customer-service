@@ -49,7 +49,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 
-from app.clients.qdrant import QDRANT_COLLECTION, search as qdrant_search
+from app.clients.vector_db import QDRANT_COLLECTION, search as qdrant_search
 from app.core.config import settings
 from app.schemas.knowledge import SearchResult
 from app.services.metrics import metrics
