@@ -227,10 +227,10 @@ class ReplyScheduler:
         kept = [t.strip() for t in stripped if t and t.strip()]
         if kept:
             texts = kept
-        # V18.2 修正：整批都是纯问候（"在吗"/"你好"）→ 保留原文走后端
-        # chitchat 短路回"在的~"（此前剥空直接返空 query → 纯问候完全不回复）
-        if not texts:
-            texts = [t.strip() for t in (self._extract_text(m) for m in messages) if t and t.strip()]
+        else:
+            # V18.2 修正：整批都是纯问候（"在吗"/"你好"）或空 → 保留非空原文
+            # 走后端 chitchat 短路回"在的~"（此前剥空直接返空 query → 纯问候完全不回复）
+            texts = [t.strip() for t in texts if t and t.strip()]
             if not texts:
                 return "", False
             logger.info("V18.2 整批纯问候 → 保留原文走 chitchat 应答")
@@ -508,12 +508,8 @@ class ReplyScheduler:
             try:
                 from app.services.xianyu.refund_handler import XianyuRefundHandler
                 handler = XianyuRefundHandler(db=self._db, seller_unb=self._seller_unb)
-                # 拉 buyer profile 拿 nick（V18: 非阻塞，同 step 5）
-                try:
-                    profile = BuyerProfile().get_profile_nowait(unb=toid)
-                    nick = profile.nick or ""
-                except Exception:
-                    nick = ""
+                # V18: BuyerProfile（MCP）已弃用 → 无 nick 可取，handler 自行兜底
+                nick = ""
                 decision = handler.handle_refund_request(unb=toid, buyer_nick=nick)
                 logger.info(
                     f"ReplyScheduler 退款决策 cid={cid} unb={toid} "

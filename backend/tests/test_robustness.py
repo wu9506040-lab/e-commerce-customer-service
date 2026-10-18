@@ -164,7 +164,7 @@ class TestQdrantDegradation:
     def test_search_returns_empty_when_circuit_open(self):
         """模拟 Qdrant 连续失败 3 次 → 断路器开路 → search 返回 []"""
         from app.clients import qdrant
-        from app.clients.qdrant import _qdrant_breaker
+        from app.clients.vector_db import vector_db_breaker as _qdrant_breaker
         _qdrant_breaker.reset()
 
         with patch.object(qdrant, 'get_client') as mock_get_client:
@@ -189,7 +189,7 @@ class TestQdrantDegradation:
     def test_upsert_returns_zero_when_circuit_open(self):
         """断路器开路时 upsert 返回 0（让上层 MySQL 继续）"""
         from app.clients import qdrant
-        from app.clients.qdrant import _qdrant_breaker
+        from app.clients.vector_db import vector_db_breaker as _qdrant_breaker
         from qdrant_client.models import PointStruct
 
         _qdrant_breaker.reset()
@@ -213,7 +213,7 @@ class TestQdrantDegradation:
 
     def test_health_check_returns_status(self):
         from app.clients import qdrant
-        from app.clients.qdrant import _qdrant_breaker
+        from app.clients.vector_db import vector_db_breaker as _qdrant_breaker
         _qdrant_breaker.reset()
 
         with patch.object(qdrant, 'get_collection_info') as mock_info:

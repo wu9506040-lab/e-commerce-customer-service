@@ -51,7 +51,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger("xianyu_ws_client")
 
@@ -1448,7 +1448,7 @@ class XianyuWsClient:
                 # 实测 14:34 买家两条消息只推了轻量通知，完整内容 2 分钟后才到，
                 # 回复延迟 3 分钟。这是消息延迟的真正元凶。
                 if not isinstance(inner_msg.get("1"), dict) and "PNM" in str(inner_msg)[:2000]:
-                    self._schedule_resync(ws)
+                    self._schedule_resync(self._ws)  # V18.3 fix: ws 未定义（F821，运行到此会 NameError）
                 logger.debug(f"非聊天消息: {inner_msg}")
                 continue
 

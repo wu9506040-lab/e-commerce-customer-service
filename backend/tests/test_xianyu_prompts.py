@@ -17,7 +17,7 @@ class TestLoad:
         p = XianyuPrompts()
         template = p.load(scenario="presale")
         assert template.system  # 非空
-        assert "专业店主" in template.system or "不是通用客服" in template.system
+        assert "主业做模具" in template.system  # V18 人设：主业模具 + 当前商品说明
         assert len(template.examples) > 0
 
     def test_load_in_sale(self):
@@ -51,7 +51,7 @@ class TestRender:
         p = XianyuPrompts()
         result = p.render(scenario="presale", system_base="你是智能客服")
         assert "你是智能客服" in result
-        assert "专业店主" in result
+        assert "主业做模具" in result
 
     def test_render_with_buyer_profile(self):
         """render 带 buyer_profile → 注入老客/昵称"""

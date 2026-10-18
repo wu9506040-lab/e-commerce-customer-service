@@ -138,9 +138,9 @@ class TestAbnormalBehavior:
         assert result.escalate is False
 
     def test_over_threshold_escalate(self):
-        """24h 内 >= 5 次 → 转"""
+        """24h 内 >= 30 次 → 转（阈值 V18 调参 5→30）"""
         d = XianyuEscalationDetector()
-        for _ in range(5):
+        for _ in range(30):
             d.record_message(unb="u1")
         result = d.should_escalate(unb="u1", message="在吗")
         assert result.escalate is True

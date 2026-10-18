@@ -15,6 +15,24 @@ V1.1 增量（不在本 conftest 范围）：
 - 真 MySQL 集成测试（CI 上 docker compose up mysql + pytest）
 """
 import os
+import sys as _sys
+
+# =============================================================
+# V18.3: Windows 环境块 32KB 修复（session 级 autouse）
+# 某些测试会把巨型配置写进 os.environ（如 ACC_PRODUCT_CONFIG_V3，322KB），
+# Windows 下任何 >32KB 变量会让同进程内后续所有 os.environ 写入抛
+# "environment variable is longer than 32767 characters"——连坐几十个测试。
+# collection 结束后、首个测试执行前清掉超长变量（Linux CI 无此限制）。
+# =============================================================
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True, scope="session")
+def _clean_oversized_env_vars():
+    if _sys.platform == "win32":
+        for _k in [k for k, v in os.environ.items() if len(v) > 32767]:
+            os.environ.pop(_k, None)
+    yield
 
 # =============================================================
 # 1. env 兜底（必须在任何 from app.xxx import 之前）
