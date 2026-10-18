@@ -2,11 +2,13 @@
 
 > 多渠道接入 · AI 应答管线 · 人工坐席工作台 · 数据中台 —— 企业级 AI 客服中台
 
+[![CI](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml/badge.svg)](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/Release-v18.3.0-blue)](https://github.com/wu9506040-lab/e-commerce-customer-service/releases)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Vue3](https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vuedotjs)](https://vuejs.org)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python)](https://python.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6&logo=typescript)](https://typescriptlang.org)
-[![Qdrant](https://img.shields.io/badge/Qdrant-v1.10-DC244C)](https://qdrant.tech)
+[![Milvus](https://img.shields.io/badge/Milvus-v2.4-00A1EA)](https://milvus.io)
 [![MySQL](https://img.shields.io/badge/MySQL-8-4479A1?logo=mysql)](https://mysql.com)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis)](https://redis.io)
 [![Docker](https://img.shields.io/badge/Docker_Compose-5_services-2496ED?logo=docker)](https://docker.com)
