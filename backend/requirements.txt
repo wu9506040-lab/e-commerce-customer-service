@@ -63,3 +63,4 @@ langgraph>=0.2,<0.3
 mcp>=1.30.0
 # 闲鱼 CLI（含 goofish-mcp stdio server 入口）— pip install 后 Scripts/ 下生成 goofish-mcp.exe
 goofish-cli>=0.5.3
+pymilvus

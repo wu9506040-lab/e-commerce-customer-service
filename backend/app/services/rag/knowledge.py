@@ -19,7 +19,7 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 from sqlalchemy import select
 
 from app.clients.mysql_client import with_safe_session
-from app.clients.qdrant import (
+from app.clients.vector_db import (
     delete_points,
     get_client,
     get_collection_info as _qdrant_get_info,
@@ -68,7 +68,7 @@ def list_sources() -> List[Dict]:
         ]
     按 count 倒序
     """
-    from app.clients.qdrant import QDRANT_COLLECTION
+    from app.clients.vector_db import QDRANT_COLLECTION
     client = get_client()
 
     all_sources: Dict[str, int] = {}
@@ -121,7 +121,7 @@ def delete_by_source(source: str) -> int:
     if not source or not source.strip():
         raise ValueError("delete_by_source: source 不能为空")
 
-    from app.clients.qdrant import QDRANT_COLLECTION
+    from app.clients.vector_db import QDRANT_COLLECTION
     client = get_client()
 
     # 删除前快照

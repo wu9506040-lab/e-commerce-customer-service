@@ -12,7 +12,7 @@ M14 兼容：保留 metrics.record_retrieve_hits / record_hit_at_k 埋点。
 import logging
 from typing import List, Optional
 
-from app.clients.qdrant import QDRANT_COLLECTION, get_client, search as qdrant_search
+from app.clients.vector_db import QDRANT_COLLECTION, get_client, search as qdrant_search
 from app.core.config import settings
 from app.core.providers.embedding import get_embedding_provider
 from app.schemas.knowledge import Document, SearchResult
@@ -117,8 +117,7 @@ class QdrantKnowledgeSource:
         Sprint 17 只交付协议 + 占位，避免越界。
         """
         try:
-            from qdrant_client import QdrantClient
-            client: QdrantClient = get_client()
+            client = get_client()  # V18.3: 门面兼容客户端（Qdrant/Milvus 同形）
             records = client.retrieve(
                 collection_name=self.collection_name,
                 ids=[doc_id],
