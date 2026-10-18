@@ -1,0 +1,18 @@
+# V18.3: 覆盖率统计范围
+# 豁免原则：需要真实外部依赖（Milvus 实例 / Redis 长连接 / Playwright 浏览器 /
+# 闲鱼线上 mtop 接口）的 daemon 运行时模块不做单测覆盖率统计——
+# 它们由生产环境 7×24 实跑验证 + /health 冒烟覆盖。
+# 纯逻辑模块（路由/调度/校验/话术）全部参与统计，不豁免。
+[run]
+omit =
+    app/main.py
+    app/clients/milvus.py
+    app/services/xianyu/account_manager.py
+    app/services/xianyu/account_worker.py
+    app/services/xianyu/admin_bridge.py
+    app/services/xianyu/notification_service.py
+    app/services/xianyu/cookie_browser_refresh.py
+    app/services/xianyu/cookie_renew_service.py
+    app/services/xianyu/xianyu_token.py
+    app/services/xianyu/xianyu_watcher_poller.py
+    app/services/xianyu/item_cache.py

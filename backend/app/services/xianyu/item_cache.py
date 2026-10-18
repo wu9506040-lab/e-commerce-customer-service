@@ -154,4 +154,4 @@ class ItemCache:
             return ""
 
 
-__all__ = ["ItemCache", "build_item_description", "format_price", "get_item_description"]
+__all__ = ["ItemCache", "build_item_description", "format_price"]
