@@ -23,6 +23,74 @@
 - **人机协同**：AI 自动应答 + 一键接管人工 + 工单闭环 + 外发通知
 - **安全兜底**：消息去重/合批、敏感词过滤、回复数据校验（价格幻觉检测）、双 AI 回环防护
 
+## 🏗 架构总览
+
+```mermaid
+flowchart TB
+    subgraph CH["渠道层"]
+        XY["闲鱼 IM"]
+        MALL["网页商城"]
+    end
+
+    subgraph ACCESS["接入/应答层 · AccountWorker × N（多账号隔离）"]
+        WS["XianyuWsClient<br/>LWP协议 · 心跳 · ackDiff补拉"]
+        DQ["DebounceQueue<br/>去重 · 合批"]
+        RS["ReplyScheduler<br/>意图路由 → 分Agent → 校验 → 发送"]
+        BR["AdminBridge<br/>Redis 命令/事件总线"]
+        WS --> DQ --> RS
+    end
+
+    subgraph AI["AI / 数据层"]
+        CHAT["FastAPI /chat<br/>SSE 流式 · 快速通道/RAG"]
+        RAG["RAG 管线<br/>BM25 + 向量 + RRF + 重排"]
+        VDB[("Milvus<br/>（可切 Qdrant）")]
+        MYSQL[("MySQL 8")]
+        REDIS[("Redis 7")]
+        CHAT --> RAG --> VDB
+    end
+
+    subgraph OPS["人工 / 运营层 · Vue3 管理台"]
+        WB["人工坐席工作台"]
+        AM["账号管理"]
+        DB["数据看板"]
+        HT["转人工工单"]
+        NT["外发通知"]
+    end
+
+    XY --> WS
+    MALL --> CHAT
+    RS --> CHAT
+    CHAT --> MYSQL
+    RS --> MYSQL
+    BR <---> REDIS
+    BR <---> WB
+    RS --> BR
+    HT --> NT
+```
+
+**一条买家消息的旅程**：
+
+```mermaid
+sequenceDiagram
+    participant B as 买家
+    participant W as XianyuWsClient
+    participant D as 去重/合批
+    participant S as ReplyScheduler
+    participant C as /chat RAG管线
+    B->>W: IM 消息推送
+    W->>D: 解码 + ackDiff 补拉 + 去重
+    D->>S: 4s 合并批次（即时落库）
+    S->>S: 意图路由（本地关键词，零 LLM）
+    S->>C: SSE 请求（快速通道 / RAG 检索）
+    C-->>S: 流式生成（BM25+向量+RRF+重排）
+    S->>S: 数据校验 · 价格幻觉检测 · 安全过滤
+    S->>B: 打字模拟 + 分段发送
+```
+
+详细分层说明见 [docs/project_overview.md](docs/project_overview.md)。
+
+---
+
 ## 📸 界面截图
 
 **人工坐席工作台**（三栏：会话列表 / 对话窗口 / 客户信息）
