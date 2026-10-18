@@ -16,6 +16,7 @@ BuyerProfile — 买家画像拉取/缓存（V16.1）
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -60,6 +61,96 @@ class BuyerProfileData:
         return "\n".join(lines)
 
 
+class MtopProfileClient:
+    """V18 P3：画像数据源 mtop 化适配器（替代已弃用的 goofish MCP client）
+
+    把 XianyuApis 的两个 mtop 接口（probe_mtop_poller.py 验证过）适配成
+    BuyerProfile 期望的旧 MCP client 形状：
+
+      - list_conversations(limit) → mtop.taobao.idlemessage.pc.session.sync v3.0
+        映射 data.sessions[].session.{sessionId,userInfo} →
+             {peer_user_id, peer_nick, session_id, ts, item_id}
+      - get_conversation_history(cid, pages) → mtop.idle.message.individualpage.getchatdata
+        映射 data.userMessageModels → [{send_user_id, message:{text:{text}}}]
+
+    is_enabled：apis 存在且 cookie_str 非空（daemon 进程内才成立；
+    backend 容器无 cookie，自动走禁用降级）
+    """
+
+    def __init__(self, apis=None):
+        self._apis = apis
+
+    def is_enabled(self) -> bool:
+        try:
+            return bool(self._apis and getattr(self._apis, "cookies_str", ""))
+        except Exception:
+            return False
+
+    def list_conversations(self, limit: int = 20) -> dict:
+        try:
+            raw = self._apis.list_sessions(fetch_num=limit)
+            if not raw:
+                return {"error": "mtop_session_sync_failed"}
+            sessions = []
+            for s in (raw.get("data") or {}).get("sessions") or []:
+                sess = s.get("session") or {}
+                user = sess.get("userInfo") or {}
+                summary = (s.get("message") or {}).get("summary") or {}
+                sessions.append({
+                    "session_id": sess.get("sessionId", ""),
+                    "peer_user_id": str(user.get("userId", "") or ""),
+                    "peer_nick": user.get("nick", "") or "",
+                    "ts": summary.get("ts", 0) or 0,
+                    "item_id": "",  # session.sync 不带商品 id，置空
+                    # V18: 会话摘要即最新一条消息预览（getchatdata API 已失效，
+                    # 用 session.sync 的 summary 顶上）
+                    "last_message": str(summary.get("summary", "") or ""),
+                })
+            return {"data": {"sessions": sessions}}
+        except Exception as e:
+            return {"error": f"{type(e).__name__}: {e}"}
+
+    def get_conversation_history(self, cid: str, pages: int = 1) -> dict:
+        try:
+            raw = self._apis.get_chat_data(cid=cid, page_size=10 * max(1, pages))
+            if not raw:
+                return {"error": "mtop_getchatdata_failed"}
+            data = raw.get("data") or {}
+            msgs = (
+                data.get("userMessageModels")
+                or data.get("messages")
+                or data.get("messageModels")
+                or []
+            )
+            out = []
+            for m in msgs if isinstance(msgs, list) else []:
+                if not isinstance(m, dict):
+                    continue
+                # 容错提取：不同版本字段名不一，逐个尝试
+                sender = (
+                    m.get("senderUserId") or m.get("senderId")
+                    or m.get("sender_user_id") or ""
+                )
+                # 文本藏在 message.text.text / content.text / text 等
+                text = ""
+                content = m.get("message") or m.get("content") or {}
+                if isinstance(content, dict):
+                    text = (
+                        content.get("text", {}).get("text", "")
+                        if isinstance(content.get("text"), dict)
+                        else str(content.get("text", "") or "")
+                    )
+                if not text:
+                    text = str(m.get("text", "") or "")
+                out.append({
+                    "send_user_id": str(sender),
+                    "message": {"text": {"text": str(text)}},
+                })
+            return {"data": out}
+        except Exception as e:
+            return {"error": f"{type(e).__name__}: {e}"}
+
+
 class BuyerProfile:
     """买家画像拉取 + 缓存
 
@@ -72,17 +163,71 @@ class BuyerProfile:
 
     def __init__(
         self,
-        client=None,  # 默认用 get_xianyu_client
+        client=None,  # V18: 默认 None = 禁用（goofish MCP 第三方工具已弃用）
         cache_ttl: float = 300.0,
         list_conversations_limit: int = 50,
     ):
         if client is None:
-            from app.integrations import get_xianyu_client
-            client = get_xianyu_client()
+            # V18（2026-10-17）：goofish MCP 第三方工具弃用（用户指令）。
+            # 画像数据源待用自实现 mtop 接口重建；当前默认禁用 →
+            # is_enabled() False → get_profile 走空画像短路，不发起任何网络调用。
+            # 回复链路不受影响（画像本就是异步可选上下文，昵称回退"朋友"）。
+            class _DisabledClient:
+                """禁用桩：永不发起 MCP 调用"""
+
+                def is_enabled(self) -> bool:
+                    return False
+
+            client = _DisabledClient()
         self._client = client
         self._cache_ttl = cache_ttl
         self._list_limit = list_conversations_limit
         self._cache: dict[str, BuyerProfileData] = {}
+        # V18（2026-10-17）：异步预热支持
+        self._lock = threading.Lock()
+        self._inflight: set[str] = set()  # 正在后台拉取的 unb
+
+    def get_profile_nowait(self, unb: str) -> BuyerProfileData:
+        """V18：非阻塞取画像 — 缓存命中直接用；未命中立刻返空画像 +
+        后台线程补拉（拉完写缓存，下一轮消息就能用上）。
+
+        背景：get_profile 同步拉会话列表+历史要 30s+（两次 mtop 调用），
+        在回复链路里阻塞，买家首响被拖到 54s。回复速度优先于画像丰富度，
+        画像只作为 /chat 的加分上下文，不该卡主链路。
+        """
+        cached = self._cache.get(unb)
+        if cached is not None and (time.time() - cached.fetched_at) < self._cache_ttl:
+            return cached
+
+        # 缓存未命中：后台补拉（不阻塞），本轮先用空画像
+        self.prefetch(unb)
+        return BuyerProfileData(
+            unb=unb, fetch_error="fetching_background", fetched_at=0.0
+        )
+
+    def prefetch(self, unb: str) -> None:
+        """V18：后台线程预热画像（同 unb 去重，防重复拉取）"""
+        with self._lock:
+            if unb in self._inflight:
+                return
+            # 已有新鲜缓存也不用拉
+            cached = self._cache.get(unb)
+            if cached is not None and (time.time() - cached.fetched_at) < self._cache_ttl:
+                return
+            self._inflight.add(unb)
+
+        def _worker():
+            try:
+                self.get_profile(unb)
+            except Exception as e:  # 后台线程绝不抛
+                logger.warning(f"BuyerProfile 后台预热失败 unb={unb}: {e}")
+            finally:
+                with self._lock:
+                    self._inflight.discard(unb)
+
+        threading.Thread(
+            target=_worker, name=f"profile-prefetch-{unb}", daemon=True
+        ).start()
 
     def get_profile(self, unb: str) -> BuyerProfileData:
         """拉取买家画像（缓存命中返 cache）"""
@@ -133,6 +278,10 @@ class BuyerProfile:
                         if text:
                             last_message = text
                             break
+        if not last_message:
+            # V18: mtop 路径无逐条历史 API → 用 session.sync 的会话摘要兜底
+            # （是最新一条消息，可能是卖家自己发的——画像上下文足够用）
+            last_message = str(latest_session.get("last_message", "") or "")
 
         nick = latest_session.get("peer_nick", "")
         is_returning = any(

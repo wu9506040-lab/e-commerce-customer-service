@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.admin import router as admin_router
 from app.api.admin_analytics import router as admin_analytics_router  # P4-2 admin 运营聚合
 from app.api.admin_conversations import router as admin_conversations_router  # P4-1 admin 全局会话查询
-from app.api.admin_handoff import router as admin_handoff_router  # M15 人工介入工单坐席工作台
+from app.api.admin_handoff import router as admin_handoff_router
+from app.api.xianyu_admin import router as xianyu_admin_router  # M15 人工介入工单坐席工作台
 from app.api.ratings import router as ratings_router  # WP1 回答评价（CSAT 采集）
 from app.api.badcase_admin import router as badcase_admin_router  # V14（2.4）badcase 池审核面
 from app.api.confirm_ticket import router as confirm_ticket_router  # V14（human-in-the-loop）高风险工具护栏
@@ -161,6 +162,7 @@ app.include_router(admin_router)
 app.include_router(admin_analytics_router)  # P4-2 admin 运营聚合
 app.include_router(admin_conversations_router)  # P4-1 admin 全局会话查询
 app.include_router(admin_handoff_router)  # M15 人工介入工单坐席工作台
+app.include_router(xianyu_admin_router)  # V18 闲鱼人工后台（实时会话/直发/接管）
 app.include_router(ratings_router)  # WP1 CSAT 评价入口
 app.include_router(badcase_admin_router)  # V14（2.4）badcase 池审核面
 app.include_router(confirm_ticket_router)  # V14（human-in-the-loop）高风险工具护栏

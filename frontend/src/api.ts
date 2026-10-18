@@ -630,3 +630,103 @@ export async function getAdminKpi(days = 14): Promise<KpiSnapshot> {
 export async function getKpiTrend(days = 14): Promise<KpiTrendResp> {
   return http(`/admin/analytics/kpi/trend?days=${days}`);
 }
+
+
+// =============================================================
+// V18 闲鱼人工后台（实时会话 / 直发消息 / 接管）
+// =============================================================
+
+export interface XianyuConversation {
+  channel: 'xianyu' | 'mall';
+  cid: string;
+  account?: string;
+  session_id: string;
+  name: string;
+  msg_count: number;
+  last_time: string | null;
+  last_role: string | null;
+  last_text: string | null;
+  takeover?: boolean;
+}
+
+export interface XianyuMessage {
+  id: number;
+  role: string;
+  content: string;
+  create_time: string;
+  sender: 'buyer' | 'assistant' | 'human';
+  intent_snapshot?: Record<string, unknown>;
+}
+
+export interface XianyuEvent {
+  ts: number;
+  kind: string;
+  data: Record<string, unknown>;
+}
+
+export async function listXianyuConversations(limit = 40): Promise<{ conversations: XianyuConversation[]; total: number }> {
+  return http('/admin/xianyu/conversations?limit=' + limit);
+}
+
+export async function getXianyuMessages(channel: 'xianyu' | 'mall', cid: string, limit = 100): Promise<{ channel: string; cid: string; messages: XianyuMessage[] }> {
+  return http('/admin/xianyu/conversations/' + channel + '/' + encodeURIComponent(cid) + '/messages?limit=' + limit);
+}
+
+export async function getXianyuEvents(limit = 50): Promise<{ events: XianyuEvent[] }> {
+  return http('/admin/xianyu/events?limit=' + limit);
+}
+
+export async function sendXianyuMessage(cid: string, text: string, toid = ''): Promise<{ ok: boolean }> {
+  return http('/admin/xianyu/send', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cid, text, toid }),
+  });
+}
+
+export async function takeoverXianyu(cid: string): Promise<{ ok: boolean }> {
+  return http('/admin/xianyu/takeover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cid }),
+  });
+}
+
+export async function releaseXianyu(cid: string): Promise<{ ok: boolean }> {
+  return http('/admin/xianyu/release', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cid }),
+  });
+}
+
+export interface XianyuTicket {
+  id: number;
+  ticket_no: string;
+  session_id: string;
+  reason: string;
+  priority: string;
+  status: string;
+  summary_text: string;
+  create_time: string;
+}
+
+export async function getOpenTickets(): Promise<{ open_count: number; p0_count: number; tickets: XianyuTicket[] }> {
+  return http('/admin/xianyu/tickets?limit=5');
+}
+
+export interface XianyuAccount {
+  id: string;
+  name: string;
+  status: string;
+  last_error?: string;
+  started_at?: number;
+}
+
+export async function listAccounts(): Promise<{ accounts: XianyuAccount[]; total: number }> {
+  return http('/admin/xianyu/accounts');
+}
+
+export async function accountAction(id: string, action: 'start' | 'stop' | 'restart' | 'reload'): Promise<{ ok: boolean }> {
+  return http('/admin/xianyu/accounts/' + encodeURIComponent(id) + '/' + action, { method: 'POST' });
+}

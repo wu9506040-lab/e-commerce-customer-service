@@ -45,29 +45,31 @@ def test_build_chat_prompt_no_blocks_falls_back_to_empty():
 
 
 def test_build_chat_prompt_context_block_takes_priority():
-    """context_block（M9.5）应当放在最前（高于 tool_block）"""
-    from app.services.chat.prompt_assembler import _build_chat_prompt
+    """V16.3.4：context_block 已从 user 段迁到 system 段（_build_system_content）。
+    仍保持"最高优先级"语义——拼到 SYSTEM_PROMPT_BASE 之后，并以
+    【结构化事实-渠道上下文（最高优先级）】标签显形。"""
+    from app.services.chat.stream_dispatcher import _build_system_content
 
-    out = _build_chat_prompt(
-        intent="order_query",
-        tool_block="[订单] 一些事实",
-        policy_block="",
-        product_block="",
-        history_block="",
-        query="物流",
-        context_block="【当前订单】ORD001 已发货",
-    )
-    # context_block 标记【当前场景】
-    ctx_idx = out.index("【当前场景】")
-    tool_idx = out.index("[订单]")
-    assert ctx_idx < tool_idx, f"context 应在 tool 之前；实际 out={out!r}"
+    out = _build_system_content("【当前订单】ORD001 已发货")
+    # 1. context_block 真进了 system message
+    assert "【当前订单】ORD001 已发货" in out
+    # 2. 显形标签存在
+    assert "【结构化事实-渠道上下文（最高优先级）】" in out
+    # 3. 标签在 ctx 内容之前（最高优先级前置声明）
+    tag_idx = out.index("【结构化事实-渠道上下文（最高优先级）】")
+    ctx_idx = out.index("ORD001 已发货")
+    assert tag_idx < ctx_idx, f"【结构化事实】标签应在 ctx 内容之前；actual out={out!r}"
 
 
 def test_build_chat_prompt_full_priority_ordering():
-    """完整 6 段：context > tool > policy > product > history > 问题"""
+    """V16.3.4 双层优先级：
+    - system 层：context_block → SYSTEM_PROMPT_BASE（最高优先级）
+    - user 层（_build_chat_prompt）：secondary > tool > policy > product > history > 问题"""
     from app.services.chat.prompt_assembler import _build_chat_prompt
+    from app.services.chat.stream_dispatcher import _build_system_content
 
-    out = _build_chat_prompt(
+    # user 层：5 段顺序（V16.3.4 不再含 ctx——ctx 已迁 system）
+    user_out = _build_chat_prompt(
         intent="refund_query",
         tool_block="TOOL",
         policy_block="POLICY",
@@ -76,17 +78,21 @@ def test_build_chat_prompt_full_priority_ordering():
         query="Q",
         context_block="CTX",
     )
-
-    # 每个标记段都在前一个之前（或同位置），问题段最末
-    indices = [
-        out.index("CTX"),
-        out.index("TOOL"),
-        out.index("POLICY"),
-        out.index("PRODUCT"),
-        out.index("HISTORY"),
-        out.index("问题：Q"),
+    user_indices = [
+        user_out.index("TOOL"),
+        user_out.index("POLICY"),
+        user_out.index("PRODUCT"),
+        user_out.index("HISTORY"),
+        user_out.index("问题：Q"),
     ]
-    assert indices == sorted(indices), f"段落顺序乱了：indices={indices}\n{out!r}"
+    assert user_indices == sorted(user_indices), \
+        f"user 段 5 段顺序乱了：{user_indices}\n{user_out!r}"
+    # ctx 不在 user 段（V16.3.4 关键变更）
+    assert "CTX" not in user_out, "V16.3.4 后 ctx 不应再出现在 user 段"
+    # system 层：ctx 进入了 system message 头部
+    sys_out = _build_system_content("CTX")
+    assert "CTX" in sys_out
+    assert "【结构化事实-渠道上下文（最高优先级）】" in sys_out
 
 
 def test_build_chat_prompt_sections_separated_by_blank_lines():

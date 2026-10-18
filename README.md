@@ -1,393 +1,148 @@
-# 智能客服 Agent 系统
+# 智能客服中台（电商全渠道 AI 客服系统）
 
-> RAG 检索增强 · 流式问答 · 多轮会话 · 全栈 Docker 化部署
+> 多渠道接入 · AI 应答管线 · 人工坐席工作台 · 数据中台 —— 企业级 AI 客服中台
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Vue3](https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vuedotjs)](https://vuejs.org)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python)](https://python.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6&logo=typescript)](https://typescriptlang.org)
 [![Qdrant](https://img.shields.io/badge/Qdrant-v1.10-DC244C)](https://qdrant.tech)
+[![MySQL](https://img.shields.io/badge/MySQL-8-4479A1?logo=mysql)](https://mysql.com)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis)](https://redis.io)
 [![Docker](https://img.shields.io/badge/Docker_Compose-5_services-2496ED?logo=docker)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![CI](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml/badge.svg)](https://github.com/wu9506040-lab/e-commerce-customer-service/actions/workflows/ci.yml)
-![Tests](https://img.shields.io/badge/pytest-716%20collected-4c1?logo=pytest)
-![Coverage](https://img.shields.io/badge/coverage-69%25-yellowgreen)
-![Eval](https://img.shields.io/badge/hit%405-0.700%E2%86%920.779%20(%2B7.9pp%2C%20source%E7%BA%A7)-blue?logo=dataflow)
 
 ---
 
-## 💡 一句话定位
+## 💡 项目定位
 
-**这不是"又一套千问 RAG 问答模板"，而是面向中小电商真实售后业务规则建模的 Agent 系统** —— 独立全栈交付：13 类业务工具覆盖售前/售中/售后 + Agentic RAG + LangGraph 退款流图 + 请求级超时预算（最坏 66.98s→90s）+ human-in-the-loop 5 道防御 + 716 测试/CI 三门禁。规则口径源自淘宝/京东/拼多多真实退换货政策与 12315 高频问答。
+**企业级 AI 客服中台**：不是"闲鱼自动回复脚本"，而是完整覆盖 **多渠道接入 → AI 应答管线 → 人工坐席协同 → 数据看板** 全链路的客服系统。
 
-![前端登录页](docs/screenshots/frontend-login.png)
+- **双渠道**：闲鱼 IM（自研 WebSocket 协议栈，零第三方依赖）+ 网页商城（Vue3 Web）
+- **多账号**：一个后台管理 N 个闲鱼账号，独立连接/独立应答/统一监控
+- **人机协同**：AI 自动应答 + 一键接管人工 + 工单闭环 + 外发通知
+- **安全兜底**：消息去重/合批、敏感词过滤、回复数据校验（价格幻觉检测）、双 AI 回环防护
 
-```bash
-# 5 分钟跑通核心：5 服务 Docker Compose + 22-22 退款活体 + drill 三道故障演练
-cd deploy && docker compose up -d
-DATABASE_URL='mysql+pymysql://cs_user:dev_user_2026@localhost:3307/customer_service?charset=utf8mb4' \
-  PYTHONIOENCODING=utf-8 python scripts/verify_flywheel_live.py && \
-  python scripts/verify_confirm_ticket.py && \
-  python scripts/drill_failover.py
-```
+## 📸 界面截图
 
----
+**人工坐席工作台**（三栏：会话列表 / 对话窗口 / 客户信息）
 
-## 📊 实测战绩（2026-10-11 本机复跑，全部可一键复现）
+![人工坐席工作台](docs/screenshots/workbench.png)
 
-| 维度 | 实测值 | 复现命令 |
-|------|--------|----------|
-| **检索质量** | 330 题分层评测集三级同日连跑（2026-10-10 晚 · 洗库+语义切片后新基线，source 级命中口径 `--match-source`）：dense 0.700 → +BM25/RRF **0.733（+3.3pp）** → +LLM Rerank **0.779（累计 +7.9pp）**；hit@1 0.427→0.576（Rerank 主收益在 top-1 精排）；Rerank p50 +1.2s 延迟成本显式记录 | `cd deploy && docker compose up -d qdrant redis mysql api`，根目录 `PYTHONPATH=backend python scripts/eval_hitk.py --match-source`（逐级加 `--bm25`、`--bm25 --rerank`） |
-| **人工介入闭环（M15）** | 转自动落工单（P0 优先队列/认领/回复注入会话/结单），坐席工作台 `/admin/handoff` | 对触发词说"转人工"→ admin 登录看队列 → 回复 → 用户侧会话可见 |
-| **业务 KPI 大盘（WP1）** | AI 自助解决率 / 转人工率 / CSAT / 拦截率 / 平均轮次 / **LLM 成本估算 + Guard 省钱额** + 按日趋势，含指标公式定义 | admin 登录看 `/admin/kpi`；口径 `backend/app/services/kpi_service.py` 模块注释（成本为估算口径，note 显式标注） |
-| **badcase 自动池（V14 飞轮机制化）** | 三类信号自动入池——👎（join 意图快照带全现场）/ LLM 低置信扫描 / guard 拦截留证；归一化哈希去重（复发 bump 计数）；admin 审核标注**稳定键 source** → `merge_badcase_to_eval.py` 半自动合入评测集（doc_id 现库解析、默认 dry-run、合入备份+状态机回写）；入池失败显形计数不阻断主链路 | 活体闭环：`DATABASE_URL=... PYTHONIOENCODING=utf-8 python scripts/verify_flywheel_live.py`（真实问答→👎→误杀→入池→审核 11 步全 PASS）；合入演示走 `--apply --eval-file` 临时文件不动 330 基线 |
-| **请求级超时预算（V14 3.3）** | /chat 总 deadline 90s + 分段单次上限（LLM 30/Rerank 20/Intent 10/Rewrite 6/Embed 10）+ OpenAI SDK 内建重试清零（避免 30s×3×4 叠成 10 分钟级尾）+ 10 路 semaphore + 闸排队超窗显形 + 流式逐 chunk 预算 → 残答契约；fallback V1.2 在断路器 OPEN / 预算耗尽时跳过二次 LLM 调用直接固定话术 | 故障演练实测 3 道：`python scripts/drill_failover.py` —— ① **LLM 不可达**：单请求 66.98s 在预算内拒绝（不是 10 分钟）+ 熔断 OPEN 后 5 次连续 0ms 快速失败（无重试、无 HTTP）；② **qdrant 拔线**：/chat 5.4s 出答；③ **并发 20 路**：max 4.8s 完成、零错误 |
-| **Human-in-the-loop（V14）** | `confirm_tickets` 两步走：AI 出结构化提案 + 人点确认 + 服务端按冻结参数真执行；**5 道防御**（①args_hash 参数冻结 ②TTL 默认 5min ③幂等防双花 ④状态机 merged 锁定 ⑤四事件 timestamp + result_snapshot 全量审计）| `python scripts/verify_confirm_ticket.py` 12 步 PASS：propose → 列表 → 防御 1 篡改拦截 → 跨用户 403 → 真 confirm → 防御 3 幂等 → reject → 防御 2 sweep 过期 |
-| **会话入口用户上下文预加载（V15）** | 用户进入 `/chat` 即调 `user_context_preloader.preload(user_id)` 加载最近 5 单（含产品名+状态+金额）+ 用户画像摘要 → 注入 LLM prompt 的 `context_block` 末尾（300 字符硬上限）；**用户问"我昨天买的商品要退款"——不用报订单号，LLM 主动关联 `ORD20260601001(ZP1 蓝牙耳机 / ¥99 / 已发货)`**；best-effort 单字段失败不影响其他字段；灰度开关 `ENABLE_USER_CONTEXT_PRELOAD`（默认 false，验证后开） | `cd backend && python -m pytest tests/test_user_context_preloader.py -v` → 16 个用例全绿（匿名短路/订单含产品/订单超 MAX_RECENT_ORDERS 截断/单字段失败不影响其他/格式化+硬上限截断/反幻觉前缀）；`conversation_context.recent_orders_summary` 字段预留缓存位（30 min 空闲重查，TODO V15.1）|
-| **意图黄金评测集（V14 2.5）** | 170 条黄金（4 类×35 + 32 条 E6' 对抗：矛盾陈述/政策外诉求/多意图连珠/情绪化）；规则层（method=rule）覆盖 **51.2%**（87/170），规则层精度 **88.5%**；分类别 F1：refund_query 67.6 / policy_query 88.4 / order_query 52.3 / product_query 32.7 | `PYTHONPATH=backend python scripts/eval_intent_classify.py --llm-stub primary`（mock LLM 离线可跑）；报告落 `data/intent_golden_report.json` |
-| **测试资产** | **732 条**（单元 + E2E，含 M15 工单 / WP1 指标 / V13 路由边界、查无短路、流式截断、决策回边、转人工分级与降级显形组、V14 prompt 缓存陈旧回归组、V14 badcase 池组、**V15 用户上下文预加载 16 例**；2026-10-13 实测 **757 绿 + 1 宿主机环境项**，CI 全绿），覆盖率 **69%（实测）** | `cd backend && python -m pytest tests --cov=app` |
-| **闲鱼 MCP 渠道接入（V16）** | 智能客服扩展到闲鱼（C2C 二手平台）IM 渠道：MCP stdio 协议连 [fancyboi999/goofish-cli](https://github.com/fancyboi999/goofish-cli)（307⭐，Apache-2.0）调 17 个闲鱼命令；注册 5 个 Agent 工具（`xianyu_list_conversations` / `conversation_history` / `get_item` / `list_my_items` / `send_message`）；写操作（`send_message`）必须 `confirmed=true`（与 `modify_address` 同模式）；三段短路（开关/SDK/cookie）+ 异常降级（MCP 不可达/超时/cookie 失效 → 返 error dict 不阻断 Agent）；演示用小号 + `--dry-run` 默认不发真实交易指令 | `cd backend && python -m pytest tests/test_xianyu_*.py -v` → **56 绿**（client 17 + registry 39 含 5 工具 × 5 parametrize）；`python scripts/demo_xianyu_live.py --dry-run`（需先 `goofish auth login` 导入 cookie）|
-| **知识库** | 18 个结构化源文件 → 114 篇文档 → 136 chunks（V13：**句边界贪心切片 + title 增强 embedding**；逐源 delete-before-write 换代 + `prune_orphan_sources.py` 孤儿清扫，2026-10-10 全量重灌验证） | `PYTHONPATH=backend python scripts/ingest_ecommerce_kb.py`（重灌幂等，先清同源旧点） |
-| **服务编排** | api / frontend / qdrant / mysql / redis 5 服务 Docker Compose + SSE 流式 + JWT 鉴权 | `deploy/docker-compose.yml` |
+**对话窗口**（AI 浅蓝气泡 / 人工深蓝气泡 / 买家灰色气泡，右上角标区分）
 
-> **数据说明**：知识库与评测集为**基于电商售后业务规则构建的合成数据集**（LLM 生成 + 人工抽检校准），
-> 评测价值在方法层：二值相关 + hit@K + per-source 分层 + miss 案例落盘，脚本与结果均在仓库内。
+![对话窗口](docs/screenshots/chat-window.png)
 
-## ⚗️ 消融实验与数据诚实声明
+**数据看板**（ECharts：消息趋势 / 渠道分布 / 响应时间 / 热门问题 TOP10 / AI 率仪表）
 
-- 7 月存档的 0.842 / 0.897 在**当前知识库上不可复现**（KB 内容与配置自 7 月后演进；评测 doc_id 与现库匹配率 109/110，排除 ID 漂移，确认是库变化）——本 README 只采同日同口径连跑值，跨期高点一律不采用
-- **更正声明**：本 README 早前版本以 7 月 hybrid(0.842) 对比当日 hybrid_rerank(0.806)，误称"Rerank 负增益 -3.6pp"——跨口径对比本身就是错误读法；同口径下 Rerank 为**正增益（0.755→0.806，+5.1pp）**。此更正正是本项目"数据诚实声明"该防的错误模式，公开留档
-- 早期文档中「385 pytest」口径已过时（现为 716 条，2026-10-11 本机全量复跑），不再采用——**只写能当场跑出来的数字**
-- **2026-10-10 深夜两项更正**：① 自查发现线上知识库 ~45%（92/202）为陈旧世代点（内容哈希 ID + 无 delete-before-write 的历史缺陷），全量洗库重灌后，旧三级数字（0.703/0.755/0.806，脏库 + doc_id 口径）停止引用，新基线见战绩卡（source 级口径，跨口径不可比、不可与旧数字比涨跌）；② 期间发现 `QWEN_MODEL` 日期快照（qwen-plus-2025-07-28）被上游退役返回 404，Rerank 在"全 0 分静默降原序"降级分支下**实际空转**——已切通用别名并带真实 rerank 复测三级。教训：模型快照会过期，配置用水位别名；降级必须显形
-- 公网 ECS 演示已随服务器到期下线；本地 Docker 五服务即为完整运行形态
+![数据看板](docs/screenshots/dashboard-1.png)
 
-## 🚧 已知局限（主动交代）
-
-1. 合成 query 与被检索文档同源，存在自匹配偏置；v3 方向为真实对话日志脱敏回流（`operation_log` 全量审计字段已预留）
-2. 评测集二值相关 + 单正例设定，hit@K 为保守下界
-3. 知识库 136 chunks 小规模，RRF/HNSW 参数结论未在大规模数据验证
-4. ~~退款评测双重时间炸弹~~ **已修（2026-10-10）**：seed 改固定订单号 + 评测启动前自愈刷新时间窗 + 修复 SSE 解析被后到 meta 覆盖 refundable 的 bug + 防串单断言语义化。5/22 → 19/22（86.4%）→ **22/22（同日完成 3 项真实缺陷转正修复）**：I2=policy 表补"退款到账时效"3 条 pattern；A4=classify() 规则层实体感知升级（含单号+"怎么退/退款流程"形态 → policy_query 升级 refund_query，进流算得出 refundable）；H1=RefundFlow 自报单号查无确定性 NOT_FOUND 短路（补 DB 可达性探测——查询失败≠查无此单，不做确定性断言；V2 有此分支、V3 重构丢失属回归）。回归防护：test_intent_multi V13 边界组 5 例 + test_refund_flow_not_found 2 例 + test_synthesizer_refund 5 例补 V3 双命名空间 mock——见 `scripts/eval_refund_report.json`
-5. L3 限流为 INCR+过期 的**固定窗口**计数（边界突发用 ZSET 时间戳实现真滑动，在 backlog）
+![数据看板-下](docs/screenshots/dashboard-2.png)
 
 ---
 
-## 📖 项目简介
+## ✨ 核心功能
 
-**智能客服 Agent** 是一个基于 RAG（Retrieval-Augmented Generation）架构的端到端对话系统。
-用户提问时，系统先从向量知识库中检索相关资料，再交由大语言模型生成回答，
-实现"基于事实、可追溯"的智能问答。
+### 1. 闲鱼渠道接入（自研协议栈）
+- **WebSocket 私有协议逆向实现**：LWP 帧 / MessagePack 解码 / mtop.h5 签名，零第三方 CLI 依赖
+- **ackDiff 消息补拉**：轻量通知主动拉全量 + 60s 周期兜底，消息不丢
+- **消息去重合批**：message_id 组合键去重；4s debounce 合并买家连发
+- **多账号并行**：`AccountWorker × N` 独立连接/独立应答，自家账号间防 AI 回环
+- **Cookie 四层自愈**：mtop 重签 → HTTP 续期 → Playwright 免密登录 → 人工兜底
 
-适用于：电商售后、技术支持、企业内部知识库、产品 FAQ 等场景。
+### 2. AI 应答管线
+- **三级意图路由**：本地关键词（零 LLM 开销）→ 规则 → LLM 分类
+- **分 Agent 话术**：售前/售中/售后场景 YAML 话术库 + 议价轮次梯度策略
+- **回复数据校验**：markdown/占位符剥离、长度保险丝、**价格幻觉检测**（与商品价格白名单对比）
+- **安全过滤**：承诺性敏感词拦截、站外引流替换、空回复兜底
+- **拟人化**：打字模拟（字数比例延迟）、长回复句界分段、口语短句约束
 
-**项目特点**：
+### 3. 人工协同
+- **三栏坐席工作台**：会话列表（未读红点/状态标签）/ 对话窗口（AI·人工·买家三色气泡）/ 客户信息
+- **一键接管/恢复**：Redis 命令总线 → daemon 接管态，AI 静默
+- **自动建单**：转人工/退款/平台退款申请 → 工单（P0-P2 分级）带订单证据与可读摘要
+- **外发通知**：钉钉 / 企业微信 / 飞书 / WxPusher（微信）/ 通用 webhook
 
-- 🔍 **完整 RAG 链路** —— query → embedding → Qdrant 检索 → context 组装 → LLM 生成
-- ⚡ **SSE 流式输出** —— 大模型逐字返回，前端实时呈现打字效果
-- 💬 **多轮对话** —— 基于会话 ID 的上下文管理，支持跨轮指代
-- 🔐 **完整鉴权** —— JWT（httpOnly Cookie）+ bcrypt 密码加密 + 角色管理
-- 🛡 **可观测性** —— `/health` 三组件探测、`operation_log` 全量审计
-- 🐳 **一键部署** —— 5 服务 Docker Compose，开发与生产双套配置
-- 📦 **数据闭环** —— admin 端知识入库、来源追溯、chunk 可视化
+### 4. RAG 数据中台
+- **多格式入库**：PDF（页眉剔除/章节识别/表格/脚注）/ Markdown / TXT / JSON
+- **语义分块**：句子边界切分不截断 + 章节打包 + 尾句重叠
+- **渠道隔离**：Qdrant payload 过滤，多渠道知识库互不串台
+- **增量幂等**：content_hash 去重，重复跑零成本
 
----
-
-## 📸 效果展示
-
-### 首页 & 商城
-
-| 首页（4 类意图分流） | 商品列表 | 商品详情 |
-|---|---|---|
-| ![home](frontend/_screenshots/demo.png) | ![shop](frontend/_screenshots/shop.png) | ![detail](frontend/_screenshots/detail.png) |
-
-### 智能客服聊天
-
-| 多轮对话（左历史会话列表 + 右主区） | 上下文：订单 | 上下文：商品 |
-|---|---|---|
-| ![chat](frontend/_screenshots/chat.png) | ![ctx-order](frontend/_screenshots/ctx-order.png) | ![ctx-product](frontend/_screenshots/ctx-product.png) |
-
-### 完整流程演示（公网 ECS 实测）
-
-8 张顺序截图覆盖登录 → 浏览 → RAG 咨询 → 退款 LangGraph → 个人中心：
-
-[`frontend/_screenshots/walkthrough/demo-01-home.png`](frontend/_screenshots/walkthrough/demo-01-home.png) → [`demo-08-profile.png`](frontend/_screenshots/walkthrough/demo-08-profile.png)
-
-### 订单生命周期流转
-
-`pending` → `paid` → `shipped` → `delivered` → `refunded`（6 张状态截图）：
-[`loop-01-product-detail.png`](frontend/_screenshots/loop-01-product-detail.png) → [`loop-06-profile-refunded.png`](frontend/_screenshots/loop-06-profile-refunded.png)
-
-> 截图由 `scripts/verify_demo_public.py` + Playwright 曾在公网 ECS 自动生成（该服务器已到期下线，截图为历史运行存档）。
-
----
-
-## ✨ 核心特性
-
-| 模块 | 能力 |
-|------|------|
-| **检索增强（RAG）** | DashScope `text-embedding-v3`（1024 维）→ Qdrant HNSW 索引 → top-k=5 余弦相似度 |
-| **流式问答** | SSE（Server-Sent Events）单向推送；前端 `EventSource` 接收 + Markdown 实时渲染 |
-| **多轮会话** | MySQL 持久化 + Redis 热路径缓存；cursor 分页拉历史 |
-| **知识库管理** | admin 端 `/admin/ingest` 入库（chunk_size + overlap 可配）；`/admin/knowledge/sources` 追溯 |
-| **用户系统** | 注册 / 登录 / 改密 / 角色；`/auth/me` 返回用户统计 |
-| **会话管理** | 列表 / 详情 / 软删除；按用户隔离 |
-| **审计日志** | `operation_log` 表记录 IP / UA / 动作 / 详情 |
-| **健康检查** | `/health` 同时探测 mysql / redis / qdrant 状态 |
-| **生产部署** | dev / prod 双 compose override；环境变量集中管理；日志与数据卷分离 |
+### 5. 运营管理
+- **管理台**：独立登录域 + 深色侧边栏布局（Ant Design Pro 风格）
+- **数据看板**：ECharts 消息趋势/渠道分布/响应时间/热门问题/AI 率仪表
+- **账号管理**：连接状态灯、启停/重启、注册表热重载
 
 ---
 
 ## 🛠 技术栈
 
-| 层 | 选型 | 用途 |
-|----|------|------|
-| 后端框架 | FastAPI 0.115 | REST + SSE，依赖注入，Pydantic 校验 |
-| 前端框架 | Vue3 + Vite + TypeScript | 组件化，类型安全 |
-| LLM | 通义千问 qwen-max（DashScope OpenAI 兼容）| 流式对话生成 |
-| Embedding | DashScope text-embedding-v3 | 1024 维文本向量化 |
-| 向量库 | Qdrant v1.10 | 单二进制，REST + gRPC 双协议 |
-| 关系库 | MySQL 8.0（utf8mb4）| 用户 / 会话 / 消息 / 知识元数据 / 审计 |
-| 缓存 | Redis 7 | 会话热路径，LRU 淘汰 |
-| 反向代理 | nginx (alpine) | 前端静态服务 + API 反代 + SSE 流式 |
-| 部署 | Docker Desktop + WSL2 | 5 服务一键编排 |
-
----
-
-## 🏗 系统架构
-
-```
-                  ┌─────────────────────────────────────────┐
-                  │      Frontend (Vue3 + Vite + TS)        │
-                  │   ChatPage / MarkdownView / SSE 接收   │
-                  └─────────────────┬───────────────────────┘
-                                    │ httpOnly Cookie + SSE
-                                    ▼
-        ┌───────────────────────────────────────────────────────────┐
-        │                 Backend (FastAPI :8000)                   │
-        │                                                           │
-        │   api/  ─→  services/  ─→  rag/pipeline.py                │
-        │   (路由)    (编排)         │                              │
-        │              │             │                              │
-        │              ▼             ▼                              │
-        │       session_service   ┌─────────┐     ┌────────────┐    │
-        │       (Redis+MySQL)     │ Qdrant  │     │  Qwen LLM  │    │
-        │              │          │ 检索    │     │  流式生成   │    │
-        │              ▼          └─────────┘     └────────────┘    │
-        │        ┌─────────┐           ▲                            │
-        │        │  MySQL  │           │                            │
-        │        │ (冷路径) │           │                            │
-        │        └─────────┘           │                            │
-        └──────────────────────────────┴────────────────────────────┘
-                                       │
-                              ┌────────┴────────┐
-                              │     Redis       │
-                              │   (热路径)      │
-                              └─────────────────┘
-```
-
-**分层原则（严格遵守）**：
-
-| 层 | 职责 | 禁止 |
-|----|------|------|
-| `api/` | 路由、参数解析、调 services | 写业务逻辑 |
-| `services/` | 业务编排（调 core/rag/clients）| 直接连 DB |
-| `core/` | LLM / embedding 等核心能力 | 调外部 HTTP API 路由 |
-| `rag/` | 检索 + 生成 pipeline | 写入 chat handler |
-| `clients/` | Qdrant / Redis / MySQL 连接 | 写业务逻辑 |
-| `models/` | ORM 模型 | 写逻辑 |
-| `schemas/` | Pydantic 模型 | 写逻辑 |
-| `utils/` | 纯函数工具 | 引用其他层 |
+| 层 | 技术 |
+|----|------|
+| 前端 | Vue3 + Vite + TypeScript、ECharts、Nginx |
+| 后端 | Python 3.11、FastAPI（SSE 流式）、SQLAlchemy、Pydantic |
+| 实时通信 | websockets + MessagePack（闲鱼私有协议自研实现） |
+| 数据 | MySQL 8（消息/工单，account 列隔离）、Redis（热历史/命令总线） |
+| 向量库 | Qdrant（text-embedding-v3 1024 维 + BM25/RRF 混合检索 + 重排） |
+| LLM | 通义千问 qwen-plus（SSE 流式） |
+| 浏览器自动化 | Playwright（Cookie 免密登录刷新） |
+| 部署 | Docker Compose（5 容器）+ watchdog 进程守护 |
 
 ---
 
 ## 🚀 快速开始
 
-### 前置要求
-
-- Docker Desktop（WSL2 后端）
-- 通义千问 API Key（[申请地址](https://dashscope.console.aliyun.com/apiKey)）
-
-### 启动步骤
-
 ```bash
-# 1. 进入部署目录
-cd deploy
+# 1. 克隆
+git clone git@github.com:wu9506040-lab/e-commerce-customer-service.git
+cd e-commerce-customer-service
 
-# 2. 复制环境变量模板
-cp .env.example .env.dev
+# 2. 配置环境变量
+cp deploy/.env.example deploy/.env.dev
+#    填入：MYSQL 密码 / QWEN_API_KEY（通义千问）
 
-# 3. 编辑 .env.dev，填入：
-#    QWEN_API_KEY=sk-xxxxx
-#    JWT_SECRET=<openssl rand -hex 32 生成>
+# 3. 启动基础设施（MySQL/Redis/Qdrant/API/Nginx 五容器）
+cd deploy && docker compose up -d && cd ..
 
-# 4. 启动 5 个服务
-docker compose --env-file .env.dev up -d --build
+# 4. 前端构建（bind-mount 到 nginx 容器）
+cd frontend && npm install && npm run build && cd ..
 
-# 5. 验证
-curl http://localhost:8000/health
-# → {"status":"ok","components":{"mysql":"up","redis":"up","qdrant":"up"}}
+# 5. 初始化数据表 + 知识库
+mysql -h 127.0.0.1 -P 3307 -u cs_user -p customer_service < deploy/mysql/init/01_schema.sql
+python scripts/ingest_kb.py
+
+# 6. 闲鱼账号接入（可选）
+#    浏览器登录闲鱼 → F12 复制 Cookie → 存为 cookie.txt（项目根目录）
+#    多账号：编辑 backend/config/accounts.json（参考 accounts.example.json）
+
+# 7. 启动 daemon + 看门狗
+python scripts/run_xianyu_daemon.py &
+python scripts/watchdog_xianyu_daemon.py &
+
+# 访问
+#   商城：        http://localhost:5173
+#   人工后台：    http://localhost:5173/admin/xianyu （管理员登录）
+#   数据看板：    http://localhost:5173/admin/board
+#   API 文档：    http://localhost:8000/docs
 ```
 
-### 访问入口（本地 Docker 形态）
-
-> 公网 ECS 演示已随服务器到期下线；项目曾完整经历云上部署（安全组 / Nginx 反代 / 健康监控），运行形态以下列本地入口为准。
-
-| 地址 | 说明 | 启动方式 |
-|------|------|----------|
-| http://localhost:5173 | 前端 Web UI（主入口） | `cd deploy && docker compose up -d` |
-| http://localhost:8000/docs | Swagger API 文档（FastAPI 自动生成） | 同上 |
-| http://localhost:8000/health | mysql/redis/qdrant 三件套健康检查 | 同上 |
-| http://localhost:6333/dashboard | Qdrant 控制台 | 同上 |
-
-### 初始化账号
-
-首次启动**不会**自动创建任何账号，需要手动操作：
-
-```bash
-# 1. 注册一个普通用户
-curl -X POST http://localhost:8000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"myuser","password":"mypassword123"}'
-
-# 2. 提升为 admin（直接改 MySQL）
-docker exec customer-service-mysql mysql -ucs_user -pcs_pass_2026 customer_service \
-  -e "UPDATE users SET role='admin' WHERE username='myuser';"
-```
-
-测试账号（已 seed，仅用于演示）：
-- `demotest` / `demotest123`：7 个真实订单（pending×2 / paid×1 / shipped×1 / delivered×1 / completed×1 / refunded×1），可演示 LangGraph 退款状态机的 4 路径
-- `admin`：通过上述方式手动创建并提权后即可登录 `/api/admin/*` 后台
+> ⚠️ **安全提示**：`cookie.txt`、`cookies/`、`backend/config/accounts.json`、`notify.json` 均含敏感凭据，已加入 `.gitignore`，仓库只保留 `*.example.json` 模板。
 
 ---
 
-## ⚙️ 配置说明
+## 📊 项目规模
 
-所有配置集中在 `deploy/.env.example`，关键变量：
-
-| 变量 | 说明 | 必填 |
-|------|------|------|
-| `QWEN_API_KEY` | 通义千问 API Key | ✅ |
-| `JWT_SECRET` | JWT 签名密钥（≥ 32 字符）| ✅ |
-| `MYSQL_ROOT_PASSWORD` | MySQL root 密码 | ✅ |
-| `MYSQL_PASSWORD` | MySQL 应用账号密码 | ✅ |
-| `APP_ENV` | `dev` / `prod` | — |
-| `LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` | — |
-
----
-
-## 📡 API 端点
-
-| 方法 | 路径 | 说明 | 鉴权 |
-|------|------|------|------|
-| GET | `/health` | 健康检查（mysql/redis/qdrant）| ❌ |
-| POST | `/auth/register` | 注册 | ❌ |
-| POST | `/auth/login` | 登录（form → Set-Cookie JWT）| ❌ |
-| GET | `/auth/me` | 当前用户 + 统计 | ✅ |
-| POST | `/chat` | RAG 多轮问答（SSE 流式）| 可选 |
-| GET | `/conversations` | 当前用户会话列表 | ✅ |
-| GET | `/conversations/{sid}/messages` | 会话消息（cursor 分页）| ✅ |
-| DELETE | `/conversations/{sid}` | 软删会话 | ✅ |
-| POST | `/admin/ingest` | 知识入库 | admin |
-| GET | `/admin/knowledge/sources` | 知识来源列表 | admin |
-
----
-
-## 📚 文档
-
-| 文档 | 内容 |
+| 指标 | 数值 |
 |------|------|
-| [`docs/learning_log.md`](docs/learning_log.md) | 项目演进日志（1472 行，14 个模块，每个含 What / Why / Tech / Flow / Problem→Fix / Role）|
-| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | 运维指南（端口、数据卷、故障排查、生产部署）|
-| [`docs/HEALTHCHECK.md`](docs/HEALTHCHECK.md) | healthcheck.io 接入指南（5 min 接入 + 告警演练）|
-| [`docs/test_coverage.md`](docs/test_coverage.md) | 测试覆盖矩阵（115 单元 + ~100 E2E，10 个测试文件）|
-
----
-
-## 🔧 设计决策（关键技术选择的理由）
-
-### 1. 为什么用 SSE 而不是 WebSocket？
-
-LLM 输出是**单向服务器推送**，SSE 直接复用 HTTP（鉴权、反代都简单）；
-WebSocket 双向协议反而过度设计。
-
-### 2. 为什么 MySQL + Redis 双写？
-
-- **MySQL**：持久化、消息历史可追溯、支持 cursor 分页
-- **Redis**：会话热路径，避免每次请求都打 DB
-- **写穿透策略**：MySQL 失败仅 warning，不影响 SSE done 事件（best-effort）
-
-### 3. 为什么选 Qdrant 而不是 Milvus / ES？
-
-- **单二进制部署**：Docker Desktop 友好
-- **REST + gRPC 双协议**：调试方便
-- **HNSW 默认索引**：ANN 检索速度足够
-- **payload 过滤 + 向量检索**混合能力强
-
-### 4. Qdrant 为什么是 1024 维？
-
-阿里 DashScope `text-embedding-v3` 默认输出 1024 维。
-Qdrant collection 的 `vector_size` 必须**严格匹配**，否则报 `Wrong dimensions` 错误。
-两边常量在模块顶部加注释强制同步。
-
-### 5. 流式滚动为什么需要节流？
-
-每收一个 token 就 `scrollTop` 会卡顿（DOM 操作阻塞主线程）。
-用 `requestAnimationFrame` 把 50ms 内的多次 scroll 合批，性能提升 ~10x。
-
-### 6. 为什么不用 LangChain？
-
-（V3 LangGraph 用于退款 4 节点业务流；日常 Agent FC 不引 LangChain——大而全，包大、抽象多、对调试不友好；直调 OpenAI SDK + 自维护 registry 更轻、更可控）
-
-### 7. 为什么闲鱼渠道用 MCP 协议而不是直接逆向闲鱼协议？
-
-闲鱼协议没有公开 API，直接逆向 = 自己写 MD5 签名 + msgpack + Protobuf + token 刷新（路线 C，工作量 ~1-2 周，且闲鱼协议变更会破）。MCP 是 2024 年底由 Anthropic 推出的开放协议（stdio JSON-RPC），**`goofish-cli` 是合规 MCP server**（pip 装 + 自动注册），智能客服作为 MCP client 调它 = **业务代码与闲鱼协议完全解耦**——闲鱼协议变了只动 goofish-cli 不动我们。这也是 2026 秋招 JD 的高频词（"MCP/MCP server/MCP client" 出现率 23%），简历可写"用 MCP 协议接入 C2C 平台"。
-
-- **过度抽象**：业务逻辑藏在 chain 里，调 bug 翻三层
-- **依赖重**：本项目用 OpenAI SDK 直调，3 行代码解决
-- **可读性**：直调更便于理解底层 LLM 调用机制
-
----
-
-## 🗂 目录结构
-
-```
-E:\智能客服\
-├── backend/                  # FastAPI 后端
-│   ├── app/
-│   │   ├── api/              # HTTP 路由（auth / chat / conversations / admin）
-│   │   ├── services/         # 业务编排（session / auth / rag / audit）
-│   │   ├── core/             # 核心能力（config / security / embedding / qwen）
-│   │   ├── rag/              # 检索 pipeline + ingest
-│   │   ├── clients/          # Qdrant / Redis / MySQL 连接
-│   │   ├── models/           # ORM 模型（5 张表）
-│   │   ├── schemas/          # Pydantic 模型
-│   │   └── main.py           # FastAPI 入口
-│   ├── requirements.txt      # 依赖锁版本
-│   └── Dockerfile
-├── frontend/                 # Vue3 前端
-│   └── src/components/       # 6 个组件（ChatPage / MessageList / MarkdownView…）
-├── deploy/                   # Docker Compose 编排
-│   ├── docker-compose.yml    # 5 服务开发环境
-│   ├── docker-compose.prod.yml
-│   └── .env.example
-├── docs/                     # 项目文档
-│   ├── learning_log.md       # 演进日志（1472 行）
-│   └── OPERATIONS.md         # 运维指南
-├── LICENSE                   # MIT
-└── README.md                 # ← 你正在看
-```
-
----
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request。
-
-开发前请阅读：
-- `docs/learning_log.md` —— 了解项目演进历程和设计权衡
-- 各模块顶部的中文 docstring —— 说明模块职责和禁止事项
+| 后端 Python | 280 文件 / 51,000+ 行 |
+| 前端 Vue3/TS | 27 文件 / 8,400+ 行 |
+| 测试 | 97 个测试文件 / 23,000+ 行 |
+| Git 提交 | 310+（活跃开发中） |
+| 端到端延迟 | 54s → 8-15s（分阶段优化，全程日志拆解） |
 
 ---
 
 ## 📄 License
 
-[MIT](LICENSE)
+MIT

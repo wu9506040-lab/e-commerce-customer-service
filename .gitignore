@@ -185,3 +185,17 @@ frontend/_screenshots/*_report.json
 /task_plan.md
 /findings.md
 /progress.md
+
+# =============================================================
+# V18.2 敏感信息（多账号/通知配置含凭据，严禁入库）
+# =============================================================
+cookie.txt
+cookies/
+backend/config/accounts.json
+backend/config/notify.json
+kb_all.json
+kb_powerbank.json
+kb_sample.json
+pt_one.json
+_research/
+*.log.pid

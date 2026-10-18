@@ -13,6 +13,8 @@ class Message(Base):
 
     id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # V18.2 多账号：归属账号 id（a1/a2…，默认 a1 向后兼容）
+    account: Mapped[str] = mapped_column(String(20), nullable=False, default='a1')
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)

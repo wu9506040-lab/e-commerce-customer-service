@@ -13,6 +13,7 @@ class Conversation(Base):
 
     id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    account: Mapped[str] = mapped_column(String(20), nullable=False, default='a1')
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     title: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
