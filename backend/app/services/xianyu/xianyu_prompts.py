@@ -86,10 +86,7 @@ class XianyuPrompts:
         if buyer_profile:
             parts.append("")
             parts.append(f"【当前买家】\n{buyer_profile}")
-        # 占位符替换
-        if nick:
-            for i, p in enumerate(parts):
-                parts[i] = p.replace("{nick}", nick)
+
         # few-shot（最多 3 条）
         if template.examples:
             parts.append("")
@@ -101,6 +98,16 @@ class XianyuPrompts:
                 parts.append(f"  {role}: {text}")
                 if reasoning:
                     parts.append(f"  ({reasoning})")
+
+        # 占位符替换（V18 fix 2026-10-17）
+        # 两个坑：
+        # 1. 原逻辑 `if nick:` 才替换——nick 为空（画像后台拉取中/拉取失败）时
+        #    {nick} 原样留在 prompt 里，few-shot 示例带 {nick}，LLM 照抄占位符
+        # 2. 原逻辑在 examples 拼接**之前**替换——示例里的 {nick} 永远不会被替换
+        # 修复：examples 拼完后统一替换；nick 缺位回退"朋友"（话术读起来自然）
+        effective_nick = (nick or "").strip() or "朋友"
+        for i, p in enumerate(parts):
+            parts[i] = p.replace("{nick}", effective_nick)
         return "\n".join(parts)
 
     def _replace_placeholders(

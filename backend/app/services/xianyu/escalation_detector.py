@@ -109,9 +109,13 @@ class XianyuEscalationDetector:
     """
 
     # 异常行为阈值
-    ABNORMAL_BEHAVIOR_THRESHOLD = 5  # 24h 内 ≥ 5 次触发
+    # V18 fix（2026-10-17）：5条/24h 会把正常买家误伤——实测一次售前咨询
+    # （在吗+测试26+这个容量多大，加上上午联调）就累计超 5 条，之后所有消息
+    # 都被 转人工(abnormal_behavior) 短路，/chat 根本不进来。
+    # 改为 30条/1h：只拦刷屏/轰炸，正常聊天与测试不再误触发。
+    ABNORMAL_BEHAVIOR_THRESHOLD = 30
     EMOTION_THRESHOLD = 2  # 连续 2 次"不满意"触发
-    ABNORMAL_WINDOW_SECONDS = 86400  # 24h
+    ABNORMAL_WINDOW_SECONDS = 3600  # 1h（原 24h 过长，一次咨询就爆）
 
     def __init__(self):
         self._trigger_patterns: list[tuple[EscalationReason, list[re.Pattern]]] = [

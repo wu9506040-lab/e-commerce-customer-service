@@ -64,15 +64,43 @@ logger = logging.getLogger("watchdog")
 # =============================================================
 # 检测 + 重启
 # =============================================================
-def is_daemon_alive() -> bool:
-    """V16.8 P1-E2 选项 D：仅看 PID file 在不在
+def _pid_alive(pid: int) -> bool:
+    """Windows 安全探活 —— ⚠️ 绝不能用 os.kill(pid, 0)！
 
-    比 PowerShell Get-Process 简单 + 可靠 + 不需要任何进程 API
-    - daemon 启动时写 logs/xianyu_daemon.pid
-    - daemon 退出时（finally）删 PID file
-    - watchdog 只看文件存不存在，不关心 PID 真活与否
+    Windows 上 os.kill 不支持 signal 0 探活：它会走 TerminateProcess 把目标
+    进程直接杀掉（V18 实测：watchdog 一启动就把 daemon 杀了，还抛 SystemError）。
+    正确姿势：OpenProcess + GetExitCodeProcess == STILL_ACTIVE。
     """
-    return _PID_FILE.exists()
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False  # 进程不存在 / 无权限
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def is_daemon_alive() -> bool:
+    """V16.8 P1-E2 选项 D：PID file 存在 + PID 进程真活着（V18 增强）
+
+    V18 修正：daemon 硬崩溃时 finally 不执行，PID file 会残留 —— 只看文件
+    会让看门狗失明。V18 又踩一坑：os.kill(pid, 0) 在 Windows 上是 TerminateProcess
+    （直接杀进程），必须用 OpenProcess 探活。
+    """
+    if not _PID_FILE.exists():
+        return False
+    pid = _read_pid_file()
+    if pid is None or pid <= 0:
+        return False
+    return _pid_alive(pid)
 
 
 def _read_pid_file() -> int | None:
@@ -133,7 +161,7 @@ def spawn_daemon() -> int | None:
     # 加载 .env.dev（关键：JWT_SECRET / QWEN_API_KEY / DATABASE_URL 等不在 host shell）
     _load_dotenv_into_env(env)
     # V16.8 P1 默认延迟参数（覆盖 .env 里的可能值）
-    env["XIANYU_DEBOUNCE_WINDOW"] = "8"
+    env["XIANYU_DEBOUNCE_WINDOW"] = "4"
     env["XIANYU_FIRST_MIN_DELAY"] = "0"
     env["XIANYU_FIRST_MAX_DELAY"] = "3"
     # V16.8 P3: 用户 F12 抓的 cookie 字符串 (raw 'k=v; k=v'), 让 daemon 用自实现 WS 而非 goofish-cli

@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "cooldown": 300,
+  "channels": [
+    { "type": "dingtalk", "enabled": false, "webhook": "https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN", "secret": "SEC_加签密钥（可选）" },
+    { "type": "wecom", "enabled": false, "webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY" },
+    { "type": "feishu", "enabled": false, "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_HOOK" },
+    { "type": "wxpusher", "enabled": false, "app_token": "AT_YOUR_TOKEN", "uids": ["YOUR_UID"] }
+  ]
+}

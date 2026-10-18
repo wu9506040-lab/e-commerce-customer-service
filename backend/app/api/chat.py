@@ -501,6 +501,8 @@ async def chat(
             # 避免被商城 OrderService 的登录检查拦截）
             channel=getattr(payload, "channel", None),
             buyer_unb=getattr(payload, "buyer_unb", None),
+            # V18-P0：daemon 全量 system prompt（xianyu 快速通道：跳过 rewrite/RAG 直出 LLM）
+            system_prompt=getattr(payload, "system_prompt", None),
         ))
 
         try:
@@ -575,14 +577,19 @@ async def chat(
                     # 把一次网络抖动放大成持续性故障）；SSE done 与审计均带 truncated 标记
                     truncated = bool(isinstance(data, dict) and data.get("truncated"))
                     # write-through（best-effort）
-                    try:
-                        await asyncio.to_thread(
-                            append_exchange, session_id, payload.query, full_answer
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Redis 写穿透失败: session={session_id[:12]}..., {e}"
-                        )
+                    # V18.2: xianyu 渠道跳过——消息归 daemon ConversationRecorder
+                    # 实时落库（买家消息到达即落，含接管期），避免双写
+                    if getattr(payload, "channel", None) == "xianyu":
+                        logger.debug("xianyu 渠道写穿透跳过（daemon recorder 负责）")
+                    else:
+                        try:
+                            await asyncio.to_thread(
+                                append_exchange, session_id, payload.query, full_answer
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Redis 写穿透失败: session={session_id[:12]}..., {e}"
+                            )
                     # M11.5：响应缓存（10min 内同 query 不调 LLM）；残答禁入（V13 1.2）
                     if not truncated:
                         try:
@@ -595,17 +602,20 @@ async def chat(
                         logger.warning(
                             f"residual answer cache skipped: session={session_id[:12]}"
                         )
-                    try:
-                        assistant_msg_id = await asyncio.to_thread(
-                            persist_to_mysql,
-                            session_id, user_id, payload.query, full_answer, contexts, scores,
-                            None, None, intent_snap,
-                        )
-                    except Exception as e:
-                        assistant_msg_id = None
-                        logger.warning(
-                            f"MySQL 写穿透失败: session={session_id[:12]}..., {e}"
-                        )
+                    if getattr(payload, "channel", None) == "xianyu":
+                        assistant_msg_id = None  # V18.2: daemon recorder 负责
+                    else:
+                        try:
+                            assistant_msg_id = await asyncio.to_thread(
+                                persist_to_mysql,
+                                session_id, user_id, payload.query, full_answer, contexts, scores,
+                                None, None, intent_snap,
+                            )
+                        except Exception as e:
+                            assistant_msg_id = None
+                            logger.warning(
+                                f"MySQL 写穿透失败: session={session_id[:12]}..., {e}"
+                            )
                     # P2 长程记忆：每轮 done 后 best-effort 累加 interaction_count；
                     # 若 payload.sku 非空（用户从商品详情跳转），追加到 frequent_skus。
                     # 灰度开关：ENABLE_USER_PROFILE=False 时短路（不调 profile_service）

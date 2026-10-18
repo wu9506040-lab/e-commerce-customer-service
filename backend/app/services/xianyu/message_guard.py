@@ -164,3 +164,27 @@ class XianyuMessageGuard:
 
 
 __all__ = ["XianyuMessageGuard", "GuardResult"]
+
+# =============================================================
+# 站外引流安全过滤（V18 抄 XianyuAutoAgent._safe_filter）
+# =============================================================
+
+# 参考实现：回复命中这些词 → 整条替换为安全提醒（防站外引流封号）
+_OFF_PLATFORM_PHRASES = ("微信", "QQ", "支付宝", "银行卡", "线下交易", "加我")
+_OFF_PLATFORM_REPLY = "[安全提醒]为保障双方权益，请直接在闲鱼内沟通哦~"
+
+
+def sanitize_off_platform(text: str) -> str:
+    """V18：回复含站外联系方式引流词 → 整条替换为平台内沟通提醒。
+
+    抄 XianyuAutoAgent._safe_filter（参考实现替换为"[安全提醒]请通过平台沟通"，
+    文案按闲鱼语境微调）。发消息前最后一步调用。
+    """
+    if not text:
+        return text
+    if any(p in text for p in _OFF_PLATFORM_PHRASES):
+        return _OFF_PLATFORM_REPLY
+    return text
+
+
+__all__ = ["XianyuMessageGuard", "GuardResult", "sanitize_off_platform"]
