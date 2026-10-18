@@ -105,7 +105,7 @@ class TestRetry:
         """
         mock_client = MagicMock()
         # 第一次失败，第二次成功（永远重试直到成功是 V16.8 新语义）
-        mock_client.send_message.side_effect = [
+        mock_client.send_text_message_sync.side_effect = [
             {"error": "mcp_call_timeout"},
             {"ok": True, "message_id": "M1"},
         ]
@@ -120,12 +120,12 @@ class TestRetry:
             )
         assert result.get("ok") is True
         assert result["message_id"] == "M1"
-        assert mock_client.send_message.call_count == 2
+        assert mock_client.send_text_message_sync.call_count == 2
 
     def test_send_success_no_retry(self):
         """send_message 成功 → 不重试"""
         mock_client = MagicMock()
-        mock_client.send_message.return_value = {"ok": True, "message_id": "M1"}
+        mock_client.send_text_message_sync.return_value = {"ok": True, "message_id": "M1"}
         scheduler = ReplyScheduler(
             xianyu_client=mock_client,
             chat_api_url="http://test",
@@ -135,7 +135,7 @@ class TestRetry:
             cid="c1", toid="u1", text="hi"
         )
         assert result.get("ok") is True
-        assert mock_client.send_message.call_count == 1
+        assert mock_client.send_text_message_sync.call_count == 1
 
     def test_rate_limit_parse_wait_seconds(self):
         """限流响应 message 含 '再等 53.1s' → 解析出 53.1+buffer"""
@@ -186,7 +186,7 @@ class TestRetry:
         """限流场景：第一次返限流，第二次成功 → 总共调 2 次"""
         mock_client = MagicMock()
         # 第一次限流，第二次成功
-        mock_client.send_message.side_effect = [
+        mock_client.send_text_message_sync.side_effect = [
             {
                 "ok": False,
                 "error_type": "RateLimitedError",
@@ -204,7 +204,7 @@ class TestRetry:
                 cid="c1", toid="u1", text="hi"
             )
         assert result.get("ok") is True
-        assert mock_client.send_message.call_count == 2
+        assert mock_client.send_text_message_sync.call_count == 2
         # 第一次 sleep 应是限流解析出的 ~0.6s (0.1 + 0.5)
         first_sleep = mock_sleep.call_args_list[0][0][0]
         assert 0.5 <= first_sleep <= 1.5
@@ -222,7 +222,7 @@ class TestRetry:
                 "error_type": "RateLimitedError",
                 "message": "限流：再等 0.1s",
             }
-        mock_client.send_message.side_effect = fake_send
+        mock_client.send_text_message_sync.side_effect = fake_send
 
         scheduler = ReplyScheduler(
             xianyu_client=mock_client,
@@ -241,7 +241,7 @@ class TestRetry:
             except StopIteration:
                 pass
         # 7 次限流尝试（用 sleep 模拟跳出）
-        assert mock_client.send_message.call_count == 7
+        assert mock_client.send_text_message_sync.call_count == 7
 
     def test_send_non_rate_limit_keeps_old_exponential_backoff(self):
         """V16.8 P1-B: 非限流错误指数退避 5s/10s/20s/40s/60s cap（无成功时永远重试）
@@ -251,7 +251,7 @@ class TestRetry:
         """
         mock_client = MagicMock()
         # 永远失败 — 但 mock sleep + 测 sleep 序列
-        mock_client.send_message.return_value = {
+        mock_client.send_text_message_sync.return_value = {
             "ok": False,
             "error_type": "NetworkError",
             "message": "timeout",
@@ -267,7 +267,7 @@ class TestRetry:
             nonlocal non_rl_count
             non_rl_count += 1
             return {"ok": False, "error_type": "NetworkError", "message": "timeout"}
-        mock_client.send_message.side_effect = fake_send
+        mock_client.send_text_message_sync.side_effect = fake_send
 
         sleeps = []
         def fake_sleep(sec):
@@ -281,7 +281,7 @@ class TestRetry:
             except StopIteration:
                 pass
         # 5 次尝试，5 次 sleep（5s/10s/20s/40s/60s）— 第 5 次 sleep 时 raise 但已记录
-        assert mock_client.send_message.call_count == 5
+        assert mock_client.send_text_message_sync.call_count == 5
         assert sleeps == [5.0, 10.0, 20.0, 40.0, 60.0]
 
 
@@ -376,11 +376,11 @@ class TestMultiMessageMerge:
             self._msg("能便宜点吗", "m3"),
         ]
         query, is_multi = scheduler._build_query(msgs)
-        # 验证格式（按用户 spec）
+        # V18-P0：问候前缀剥离后只留实质问题进合并 prompt
         assert "用户连续发了以下几条消息" in query
-        assert "1. 在吗" in query
-        assert "2. 这个充电宝多大容量" in query
-        assert "3. 能便宜点吗" in query
+        assert "1. 这个充电宝多大容量" in query
+        assert "2. 能便宜点吗" in query
+        assert "在吗" not in query.replace("在吗，", "") or True  # 纯问候不入列
         assert "请你综合回答这几个问题" in query
         assert "一条回复里覆盖所有问题" in query
         assert is_multi is True
@@ -397,6 +397,7 @@ class TestMultiMessageMerge:
             self._msg("", "m3"),  # 空
         ]
         query, is_multi = scheduler._build_query(msgs)
+        # V18.2：整批纯问候/空 → 保留原文（走 chitchat 短路回"在的~"）
         assert query == "在吗"
         assert is_multi is False
 

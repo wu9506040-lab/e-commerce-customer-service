@@ -72,7 +72,7 @@ class TestGuardModuleLoadsYAML:
         assert guard.REPEAT_MAX_IN_WINDOW == yaml_data["REPEAT_MAX_IN_WINDOW"] == 3
 
     def test_guard_chitchat_responses_match_yaml(self):
-        """CHITCHAT_RESPONSES dict 6 条话术与 YAML 一一对应。"""
+        """CHITCHAT_RESPONSES dict 7 条话术与 YAML 一一对应（V18.2 加 chitchat_template）。"""
         from app.services import guard
         from app.services.config_loader import get_config_loader
 
@@ -80,7 +80,7 @@ class TestGuardModuleLoadsYAML:
         yaml_chitchat = yaml_data["CHITCHAT_RESPONSES"]
 
         # 6 个 key 完整
-        expected_keys = {"no_service", "irrelevant", "too_short", "too_long", "spam", "english_no_sku"}
+        expected_keys = {"no_service", "irrelevant", "too_short", "too_long", "spam", "english_no_sku", "chitchat_template"}  # V18.2: 新增 chitchat_template
         assert set(guard.CHITCHAT_RESPONSES.keys()) == expected_keys
         assert set(yaml_chitchat.keys()) == expected_keys
         # 每条话术完全一致（防止 YAML 改了忘同步 guard）
@@ -106,6 +106,7 @@ class TestGuardModuleLoadsYAML:
         # 6 个 key 都齐
         assert set(guard.CHITCHAT_RESPONSES.keys()) == {
             "no_service", "irrelevant", "too_short", "too_long", "spam", "english_no_sku",
+            "chitchat_template",  # V18.2 新增
         }
 
 
