@@ -31,6 +31,9 @@ services:
       # 向量库
       QDRANT_URL: http://customer-service-qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION}
+      # V18.3: 向量库后端开关（qdrant | milvus）
+      VECTOR_DB: ${VECTOR_DB:-milvus}
+      MILVUS_URI: http://customer-service-milvus:19530
       # 文件上传/日志
       UPLOAD_DIR: /app/uploads
       LOG_DIR: /app/logs
@@ -75,7 +78,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      qdrant:
+      milvus:
         condition: service_started
     networks:
       - backend
@@ -123,10 +126,11 @@ services:
       retries: 3
 
   # ---------------------------------------------------------
-  # Qdrant 向量库
+  # Qdrant 向量库（V18.3 起默认停用，--profile qdrant 启用）
   # ---------------------------------------------------------
   qdrant:
     image: qdrant/qdrant:v1.10.1
+    profiles: ["qdrant"]  # V18.3: 默认停用（VECTOR_DB=qdrant 时 docker compose --profile qdrant up）
     container_name: customer-service-qdrant
     restart: unless-stopped
     ports:
@@ -147,6 +151,42 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  # ---------------------------------------------------------
+  # Milvus 向量库（V18.3 迁移；standalone 单容器 embedded etcd）
+  # ---------------------------------------------------------
+  # ---------------------------------------------------------
+  # Milvus 向量库（V18.3 迁移；官方 standalone 三服务：etcd + minio + milvus）
+  # ---------------------------------------------------------
+  milvus:
+    image: milvusdb/milvus:v2.4.17  # 本地已拉取（embed etcd 模式需挂载 embedEtcd.yaml）
+    container_name: customer-service-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      ETCD_CONFIG_PATH: /milvus/configs/embedEtcd.yaml
+      COMMON_STORAGETYPE: local
+    volumes:
+      - milvus_data:/var/lib/milvus
+      - ./milvus/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro
+      - ./milvus/user.yaml:/milvus/configs/user.yaml:ro
+    ports:
+      - "19530:19530"   # gRPC（pymilvus）
+      - "9091:9091"     # metrics/healthz
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
 
   # ---------------------------------------------------------
   # Redis 缓存
@@ -236,6 +276,9 @@ services:
       # 向量库
       QDRANT_URL: http://customer-service-qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION}
+      # V18.3: 向量库后端开关（qdrant | milvus）
+      VECTOR_DB: ${VECTOR_DB:-milvus}
+      MILVUS_URI: http://customer-service-milvus:19530
       # Daemon 调 /api/chat（容器内用 service name 而非 localhost）
       XIANYU_CHAT_API_URL: http://customer-service-api:8000/api/chat
       # V16 闲鱼 MCP
@@ -269,7 +312,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      qdrant:
+      milvus:
         condition: service_started
     networks:
       - backend
@@ -285,6 +328,9 @@ services:
 # =============================================================
 volumes:
   qdrant_data:
+  milvus_data:
+  milvus_etcd_data:
+  milvus_minio_data:
     driver: local
     driver_opts:
       type: none

@@ -19,6 +19,9 @@ def get_knowledge_source() -> KnowledgeSource:
     source_type = (settings.KNOWLEDGE_SOURCE_TYPE or "qdrant").lower()
     if source_type == "qdrant":
         return QdrantKnowledgeSource()
+    if source_type == "milvus" or settings.VECTOR_DB == "milvus":
+        from app.rag.milvus_impl import MilvusKnowledgeSource
+        return MilvusKnowledgeSource()
     # MVP 阶段：未识别 type 仍返回 Qdrant + 警告（避免生产环境因拼写错误崩溃）
     import logging
     logging.getLogger(__name__).warning(

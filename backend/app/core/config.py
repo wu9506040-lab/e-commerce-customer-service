@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_COLLECTION: str = "knowledge_base"
+    # V18.3: 向量库后端开关（qdrant | milvus）——Milvus 迁移期双栈并存
+    VECTOR_DB: str = "qdrant"
+    MILVUS_URI: str = "http://localhost:19530"
 
     # ---- Prompt 加载器（Sprint 2）----
     # 相对 backend 根目录的路径；绝对路径可直接覆盖

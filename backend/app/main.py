@@ -25,7 +25,7 @@ from app.api.middleware import RateLimitMiddleware, RequestIdMiddleware, Respons
 from app.api.public import router as public_router  # 公开 demo 站点入口（M13 cloud）
 from app.api.shop import router as shop_router  # 前端商品橱窗 + 我的订单（M9）
 from app.clients.mysql_client import close_engine, get_engine
-from app.clients.qdrant import _qdrant_breaker  # M8：metrics 用
+from app.clients.vector_db import vector_db_breaker  # M8：metrics 用
 from app.core.config import settings
 from app.core.logging import setup_logging  # M8
 from app.models import Base  # 触发 ORM 注册（确保 create_all 找到所有表）
@@ -106,7 +106,7 @@ async def health():
     from sqlalchemy import text
 
     from app.clients.mysql_client import get_engine
-    from app.clients.qdrant import get_client as qdrant_get
+    from app.clients.vector_db import health_check as vdb_health
     from app.clients.redis_client import get_client as redis_get
 
     components: dict = {}
@@ -129,14 +129,15 @@ async def health():
 
     # Qdrant
     try:
-        qdrant_get().get_collections()
-        components["qdrant"] = {"status": "ok"}
+        _vh = vdb_health()
+        components["qdrant"] = {"status": "ok" if _vh["ok"] else "down",
+                                **({"error": _vh["error"]} if _vh.get("error") else {})}
     except Exception as e:
         components["qdrant"] = {"status": "down", "error": str(e)[:100]}
 
     # 注入断路器状态（M8）— 独立字段，不参与 overall 判定
     circuit_breaker = {
-        "qdrant": _qdrant_breaker.stats(),
+        "vector_db": vector_db_breaker.stats(),
     }
 
     # 只统计 mysql / redis / qdrant 三个核心组件，circuit_breaker 是诊断信息
@@ -196,7 +197,7 @@ async def metrics_endpoint():
     """
     from app.services.metrics import metrics as metrics_singleton
     return metrics_singleton.snapshot(
-        circuit_breaker_stats={"qdrant": _qdrant_breaker.stats()}
+        circuit_breaker_stats={"vector_db": vector_db_breaker.stats()}
     )
 
 
