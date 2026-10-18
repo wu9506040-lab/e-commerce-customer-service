@@ -1,19 +1,12 @@
 """
-闲鱼自动化 daemon 主进程（V16.1.7）
+闲鱼自动化 daemon 主进程（V18.2 多账号版）
 
+架构（V18.2）：
+  AccountManager（读取 config/accounts.json）
+    └─ AccountWorker × N（每账号独立 ws/scheduler/debounce/recorder/工单）
+         └─ AdminBridge 共享（命令/事件带 account_id）
 启动：
-  - XianyuWatcher（subprocess 跑 goofish message watch）
-  - DebounceQueue（30s 静默合并）
-  - ReplyScheduler（随机延迟 + /chat API + send_message）
-  - XianyuHealth（健康检查 + 失败告警）
-
-部署：
-  - Windows: NSSM 注册为服务（scripts/xianyu/install_service.bat）
-  - Linux: systemd unit（scripts/xianyu/README.md 模板）
-
-用法：
-  python scripts/run_xianyu_daemon.py           # 前台跑（看 log）
-  python scripts/run_xianyu_daemon.py --once   # 跑一次后退出（debug）
+  python scripts/run_xianyu_daemon.py    # 前台跑（watchdog 守护）
 """
 import argparse
 import json
@@ -37,24 +30,16 @@ os.environ.setdefault(
 )
 os.environ.setdefault(
     "DATABASE_URL",
-    # V16.5: daemon 是宿主机进程,不能用 docker 容器内 'mysql' hostname (DNS 解析失败)
-    # 改用 host-mapped port 127.0.0.1:3307 (compose 暴露 3306→3307)
+    # daemon 是宿主机进程：用 host-mapped port 3307（compose 暴露 3306→3307）
     "mysql+pymysql://cs_user:dev_user_2026@127.0.0.1:3307/customer_service?charset=utf8mb4",
 )
-# V16.8 P1-E2: 默认 dev 而非 prod —— host 一行 python 跑不传 APP_ENV 也能跑
-# prod 验证会查 '占位符密码'：dev_user_2026 真值在 dev 模式可通过
 os.environ.setdefault("APP_ENV", "dev")
 
-# 配置：必须显式开
 os.environ["ENABLE_XIANYU_TOOLS"] = "true"
 
-# V16.8 P1-E2: 必须先 load .env.dev（settings 在 import 时校验 JWT_SECRET / DATABASE_URL）
-def _load_dotenv():
-    """简陋 .env 解析：读 deploy/.env.dev 加载 KEY=VALUE 到 os.environ
 
-    不覆盖已有值（命令行 export 优先于 .env）
-    daemon 自启时 import settings 前调一次，让 JWT_SECRET/DATABASE_URL 真值进 env
-    """
+def _load_dotenv():
+    """简陋 .env 解析：读 deploy/.env.dev 加载 KEY=VALUE 到 os.environ"""
     env_path = Path(__file__).resolve().parent.parent / "deploy" / ".env.dev"
     if not env_path.exists():
         print(f"[daemon] .env.dev 不存在: {env_path}", file=sys.stderr)
@@ -81,39 +66,24 @@ def _load_dotenv():
 
 _load_dotenv()
 
-# V16.8 P1-C + P1-D: 端到端延迟优化默认
-# - P1-C: debounce 窗口 30→8s（用户连发合并节奏符合 V16.4 启发式）
-# - P1-D: 首次随机延迟 10-15s → 0-3s（IM 真人客服响应节奏）
-os.environ.setdefault("XIANYU_DEBOUNCE_WINDOW", "8")
+# 端到端延迟优化默认（V18-P0）
+os.environ.setdefault("XIANYU_DEBOUNCE_WINDOW", "4")
 os.environ.setdefault("XIANYU_FIRST_MIN_DELAY", "0")
 os.environ.setdefault("XIANYU_FIRST_MAX_DELAY", "3")
+os.environ.setdefault("XIANYU_NEXT_MIN_DELAY", "0")
+os.environ.setdefault("XIANYU_NEXT_MAX_DELAY", "1")
 
 from app.core.config import settings  # noqa: E402
-from app.integrations import get_xianyu_client  # noqa: E402
-from app.services.xianyu.debounce_queue import DebounceQueue  # noqa: E402
-from app.services.xianyu.health import XianyuHealth  # noqa: E402
-from app.services.xianyu.reply_scheduler import ReplyScheduler  # noqa: E402
-from app.services.xianyu.watcher import XianyuWatcher  # noqa: E402
-
 
 # =============================================================
 # 日志
 # =============================================================
-# V16.8 P1-E2: 用 _REPO_ROOT 强制绝对路径（daemon cwd=backend，watchdog 写 E:/智能客服/logs）
-# 避免 daemon 写 backend/logs/xianyu_daemon.pid 而 watchdog 找 E:/智能客服/logs/xianyu_daemon.pid
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = _REPO_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "xianyu_daemon.log"
-# V16.8 P1-E2 选项 D：daemon 启动时写 PID file，退出时删
-# 让 watchdog 仅靠 PID file 在/不在判定存活（不依赖进程 API）
 PID_FILE = LOG_DIR / "xianyu_daemon.pid"
 
-
-# V16.8 P1-E1: logger 拆双 handler
-# - file handler 接 DEBUG+：业务日志全写 logs/xianyu_daemon.log（不打 stdout）
-# - stderr handler 接 ERROR+：Python 异常 traceback + 主循环异常 → docker logs 可见
-# 用户要求："业务日志写到文件里，不要打到 stdout"+"Python traceback 打到 stderr"
 file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(
@@ -130,11 +100,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("xianyu_daemon")
 
-
-# =============================================================
-# 持久化
-# =============================================================
 STATE_FILE = Path(os.environ.get("XIANYU_STATE_FILE", "logs/xianyu_state.json"))
+
+from app.services.xianyu.health import XianyuHealth  # noqa: E402
 
 
 def load_state(health: XianyuHealth) -> None:
@@ -142,10 +110,7 @@ def load_state(health: XianyuHealth) -> None:
         try:
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
             health.from_dict(data)
-            logger.info(
-                f"恢复状态 errors_count={health.errors_count} "
-                f"last_error={health.last_error!r}"
-            )
+            logger.info(f"恢复状态 errors_count={health.errors_count}")
         except Exception as e:
             logger.warning(f"load_state 失败: {e}")
 
@@ -161,76 +126,81 @@ def save_state(health: XianyuHealth) -> None:
         logger.warning(f"save_state 失败: {e}")
 
 
-# =============================================================
-# 主流程
-# =============================================================
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--once", action="store_true", help="跑一次后退出（debug 用）"
-    )
+    parser.add_argument("--once", action="store_true", help="跑一次后退出（debug）")
     args = parser.parse_args()
 
-    # V16.5: 接入全链路 runtime_log（daemon 是独立进程,uvicorn 的 logger 用不上,
-    # 必须 daemon 自己初始化一份,才能把真实闲鱼买家对话写到 logs/xianyu_runtime.log）
     try:
         from app.core.runtime_log import setup_runtime_logging
         setup_runtime_logging(level=getattr(settings, "LOG_LEVEL", "INFO"), log_dir="logs")
     except Exception as _e:
         logger.warning(f"daemon 接入 runtime_log 失败: {_e}")
 
-    if not settings.ENABLE_XIANYU_TOOLS:
-        logger.error(
-            "ENABLE_XIANYU_TOOLS=False，daemon 不会启动。\n"
-            "请在 .env.dev / .env.prod 加 ENABLE_XIANYU_TOOLS=true"
-        )
-        return 1
+    # =============================================================
+    # V18.2 多账号：AccountManager（注册表 config/accounts.json）
+    # =============================================================
+    from app.clients.mysql_client import get_session_local
+    from app.services.xianyu.account_manager import AccountManager
+    from app.services.xianyu.conversation_recorder import ConversationRecorder
+    from app.services.xianyu.notification_service import load_config as load_notify
 
-    client = get_xianyu_client()
-    health = XianyuHealth(client=client, daily_quota=50, alert_threshold=3)
-    load_state(health)
-    scheduler = ReplyScheduler(
-        xianyu_client=client,
-        chat_api_url=os.environ.get(
-            "XIANYU_CHAT_API_URL", "http://localhost:8000/api/chat"
+    import redis as redis_lib
+
+    redis_url = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")
+    _r = redis_lib.Redis.from_url(redis_url, decode_responses=True)
+
+    recorder = ConversationRecorder(get_session_local())
+    chat_api_url = os.environ.get(
+        "XIANYU_CHAT_API_URL", "http://localhost:8000/api/chat"
+    )
+
+    # 单账号兼容：accounts.json 缺失时 AccountManager 回退默认 a1（cookie.txt）
+    manager = AccountManager(
+        redis_client=_r, recorder=recorder, bridge=None, chat_api_url=chat_api_url,
+    )
+    accounts = manager.load_accounts()
+    logger.info(f"账号注册表: {[(a.get('id'), a.get('name'), a.get('enabled')) for a in accounts]}")
+
+    # AdminBridge（共享，命令带 account_id 分发到对应 worker）
+    from app.services.xianyu.admin_bridge import AdminBridge
+
+    bridge = AdminBridge(
+        redis_url=redis_url,
+        on_send=lambda account_id, cid, toid, text: manager.route_send(
+            account_id, cid, toid, text
         ),
-        min_delay_seconds=float(os.environ.get("XIANYU_MIN_DELAY", "30")),
-        max_delay_seconds=float(os.environ.get("XIANYU_MAX_DELAY", "180")),
-        rate_limit_per_minute=int(os.environ.get("XIANYU_RATE_LIMIT_PER_MIN", "6")),
+        on_takeover=lambda account_id, cid: manager.route_takeover(account_id, cid),
+        on_release=lambda account_id, cid: manager.route_release(account_id, cid),
     )
-    debounce_window = float(os.environ.get("XIANYU_DEBOUNCE_WINDOW", "12"))
-    debounce = DebounceQueue(
-        fire_callback=scheduler.on_fire,
-        window_seconds=debounce_window,
-    )
-    # V16.8 P3: 自实现 WebSocket 客户端 (彻底摆脱 goofish-cli 第三方)
-    # 接口 100% 兼容 (start/stop/is_alive/callback event dict 一致)
-    from app.services.xianyu.xianyu_ws_client import XianyuWsClient
+    manager.bridge = bridge
+    manager.start_all()  # 构建并启动全部 enabled 账号（含 bridge 回调挂接）
 
-    use_mode = os.environ.get("XIANYU_LISTEN_MODE", "ws").lower()
-    # ws = 自实现 WS (推荐, P3)
-    # ws_cli = goofish-cli WS (旧, P0-A)
-    # poll = HTTP MTOP 轮询 (P2-A, 已证明不可用)
-    if use_mode == "ws_cli":
-        from app.services.xianyu.watcher import XianyuWatcher
-        watcher = XianyuWatcher(callback=debounce.on_message)
-        logger.info("V16.8 P0-A: goofish-cli WebSocket 长连接 (回退)")
-    elif use_mode == "poll":
-        from app.services.xianyu.xianyu_watcher_poller import XianyuWatcherPoller
-        watcher = XianyuWatcherPoller(callback=debounce.on_message)
-        logger.info("V16.8 P2-A: HTTP MTOP 轮询 (实验性)")
-    else:  # 默认 ws
-        watcher = XianyuWsClient(callback=debounce.on_message)
-        logger.info("V16.8 P3: 自实现 WebSocket (websockets 库直连, 不依赖 Playwright/Chromium)")
+    # 全局健康（沿用：cookie 存在性 + 错误计数；worker 级状态在 xianyu:workers）
+    class _LocalCookieHealth:
+        def __init__(self):
+            pass
 
-    # V16.8 P1-E2 选项 D：写 PID file（让 watchdog 仅靠文件存在检测存活）
+        def is_enabled(self) -> bool:
+            try:
+                cfg = load_notify() if False else None
+            except Exception:
+                pass
+            return True  # 多账号模式：worker 级健康见 xianyu:workers
+
+    health = XianyuHealth(client=_LocalCookieHealth(), daily_quota=50, alert_threshold=3)
+    load_state(health)
+
+    bridge.start()
+    logger.info("V18.2 多账号 daemon 就绪（xianyu:commands 订阅 + xianyu:workers 状态上报）")
+
+    # PID file（watchdog 存活判定）
     try:
         PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
         logger.info(f"PID file 写入: {PID_FILE} = {os.getpid()}")
     except Exception as e:
         logger.warning(f"PID file 写入失败: {e}")
 
-    # 信号处理：优雅关闭
     stop_event = {"stop": False}
 
     def _on_signal(signum, frame):
@@ -241,72 +211,41 @@ def main() -> int:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _on_signal)
 
-    # 启动（V16.8 P1-E2: 自愈 — watcher 启动失败不 return 1，sleep 重试）
-    # 旧版本：WatcherAuthError 等异常 → return 1 → daemon 立即 exit → 用户无回复
-    # 现版本：daemon 进程不退出，等 30s 重试 watcher.start()，让外部 watchdog
-    # （scripts/watchdog_xianyu_daemon.py）只在 daemon 进程真死时 spawn 一个新的
-    while not stop_event["stop"]:
-        try:
-            watcher.start()
-            logger.info(
-                f"XianyuDaemon 启动: chat_api={os.environ.get('XIANYU_CHAT_API_URL', 'http://localhost:8000/api/chat')} "
-                f"delay={os.environ.get('XIANYU_MIN_DELAY', '30')}-{os.environ.get('XIANYU_MAX_DELAY', '180')}s "
-                f"debounce={debounce_window}s"
-            )
-            break  # watcher 启动成功，跳出
-        except Exception as e:
-            logger.exception(f"watcher 启动失败: {e}")
-            logger.warning(
-                "P1-E2: daemon 30s 后自愈重试 watcher.start()（不退进程）"
-            )
-            time.sleep(30)
-
-    # 主循环
+    # 主循环：健康检查 + 状态持久化（worker 重连自愈在 worker 线程内）
     try:
         if args.once:
-            time.sleep(5)  # 给 watcher 时间连上
+            time.sleep(5)
         else:
             consecutive_errors = 0
             while not stop_event["stop"]:
                 time.sleep(10)
-                # 定时健康检查 + 持久化
                 try:
                     status = health.check_all()
                     if status["should_alert"]:
                         logger.error(
                             f"XianyuHealth ALERT: errors={status['errors_count']} "
-                            f"last_error={status['last_error']!r} "
-                            f"issues={status.get('issues')}"
+                            f"last_error={status['last_error']!r}"
                         )
                     save_state(health)
-                    consecutive_errors = 0  # 健康跑一圈就清零
+                    consecutive_errors = 0
                 except Exception as loop_err:
-                    # V16.8 P1-E1: 通用异常兜底 — 旧版仅 catch KeyboardInterrupt
-                    # 导致 health.check_all() / save_state() 抛错时 silent exit，
-                    # 用户侧完全收不到回复。最近 13:01:21 daemon silent death 就是这原因
                     consecutive_errors += 1
                     logger.exception(
-                        f"XianyuDaemon 主循环异常 #consecutive={consecutive_errors} "
-                        f"({type(loop_err).__name__}: {loop_err})"
+                        f"主循环异常 #consecutive={consecutive_errors}: "
+                        f"{type(loop_err).__name__}: {loop_err}"
                     )
-                    # 不退出；下轮 sleep 后再试；如连续 10 次异常 → 主动退出让 docker 重启
                     if consecutive_errors >= 10:
-                        logger.error(
-                            "XianyuDaemon 主循环连续 10 次异常，主动退出让 docker 重启"
-                        )
+                        logger.error("主循环连续 10 次异常，主动退出让 watchdog 重启")
                         stop_event["stop"] = True
                         break
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt，开始关闭")
     finally:
         logger.info("关闭中...")
-        debounce.shutdown()
-        watcher.stop()
+        manager.stop_all()
         save_state(health)
-        # V16.8 P1-E2 选项 D：退出时删 PID file，让 watchdog 知道 daemon 死了
         try:
             PID_FILE.unlink(missing_ok=True)
-            logger.info(f"PID file 已删除: {PID_FILE}")
         except Exception as e:
             logger.warning(f"PID file 删除失败: {e}")
         logger.info("XianyuDaemon 已关闭")

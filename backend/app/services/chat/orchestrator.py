@@ -84,6 +84,7 @@ class Synthesizer:
         context_block: str = "",  # V16.3.3：daemon/caller 渠道 context（优先级最高）
         channel: Optional[str] = None,  # V16.8 P0-A：渠道标签（"xianyu" / None=商城）
         buyer_unb: Optional[str] = None,  # V16.8 P0-A：闲鱼买家 unb（refund 路由用）
+        system_prompt: Optional[str] = None,  # V18-P0：daemon 全量 system prompt（快速通道用）
     ) -> Generator[Tuple[str, Any], None, None]:
         """
         主入口：分类 → 分派 → 融合 → LLM 流式输出
@@ -109,6 +110,16 @@ class Synthesizer:
             raise ValueError("query 不能为空")
         query = query.strip()
 
+        # V18：RAG 渠道隔离——channel=xianyu 时检索只命中闲鱼 KB（payload.channel
+        # 过滤，contextvar 每请求独立），商城 KB 不串台。快速通道不走 RAG，
+        # 这里管的是 fallback 降级路径的隔离。
+        if channel == "xianyu":
+            try:
+                from app.services.policy_service import set_kb_channel
+                set_kb_channel("xianyu")
+            except Exception:
+                pass
+
         # C2：Agent Function Calling 灰度入口（ENABLE_AGENT_FC=True 时）
         # FC 路径独立：不走 query rewrite / profile / intent 分派；
         # 异常自包 try/except fallback 到 V1.2 RAG（与既有 fallback 路径一致）
@@ -124,6 +135,39 @@ class Synthesizer:
                 )
                 for event_type, data in v12_rag_run_stream(query, 5, history):
                     yield (event_type, data)
+                return
+
+        # V18-P0（2026-10-17）：xianyu IM 快速通道 —— 实测 rewrite(LLM) +
+        # multi-query(LLM) + RAG 检索前置吃掉 ~20s，是 IM 回复慢的主因。
+        # daemon 侧已完成本地意图路由/场景 yaml/商品信息/画像注入（system_prompt
+        # 全量传入），这里直接：session 历史 + system_prompt + query → LLM 流式。
+        # 例外：chitchat 走免 LLM 短路；refund_query/order_query 落到下方
+        # 专用分支（要查 DB），不快速通道。
+        if channel == "xianyu" and system_prompt:
+            _primary = (pre_intent or {}).get("primary", "product_query")
+            if _primary == "chitchat":
+                logger.info(
+                    f"synth.xianyu_fast: chitchat query={query[:30]}",
+                    extra={"intent": "chitchat", "channel": "xianyu"},
+                )
+                yield ("meta", {
+                    "intent": "chitchat", "entities": {}, "contexts": [],
+                    "scores": [], "channel": channel,
+                    "chitchat_short_circuit": True,
+                })
+                yield ("token", CHITCHAT_SHORT_REPLY)
+                yield ("done", {"answer": CHITCHAT_SHORT_REPLY,
+                                "chitchat_short_circuit": True})
+                return
+            if _primary not in ("refund_query", "order_query"):
+                logger.info(
+                    f"synth.xianyu_fast: direct LLM query={query[:40]} user_id={user_id}",
+                    extra={"intent": "xianyu_fast", "channel": "xianyu"},
+                )
+                from app.services.chat.stream_dispatcher import stream_llm as _sllm
+                yield from _sllm(
+                    query, system_prompt=system_prompt, history=history or []
+                )
                 return
 
         # M12：query 改写（指代补全）— 改写后的 query 供后续 intent + RAG 使用

@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router';
+import { computed } from 'vue';
+import { RouterView, useRoute } from 'vue-router';
 import AppNav from './components/AppNav.vue';
+
+const route = useRoute();
+// V18: /admin 走独立管理布局（深色侧边栏），隐藏商城导航
+const isAdminArea = computed(() => route.path.startsWith('/admin'));
 </script>
 
 <template>
   <div class="app-root">
-    <AppNav />
+    <AppNav v-if="!isAdminArea" />
     <RouterView />
   </div>
 </template>

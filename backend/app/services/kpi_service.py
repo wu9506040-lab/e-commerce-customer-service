@@ -64,8 +64,11 @@ def _compute_cost(db: Session, start: dt.datetime, end: dt.datetime,
         .where(*in_win).group_by(Message.role)
     ).all()
     for role, tok_sum, char_sum in rows:
+        # V18.2 修复：MySQL SUM 返回 Decimal，Decimal/float 会 TypeError——先转 int
+        tok_sum = int(tok_sum or 0)
+        char_sum = int(char_sum or 0)
         # 聚合里 token_count 可能混 NULL：用 (真值合计 + 缺失按字符) 的保守近似
-        est = int(tok_sum) if tok_sum else int(char_sum / _CHAR_PER_TOKEN)
+        est = tok_sum if tok_sum else int(char_sum / _CHAR_PER_TOKEN)
         if est == 0:
             est = int(char_sum / _CHAR_PER_TOKEN)
         if role == "assistant":

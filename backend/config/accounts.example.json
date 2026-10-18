@@ -1,0 +1,6 @@
+{
+  "accounts": [
+    { "id": "a1", "name": "主号-商品备注", "cookie_path": "E:/智能客服/cookie.txt", "enabled": true },
+    { "id": "a2", "name": "第二个账号", "cookie_path": "E:/智能客服/cookies/a2.txt", "enabled": false }
+  ]
+}

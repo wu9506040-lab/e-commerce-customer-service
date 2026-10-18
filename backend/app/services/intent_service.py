@@ -79,6 +79,38 @@ _REFUND_PROCESS_RE = re.compile(
 _REFUND_TIMELINESS_RE = re.compile(r"到账|多久|工作日")
 
 
+# V18（2026-10-17）：闲鱼 daemon 多消息合并包装识别
+# 背景：ReplyScheduler._build_query 把买家连发消息拼成
+#   "用户连续发了以下几条消息：\n1. 在吗\n2. 测试25\n请你综合回答这几个问题..."
+# 再发给 /chat。意图分类若直接对包装文本跑规则，"在吗" 开头的 chitchat 规则
+# （^在吗 等）全部失配 → LLM 兜底把闲聊误判成 order_query → 匿名买家触发
+# ASK_LOGIN，回出 "用户尚未登录..."（实测 2026-10-17 11:48 闲鱼线上事故）。
+# 修复：分类前先还原每条原文，逐条跑短路+规则；LLM 兜底也只喂干净原文。
+_MERGED_MSG_HEADER = "用户连续发了以下几条消息："
+_MERGED_MSG_FOOTER = "请你综合回答"
+_MERGED_ITEM_RE = re.compile(r"^\s*\d+\.\s*(.+)$")
+
+
+def _split_merged_query(query: str) -> Optional[list[str]]:
+    """识别 daemon 合并格式，还原原始消息列表；非合并格式返回 None。"""
+    if _MERGED_MSG_HEADER not in query:
+        return None
+    texts: list[str] = []
+    in_block = False
+    for line in query.splitlines():
+        if _MERGED_MSG_HEADER in line:
+            in_block = True
+            continue
+        if not in_block:
+            continue
+        if _MERGED_MSG_FOOTER in line:
+            break
+        m = _MERGED_ITEM_RE.match(line)
+        if m and m.group(1).strip():
+            texts.append(m.group(1).strip())
+    return texts or None
+
+
 def _pick_primary(intents: list[dict]) -> tuple[str, float]:
     """从多意图列表选 primary（按 confidence 降序第一个）。
 
@@ -226,6 +258,61 @@ class IntentService:
         """
         entities = IntentService._extract_entities(query)
 
+        # V18（2026-10-17）：多消息合并还原 — 见 _MERGED_MSG_HEADER 注释。
+        # 逐条原文跑短路+规则，任一命中即返回；再试拼接原文（跨消息规则，
+        # 如"怎么"+"退款"分两条发）；全未命中才 LLM 兜底（喂干净原文）。
+        merged_texts = _split_merged_query(query)
+        if merged_texts:
+            candidates = merged_texts + [" ".join(merged_texts)]
+            llm_query = " ".join(merged_texts)  # LLM 不看包装头尾
+        else:
+            candidates = [query]
+            llm_query = query
+
+        # 1. 短消息短路 + 规则匹配（V18 抽取到 _short_or_rule）
+        for cand in candidates:
+            hit = IntentService._short_or_rule(cand, entities)
+            if hit:
+                return hit
+
+        # 2. LLM 兜底（V12：根据灰度开关走单/多意图路径）
+        try:
+            if _MULTI_INTENT_ENABLED:
+                llm_result = IntentService._llm_classify_multi(llm_query)
+            else:
+                llm_result = IntentService._llm_classify(llm_query)
+            llm_result["entities"] = entities
+            metrics.inc_intent_method("llm")  # V13(2.3) LLM 兜底率埋点
+            logger.info(
+                f"intent(llm): intents={[i['intent'] for i in llm_result.get('intents', [])]} "
+                f"primary={llm_result.get('primary')} query={query[:30]}"
+            )
+            return _wrap_with_intent_alias(llm_result, query)
+        except Exception as e:
+            logger.warning(f"intent llm fallback 失败: {e}")
+
+        # 3. 默认 policy_query（兜底兜底）
+        metrics.inc_intent_method("default")  # V13(2.3)
+        return _wrap_with_intent_alias({
+            "intents": [{"intent": "policy_query", "confidence": 0.5}],
+            "primary": "policy_query",
+            "method": "default",
+            "entities": entities,
+        }, query)
+
+    # ---------- 私有 ----------
+
+    @staticmethod
+    def _short_or_rule(query: str, entities: dict) -> Optional[dict]:
+        """V18：单条消息的 短消息短路 + 规则匹配（从 classify 抽取，逻辑不变）。
+
+        Args:
+            query: 单条原文（合并消息已还原）
+            entities: classify 入口已抽取的实体（透传，避免重复抽取）
+
+        Returns:
+            已包装的完整结果（method=rule_short / rule）；未命中返回 None。
+        """
         # V16.8 P1-G: 短消息兜底短路 — 用户发"？""哦""嗯"等 ≤4 字常见回复秒回
         # 直接归 chitchat 走模板回复，不调规则匹配、不调 LLM
         # 设计：短路必须 (≤4 字 且 不含意图关键词) 或 全标点
@@ -241,14 +328,20 @@ class IntentService:
         _PUNCT_SET = frozenset("?.？！。,~ ")
         is_punct_only = 0 < len(stripped) and all(c in _PUNCT_SET for c in stripped)
         if (0 < len(stripped) <= 4 and not has_meaningful_keyword) or is_punct_only:
-            return {
-                "intents": [{"intent": "chitchat", "confidence": 1.0}],
-                "primary": "chitchat",
-                "method": "rule_short",
-                "entities": entities,
-            }
+            # V18 fix：必须走 _wrap_with_intent_alias 补顶层 intent/confidence 别名。
+            # 此前直接 return 裸 dict，orchestrator 读 intent_result['confidence']
+            # 直接 KeyError（V16.8 P1-G 潜伏 bug，旧容器代码未暴露）。
+            return _wrap_with_intent_alias(
+                {
+                    "intents": [{"intent": "chitchat", "confidence": 1.0}],
+                    "primary": "chitchat",
+                    "method": "rule_short",
+                    "entities": entities,
+                },
+                query,
+            )
 
-        # 1. 规则匹配（天然单意图 → intents 长度为 1）
+        # 规则匹配（天然单意图 → intents 长度为 1）
         rule_result = IntentService._rule_classify(query)
         if rule_result:
             rule_result["entities"] = entities
@@ -276,33 +369,7 @@ class IntentService:
             )
             logger.info(f"intent(rule): {rule_result['primary']} query={query[:30]}")
             return _wrap_with_intent_alias(rule_result, query)
-
-        # 2. LLM 兜底（V12：根据灰度开关走单/多意图路径）
-        try:
-            if _MULTI_INTENT_ENABLED:
-                llm_result = IntentService._llm_classify_multi(query)
-            else:
-                llm_result = IntentService._llm_classify(query)
-            llm_result["entities"] = entities
-            metrics.inc_intent_method("llm")  # V13(2.3) LLM 兜底率埋点
-            logger.info(
-                f"intent(llm): intents={[i['intent'] for i in llm_result.get('intents', [])]} "
-                f"primary={llm_result.get('primary')} query={query[:30]}"
-            )
-            return _wrap_with_intent_alias(llm_result, query)
-        except Exception as e:
-            logger.warning(f"intent llm fallback 失败: {e}")
-
-        # 3. 默认 policy_query（兜底兜底）
-        metrics.inc_intent_method("default")  # V13(2.3)
-        return _wrap_with_intent_alias({
-            "intents": [{"intent": "policy_query", "confidence": 0.5}],
-            "primary": "policy_query",
-            "method": "default",
-            "entities": entities,
-        }, query)
-
-    # ---------- 私有 ----------
+        return None
 
     @staticmethod
     def _rule_classify(query: str) -> Optional[dict]:
@@ -335,11 +402,13 @@ class IntentService:
         # V16.8 P1-G：去 few-shot 示例（占 prompt 一半长度；qwen-turbo 对类目说明已足）
         # prompt 从 ~700 字符压到 ~250 字符，输入 token 减半，LLM 推断时间 -50%
         prompt = f"""判断用户问题属于以下 5 类之一（输出严格 JSON，不要解释）：
+- chitchat: 闲聊/问候/在吗/测试/催促等无实质问题
 - order_query: 订单状态/物流/快递/发货/签收
 - refund_query: 退款/退货/换货
 - product_query: 商品参数/价格/库存/SKU
 - policy_query: 保修/活动/促销/包邮/发票
-- chitchat: 闲聊/问候
+
+原则：看不出具体想问什么 → 一律 chitchat，不要猜业务（参考示例："在吗"→chitchat，"还没收到货"→order_query）。
 
 JSON：{{"intent":"类别","confidence":0.0~1.0}}
 
@@ -350,7 +419,9 @@ Q：{query}"""
             temperature=0.1,  # 分类任务低温度
             max_tokens=60,  # V16.8 P1-G：80→60（输出 ~30 token）
             model=INTENT_LLM_MODEL,  # V16.8 P1-G：qwen-turbo
-            stage="intent",
+            # V18 fix：原传 stage="intent"，但 QwenLLMProvider.chat 不接受该参数
+            # → TypeError → 规则未命中的 query 全部落 default（policy_query），
+            # LLM 兜底从未真正生效。删除。
         )
 
         reply = result["reply"].strip()
@@ -390,7 +461,9 @@ Q：{query}"""
         # 闲鱼 IM 实际：2 个 intent 命中足够（典型：商品问续航+问分期 → product_query + policy_query）
         prompt = f"""判断用户问题可能涉及的多个意图（最多 2 个，按可能性从高到低排序）。
 
-5 类：order_query（订单/物流）/refund_query（退款/退货）/product_query（商品/价格）/policy_query（保修/活动）/chitchat（闲聊）。
+5 类：chitchat（闲聊/问候/在吗/测试）/order_query（订单/物流）/refund_query（退款/退货）/product_query（商品/价格）/policy_query（保修/活动）。
+
+原则：看不出具体想问什么 → 一律 chitchat，不要猜业务（例："在吗"→chitchat，"还没收到货"→order_query）。
 
 只输出 JSON：{{"intents":[{{"intent":"类别","confidence":0.0~1.0}}, ...]}}
 
@@ -401,7 +474,7 @@ Q：{query}"""
             temperature=0.1,
             max_tokens=140,  # V16.8 P1-G：200→140（多意图 JSON 实际 ~80 token）
             model=INTENT_LLM_MODEL,  # V16.8 P1-G：qwen-turbo
-            stage="intent_multi",
+            # V18 fix：原传 stage="intent_multi"（同上，provider 不接受 → TypeError）
         )
 
         reply = result["reply"].strip()

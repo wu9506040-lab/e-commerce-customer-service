@@ -79,28 +79,57 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '智能客服', requiresAuth: true },
   },
 
-  // 运营数据驾驶舱（仅 admin）
+  // V18.2: 管理台专属登录页（顶层路由，全屏渲染不带侧边栏；静态路径优先匹配）
   {
-    path: '/admin/analytics',
-    name: 'admin-analytics',
-    component: () => import('../views/AdminAnalytics.vue'),
-    meta: { title: '运营数据驾驶舱', requiresAuth: true, requiresAdmin: true },
+    path: '/admin/login',
+    name: 'admin-login',
+    component: () => import('../views/AdminLogin.vue'),
+    meta: { title: '管理后台登录', requiresAuth: false, requiresAdmin: false },
   },
 
-  // WP1 业务 KPI 大盘（仅 admin）
+  // V18 管理后台（Ant Design Pro 风格布局：深色侧边栏 + 顶栏）
   {
-    path: '/admin/kpi',
-    name: 'admin-kpi',
-    component: () => import('../views/AdminKpi.vue'),
-    meta: { title: '业务 KPI 大盘', requiresAuth: true, requiresAdmin: true },
-  },
-
-  // M15 人工介入坐席工作台（仅 admin）
-  {
-    path: '/admin/handoff',
-    name: 'admin-handoff',
-    component: () => import('../views/HandoffWorkbench.vue'),
-    meta: { title: '人工介入工作台', requiresAuth: true, requiresAdmin: true },
+    path: '/admin',
+    component: () => import('../components/AdminLayout.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true },
+    children: [
+      {
+        path: 'board',
+        name: 'admin-board',
+        component: () => import('../views/DataBoard.vue'),
+        meta: { title: '数据看板', requiresAuth: true, requiresAdmin: true },
+      },
+      {
+        path: 'accounts',
+        name: 'admin-accounts',
+        component: () => import('../views/AccountsAdmin.vue'),
+        meta: { title: '账号管理', requiresAuth: true, requiresAdmin: true },
+      },
+      {
+        path: 'analytics',
+        name: 'admin-analytics',
+        component: () => import('../views/AdminAnalytics.vue'),
+        meta: { title: '运营数据驾驶舱', requiresAuth: true, requiresAdmin: true },
+      },
+      {
+        path: 'kpi',
+        name: 'admin-kpi',
+        component: () => import('../views/AdminKpi.vue'),
+        meta: { title: '业务 KPI 大盘', requiresAuth: true, requiresAdmin: true },
+      },
+      {
+        path: 'xianyu',
+        name: 'admin-xianyu',
+        component: () => import('../views/XianyuWorkbench.vue'),
+        meta: { title: '闲鱼人工后台', requiresAuth: true, requiresAdmin: true },
+      },
+      {
+        path: 'handoff',
+        name: 'admin-handoff',
+        component: () => import('../views/HandoffWorkbench.vue'),
+        meta: { title: '人工介入工作台', requiresAuth: true, requiresAdmin: true },
+      },
+    ],
   },
 
   // 个人中心（需登录）
@@ -133,6 +162,18 @@ router.beforeEach(async (to: RouteLocationNormalized) => {
     resolvedUser = await getMe();
   }
 
+  // V18.2: /admin 区域完全隔离——未登录/非管理员一律回管理台专属登录页
+  if (to.path.startsWith('/admin') && to.name !== 'admin-login') {
+    if (to.meta.requiresAuth && !isAuthed.value) {
+      return { name: 'admin-login', query: { redirect: to.fullPath } };
+    }
+    if (to.meta.requiresAdmin) {
+      resolvedUser = resolvedUser ?? await getMe();
+      if (!resolvedUser || resolvedUser.role !== 'admin') {
+        return { name: 'admin-login' };
+      }
+    }
+  }
   if (to.meta.requiresAuth && !isAuthed.value) {
     return { name: 'login', query: { redirect: to.fullPath } };
   }

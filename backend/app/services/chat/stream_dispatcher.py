@@ -54,6 +54,8 @@ def _build_system_content(context_block: Optional[str]) -> str:
 def stream_llm(
     user_prompt: str,
     context_block: Optional[str] = None,
+    system_prompt: Optional[str] = None,  # V18-P0：caller 全量 system prompt（优先级最高）
+    history: Optional[list] = None,  # V18-P0：多轮历史（xianyu 快速通道追问用）
 ) -> Generator[tuple[str, Any], None, None]:
     """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10 + 3.3 预算）
 
@@ -66,11 +68,19 @@ def stream_llm(
     生效（context_block 在 user message 的【当前场景】段被 LLM 视为"场景补充"
     而非"事实"——被 SYSTEM 原"严禁编造参考资料外"规则压垮），故改此处从 stream
     层 promote。
+
+    V18-P0：增 system_prompt（caller 全量 system，直接替代默认 system）+
+    history（多轮历史插在 system 与 user 之间）—— xianyu 快速通道用。
     """
-    messages = [
-        {"role": "system", "content": _build_system_content(context_block)},
-        {"role": "user", "content": user_prompt},
-    ]
+    if system_prompt:
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(history or [])
+        messages.append({"role": "user", "content": user_prompt})
+    else:
+        messages = [
+            {"role": "system", "content": _build_system_content(context_block)},
+            {"role": "user", "content": user_prompt},
+        ]
     full_answer = ""
     # semaphore + 排队上限 + 预算裁剪（3.3）：>10 并发排队等待，超时/超预算快速失败走降级
     truncated = False

@@ -161,6 +161,7 @@ def search(
     top_k: int = 5,
     collection_name: Optional[str] = None,
     score_threshold: Optional[float] = None,
+    channel: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     向量搜索（带断路器 + 降级）
@@ -172,12 +173,20 @@ def search(
         top_k: 返回前 k 个
         collection_name: 默认环境变量
         score_threshold: 相似度阈值（None = 不过滤）
+        channel: V18 渠道过滤（"xianyu"/"mall"）——payload.channel 精确匹配，
+            实现多渠道知识库同 collection 存取互不干扰
 
     Returns:
         [{"id": ..., "score": ..., "payload": {...}}, ...]
         断路器开路时返回 []
     """
     name = collection_name or QDRANT_COLLECTION
+
+    query_filter = None
+    if channel:
+        query_filter = {
+            "must": [{"key": "channel", "match": {"value": channel}}]
+        }
 
     def _do_search() -> List[Dict[str, Any]]:
         client = get_client()
@@ -186,6 +195,7 @@ def search(
             query_vector=query_vector,
             limit=top_k,
             score_threshold=score_threshold,
+            query_filter=query_filter,
             with_payload=True,
             with_vectors=False,
         )

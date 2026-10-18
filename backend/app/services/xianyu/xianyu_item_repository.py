@@ -51,6 +51,10 @@ class XianyuItemRepository:
         item_id: str,
         title: str = "",
         item_prompt: str = "",
+        service_type: str = "product",  # product | custom_order
+        requires_consultation: bool = False,
+        typical_questions: Optional[list] = None,
+        quote_basis: str = "",  # "" | hourly | project
         extra: Optional[dict] = None,
     ) -> XianyuItem:
         """upsert：存在更新，不存在新建"""
@@ -60,13 +64,24 @@ class XianyuItemRepository:
                 item.title = title
             if item_prompt:
                 item.item_prompt = item_prompt
+            item.service_type = service_type
+            item.requires_consultation = requires_consultation
+            if typical_questions is not None:
+                item.typical_questions = typical_questions
+            if quote_basis:
+                item.quote_basis = quote_basis
             if extra is not None:
                 item.extra = extra
             self._db.commit()
             return item
         # 新建
         item = XianyuItem(
-            item_id=item_id, title=title, item_prompt=item_prompt, extra=extra
+            item_id=item_id, title=title, item_prompt=item_prompt,
+            service_type=service_type,
+            requires_consultation=requires_consultation,
+            typical_questions=typical_questions,
+            quote_basis=quote_basis,
+            extra=extra,
         )
         self._db.add(item)
         self._db.commit()

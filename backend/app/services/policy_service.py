@@ -43,10 +43,11 @@ Phase 4 A8 实现要点：
 - 运行指标日志：[multi_query_metrics] mode= queries= rerank_calls= latency_ms=
   便于 grep 对比 A5 vs A8 真实效果（成本 / 延迟 / 召回质量）
 """
+import contextvars
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
+from typing import List, Optional
 
 from app.clients.qdrant import QDRANT_COLLECTION, search as qdrant_search
 from app.core.config import settings
@@ -60,6 +61,18 @@ logger = logging.getLogger(__name__)
 # 没有 doc_type 字段，不做后过滤。等 V2.6 引入商品/政策混合 KB 时再加 doc_type 过滤。
 # M13 修复：原硬编码 "knowledge_base" 与 ingest 的 "faq_v1" 不一致 → 政策检索 0 命中
 COLLECTION_NAME = QDRANT_COLLECTION
+
+# V18 渠道隔离上下文：contextvar —— asyncio.to_thread 会透传 context，
+# 每请求独立，web(mall) 与 xianyu 并发互不串扰。_coarse_retrieval 是
+# @staticmethod 被多层调用，加参数波及全部调用点，contextvar 最轻。
+_kb_channel_var: "contextvars.ContextVar" = contextvars.ContextVar(
+    "kb_channel", default=None
+)
+
+
+def set_kb_channel(channel: Optional[str]) -> None:
+    """V18: 设置当前请求的渠道过滤（"xianyu"/"mall"/None=不过滤）"""
+    _kb_channel_var.set(channel)
 
 
 def _get_knowledge_source():
@@ -121,13 +134,14 @@ class PolicyService:
             logger.warning(f"PolicyService.embed_text 失败: {e}")
             return []
 
-        # 2. qdrant top-K 粗排
+        # 2. qdrant top-K 粗排（V18: channel 过滤——多渠道 KB 同 collection 隔离）
         try:
             hits = qdrant_search(
                 query_vector=query_vec,
                 top_k=coarse_top_k,
                 score_threshold=0.4,
                 collection_name=COLLECTION_NAME,
+                channel=_kb_channel_var.get(),
             )
             metrics.record_retrieve_hits(len(hits))
         except Exception as e:
