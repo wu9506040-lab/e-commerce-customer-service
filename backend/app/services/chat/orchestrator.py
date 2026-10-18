@@ -881,7 +881,7 @@ class Synthesizer:
         try:
             from app.core.runtime_log import log_event as _relog
             _relog(
-                "_HANDLE_PRODUCT_ENTRY", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
+                "_HANDLE_PRODUCT_ENTRY", "INFO", str(locals().get('session_id', '-')), str(locals().get('user_id', '-')),
                 f"_handle_product ENTER query={query[:80]} sku={effective_sku}",
                 query=query[:200],
                 sku=effective_sku,
@@ -954,7 +954,7 @@ class Synthesizer:
                 for i, (src, title, s, preview) in enumerate(top3)
             ]
             _relog(
-                "RAG_RETRIEVE", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
+                "RAG_RETRIEVE", "INFO", str(locals().get('session_id', '-')), str(locals().get('user_id', '-')),
                 f"Top-{len(top3)} retrieved (total={len(contexts)}): " + " | ".join(top3_lines),
                 hits=len(contexts),
                 top1_source=top3[0][0] if top3 else "-",
@@ -988,7 +988,7 @@ class Synthesizer:
             try:
                 from app.core.runtime_log import log_event as _relog
                 _relog(
-                    "RAG_EMPTY_FALLBACK", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
+                    "RAG_EMPTY_FALLBACK", "INFO", str(locals().get('session_id', '-')), str(locals().get('user_id', '-')),
                     f"P0-J 兜底: products=0 kb_docs=0 context_block_len={len(context_block)}",
                     fallback="stream_llm" if context_block else "stream_simple_hardcode",
                     products=len(products),
@@ -1029,7 +1029,7 @@ class Synthesizer:
             _full_system = (SYSTEM_PROMPT_BASE + context_block) if context_block else SYSTEM_PROMPT_BASE
             system_prompt = _full_system[:3000] + ("...(截断)" if len(_full_system) > 3000 else "")
             _relog(
-                "LLM_PROMPT", "INFO", str(session_id if 'session_id' in dir() else "-"), str(user_id if 'user_id' in dir() else "-"),
+                "LLM_PROMPT", "INFO", str(locals().get('session_id', '-')), str(locals().get('user_id', '-')),
                 f"system_len={len(_full_system)} user_len={len(query)}",
                 system_prompt=system_prompt,
                 user_message=query,  # user 不截断
@@ -1054,8 +1054,8 @@ class Synthesizer:
         # V16.5 全链路日志：HANDLE_POLICY 入口
         try:
             from app.core.runtime_log import log_event as _relog
-            _sid = session_id if 'session_id' in dir() else "-"
-            _uid = user_id if 'user_id' in dir() else "-"
+            _sid = locals().get('session_id', '-')
+            _uid = locals().get('user_id', '-')
             _relog(
                 "HANDLE_POLICY", "INFO", str(_sid), str(_uid),
                 f"ENTER query={query[:80]} search_queries={search_queries}",
@@ -1070,8 +1070,8 @@ class Synthesizer:
         # V16.5 全链路日志：RAG_RETRIEVE（policy 检索 Top）
         try:
             from app.core.runtime_log import log_event as _relog
-            _sid = session_id if 'session_id' in dir() else "-"
-            _uid = user_id if 'user_id' in dir() else "-"
+            _sid = locals().get('session_id', '-')
+            _uid = locals().get('user_id', '-')
             top3 = policy_docs[:5] if policy_docs else []
             top3_lines = [
                 f"[{i+1}] title={(d.get('title','') if isinstance(d,dict) else '')[:50]}"
@@ -1101,8 +1101,8 @@ class Synthesizer:
             # 无相关 policy → LLM 用通用知识兜底（context_block 走 stream_llm 注入 system 不在此重复）
             try:
                 from app.core.runtime_log import log_event as _relog
-                _sid = session_id if 'session_id' in dir() else "-"
-                _uid = user_id if 'user_id' in dir() else "-"
+                _sid = locals().get('session_id', '-')
+                _uid = locals().get('user_id', '-')
                 _full_system = (SYSTEM_PROMPT_BASE + context_block) if context_block else SYSTEM_PROMPT_BASE
                 _relog(
                     "LLM_PROMPT", "INFO", str(_sid), str(_uid),
@@ -1131,8 +1131,8 @@ class Synthesizer:
         # V16.5 全链路日志：policy_query LLM_PROMPT（完整 system 长度）
         try:
             from app.core.runtime_log import log_event as _relog
-            _sid = session_id if 'session_id' in dir() else "-"
-            _uid = user_id if 'user_id' in dir() else "-"
+            _sid = locals().get('session_id', '-')
+            _uid = locals().get('user_id', '-')
             _full_system = (SYSTEM_PROMPT_BASE + context_block) if context_block else SYSTEM_PROMPT_BASE
             _relog(
                 "LLM_PROMPT", "INFO", str(_sid), str(_uid),

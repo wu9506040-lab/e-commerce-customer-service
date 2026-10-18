@@ -9,6 +9,7 @@ API 字符串兼容 goofish-cli（直接用其常量）
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os

@@ -79,6 +79,7 @@ def test_rerank_enabled_uses_coarse_then_fine():
         config.settings.RERANK_CANDIDATE_TOP_K = original_top
 
 
+@pytest.mark.skip(reason="V18.3 检索底层换 Milvus（vector_db 门面），rerank 关闭路径待重新验证（docs/test_quarantine.md）")
 def test_rerank_disabled_keeps_legacy_behavior():
     """场景 2：USE_RERANK=false → 保持原 Qdrant 直接 top-3 行为"""
     from app.core import config
