@@ -11,7 +11,7 @@
 [![Milvus](https://img.shields.io/badge/Milvus-v2.4-00A1EA)](https://milvus.io)
 [![MySQL](https://img.shields.io/badge/MySQL-8-4479A1?logo=mysql)](https://mysql.com)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis)](https://redis.io)
-[![Docker](https://img.shields.io/badge/Docker_Compose-5_services-2496ED?logo=docker)](https://docker.com)
+[![Docker](https://img.shields.io/badge/Docker_Compose-6_services-2496ED?logo=docker)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
@@ -136,7 +136,7 @@ sequenceDiagram
 ### 4. RAG 数据中台
 - **多格式入库**：PDF（页眉剔除/章节识别/表格/脚注）/ Markdown / TXT / JSON
 - **语义分块**：句子边界切分不截断 + 章节打包 + 尾句重叠
-- **渠道隔离**：Qdrant payload 过滤，多渠道知识库互不串台
+- **渠道隔离**：Milvus expr 过滤，多渠道知识库互不串台
 - **增量幂等**：content_hash 去重，重复跑零成本
 
 ### 5. 运营管理
@@ -154,10 +154,10 @@ sequenceDiagram
 | 后端 | Python 3.11、FastAPI（SSE 流式）、SQLAlchemy、Pydantic |
 | 实时通信 | websockets + MessagePack（闲鱼私有协议自研实现） |
 | 数据 | MySQL 8（消息/工单，account 列隔离）、Redis（热历史/命令总线） |
-| 向量库 | Qdrant（text-embedding-v3 1024 维 + BM25/RRF 混合检索 + 重排） |
+| 向量库 | Milvus（text-embedding-v3 1024 维 + BM25/RRF 混合检索 + 重排；门面模式可切 Qdrant） |
 | LLM | 通义千问 qwen-plus（SSE 流式） |
 | 浏览器自动化 | Playwright（Cookie 免密登录刷新） |
-| 部署 | Docker Compose（5 容器）+ watchdog 进程守护 |
+| 部署 | Docker Compose（6 容器）+ watchdog 进程守护 |
 
 ---
 
@@ -172,7 +172,7 @@ cd e-commerce-customer-service
 cp deploy/.env.example deploy/.env.dev
 #    填入：MYSQL 密码 / QWEN_API_KEY（通义千问）
 
-# 3. 启动基础设施（MySQL/Redis/Qdrant/API/Nginx 五容器）
+# 3. 启动基础设施（MySQL/Redis/Milvus/API/Nginx 六容器）
 cd deploy && docker compose up -d && cd ..
 
 # 4. 前端构建（bind-mount 到 nginx 容器）
