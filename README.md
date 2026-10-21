@@ -99,9 +99,11 @@ sequenceDiagram
 
 ![人工坐席工作台](docs/screenshots/workbench.png)
 
-**数据看板**（ECharts 11 图：消息趋势 / 渠道分布 / 响应时间 / 热门问题 TOP10 / AI 率仪表 / 客户统计）
+**数据看板**（ECharts 11 图 · 真实统计：消息趋势 / 渠道分布 / 峰值时段 / 响应时间 / 热门问题 TOP10 / 意图分类 / 三率仪表 / 客户标签）
 
-> 截图待看板切换真实统计数据后更新（当前为演示数据模式）。
+![数据看板](docs/screenshots/dashboard-1.png)
+
+![数据看板-下](docs/screenshots/dashboard-2.png)
 
 ---
 

@@ -1,10 +1,49 @@
 <script setup lang="ts">
-// V18.2 数据看板（BI 网格）— ECharts，当前为演示数据，接口就绪后替换 fetch
+// V18.3 数据看板（BI 网格）— ECharts，真实统计（GET /admin/analytics/board）
+// 演示数据仅作接口失败时的兜底展示（顶栏会保留"演示数据"角标）
 import * as echarts from 'echarts';
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { http } from '../api';
 
 const charts: echarts.ECharts[] = [];
 const demo = ref(true);
+const errMsg = ref('');
+
+interface BoardData {
+  generated_at: string;
+  days: number;
+  excluded_test_messages: number;
+  kpis: {
+    today_messages: number;
+    avg_response_sec: number;
+    ai_reply_rate: number;
+    handoff_rate: number;
+    bargain_resolve_rate: number;
+    new_customers_today: number;
+  };
+  msg_trend: { dates: string[]; xianyu: number[]; mall: number[] };
+  channel_split: { name: string; value: number }[];
+  hourly: number[];
+  resp_trend: { dates: string[]; avg: number[]; max: number[]; min: number[] };
+  top_questions: { q: string; count: number }[];
+  intent_split: { name: string; value: number }[];
+  new_cust_trend: { dates: string[]; counts: number[] };
+  customer_tags: { name: string; value: number }[];
+}
+
+const KPIS = ref<{ label: string; value: string; delta: string; up: boolean }[]>([]);
+
+function kpisFrom(d: BoardData) {
+  const k = d.kpis;
+  return [
+    { label: '今日消息量', value: String(k.today_messages), delta: `近${d.days}日累计 ${d.msg_trend.xianyu.reduce((a, b) => a + b, 0) + d.msg_trend.mall.reduce((a, b) => a + b, 0)} 条`, up: true },
+    { label: '平均响应时间', value: `${k.avg_response_sec}s`, delta: '买家消息 → 客服回复', up: true },
+    { label: 'AI 自动回复率', value: `${k.ai_reply_rate}%`, delta: 'assistant 消息占比', up: true },
+    { label: '转人工率', value: `${k.handoff_rate}%`, delta: '工单数 / 会话数', up: true },
+    { label: '议价解决率', value: `${k.bargain_resolve_rate}%`, delta: '议价诉求未升级工单', up: true },
+    { label: '今日新增会话', value: String(k.new_customers_today), delta: '首次出现的会话', up: true },
+  ];
+}
 
 function mkOption(cfg: Record<string, unknown>) {
   return {
@@ -14,16 +53,7 @@ function mkOption(cfg: Record<string, unknown>) {
   };
 }
 
-const KPIS = [
-  { label: '今日消息量', value: '1,284', delta: '+12.4%', up: true },
-  { label: '平均响应时间', value: '11.2s', delta: '-18.3%', up: true },
-  { label: 'AI 自动回复率', value: '93.6%', delta: '+1.8%', up: true },
-  { label: '转人工率', value: '6.4%', delta: '-1.8%', up: true },
-  { label: '议价成功率', value: '71.3%', delta: '+4.1%', up: true },
-  { label: '今日新增客户', value: '37', delta: '+9', up: true },
-];
-
-function initCharts() {
+function initCharts(d: BoardData) {
   const mount = (id: string, option: echarts.EChartsCoreOption) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -32,18 +62,16 @@ function initCharts() {
     charts.push(c);
   };
 
-  // 1. 消息量趋势（近 14 天双线）
-  const days = Array.from({ length: 14 }, (_, i) => {
-    const d = new Date(2026, 9, 5 + i);
-    return `${d.getMonth() + 1}/${d.getDate()}`;
-  });
+  const dates = d.msg_trend.dates;
+
+  // 1. 消息量趋势（双线）
   mount('chart-msg-trend', mkOption({
     legend: { top: 0, textStyle: { fontSize: 11 } },
-    xAxis: { type: 'category', data: days, axisLabel: { fontSize: 10 } },
+    xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10 } },
     yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
     series: [
-      { name: '闲鱼', type: 'line', smooth: true, data: [86, 102, 95, 130, 118, 142, 160, 138, 155, 172, 190, 168, 205, 232], itemStyle: { color: '#f97316' } },
-      { name: '商城', type: 'line', smooth: true, data: [640, 590, 660, 610, 700, 655, 720, 690, 745, 710, 780, 760, 820, 854], itemStyle: { color: '#3b82f6' } },
+      { name: '闲鱼', type: 'line', smooth: true, data: d.msg_trend.xianyu, itemStyle: { color: '#f97316' } },
+      { name: '商城', type: 'line', smooth: true, data: d.msg_trend.mall, itemStyle: { color: '#3b82f6' } },
     ],
   }));
 
@@ -54,10 +82,9 @@ function initCharts() {
     series: [{
       type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'],
       label: { formatter: '{b}\n{d}%', fontSize: 11 },
-      data: [
-        { value: 854, name: '商城', itemStyle: { color: '#3b82f6' } },
-        { value: 232, name: '闲鱼', itemStyle: { color: '#f97316' } },
-      ],
+      data: d.channel_split.map((x, i) => ({
+        ...x, itemStyle: { color: ['#3b82f6', '#f97316'][i % 2] },
+      })),
     }],
   });
 
@@ -67,23 +94,24 @@ function initCharts() {
     yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
     series: [{
       type: 'bar', barWidth: '55%', itemStyle: { color: '#6366f1', borderRadius: [3, 3, 0, 0] },
-      data: [12, 8, 5, 3, 2, 4, 10, 28, 55, 88, 120, 145, 132, 118, 126, 140, 158, 170, 152, 130, 108, 76, 45, 24],
+      data: d.hourly,
     }],
   }));
 
   // 4. 响应时间趋势
   mount('chart-resp', mkOption({
     legend: { top: 0, textStyle: { fontSize: 11 } },
-    xAxis: { type: 'category', data: days, axisLabel: { fontSize: 10 } },
+    xAxis: { type: 'category', data: d.resp_trend.dates, axisLabel: { fontSize: 10 } },
     yAxis: { type: 'value', axisLabel: { fontSize: 10 }, name: '秒' },
     series: [
-      { name: '平均', type: 'line', smooth: true, data: [14.2, 13.8, 13.1, 12.6, 12.9, 12.1, 11.8, 11.5, 11.2, 10.8, 11.4, 10.9, 11.6, 11.2], itemStyle: { color: '#3b82f6' } },
-      { name: '最长', type: 'line', smooth: true, lineStyle: { type: 'dashed' }, data: [38, 35, 33, 30, 32, 29, 27, 28, 26, 25, 27, 24, 26, 24], itemStyle: { color: '#f59e0b' } },
-      { name: '最短', type: 'line', smooth: true, lineStyle: { type: 'dashed' }, data: [4.1, 3.8, 3.5, 3.6, 3.4, 3.2, 3.3, 3.1, 3.0, 2.9, 3.1, 2.8, 3.0, 2.8], itemStyle: { color: '#10b981' } },
+      { name: '平均', type: 'line', smooth: true, data: d.resp_trend.avg, itemStyle: { color: '#3b82f6' } },
+      { name: '最长', type: 'line', smooth: true, lineStyle: { type: 'dashed' }, data: d.resp_trend.max, itemStyle: { color: '#f59e0b' } },
+      { name: '最短', type: 'line', smooth: true, lineStyle: { type: 'dashed' }, data: d.resp_trend.min, itemStyle: { color: '#10b981' } },
     ],
   }));
 
   // 5. 热门问题 TOP10
+  const tq = d.top_questions.slice(0, 10);
   mount('chart-top10', mkOption({
     grid: { left: 150, right: 30, top: 10, bottom: 24 },
     xAxis: { type: 'value', axisLabel: { fontSize: 10 } },
@@ -91,92 +119,64 @@ function initCharts() {
       type: 'category',
       inverse: true,
       axisLabel: { fontSize: 11 },
-      data: ['能便宜点吗', '在吗', '能退款吗', '容量多大', '正品吗', '多久发货', '能带上飞机吗', '怎么收费', '质量怎么样', '怎么用'],
+      data: tq.length ? tq.map((x) => x.q) : ['（暂无数据）'],
     },
     series: [{
       type: 'bar', barWidth: '55%', itemStyle: { color: '#3b82f6', borderRadius: [0, 4, 4, 0] },
-      data: [96, 81, 64, 52, 47, 43, 38, 31, 27, 22],
+      data: tq.length ? tq.map((x) => x.count) : [0],
     }],
   }));
 
   // 6. 意图分类
+  const intentColors = ['#3b82f6', '#f59e0b', '#ef4444', '#10b981', '#a1a1aa'];
   mount('chart-intent', {
     tooltip: { trigger: 'item' },
     legend: { bottom: 0, textStyle: { fontSize: 11 } },
     series: [{
       type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'],
       label: { formatter: '{b} {d}%', fontSize: 11 },
-      data: [
-        { value: 520, name: '售前咨询', itemStyle: { color: '#3b82f6' } },
-        { value: 310, name: '议价', itemStyle: { color: '#f59e0b' } },
-        { value: 180, name: '售后/退款', itemStyle: { color: '#ef4444' } },
-        { value: 96, name: '其他', itemStyle: { color: '#a1a1aa' } },
-      ],
+      data: (d.intent_split.length ? d.intent_split : [{ name: '暂无', value: 0 }])
+        .map((x, i) => ({ ...x, itemStyle: { color: intentColors[i % intentColors.length] } })),
     }],
   });
 
-  // 7. AI 回复率仪表
-  mount('chart-ai-rate', {
-    series: [{
-      type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100,
-      progress: { show: true, width: 14, itemStyle: { color: '#10b981' } },
-      axisLine: { lineStyle: { width: 14, color: [[1, '#e5e7eb']] } },
-      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-      pointer: { show: false },
-      detail: { valueAnimation: true, fontSize: 26, offsetCenter: [0, 0], formatter: '{value}%', color: '#047857' },
-      data: [{ value: 93.6 }],
-    }],
-  });
+  // 7-9. 三个率仪表
+  const gauge = (id: string, value: number, color: string, textColor: string) =>
+    mount(id, {
+      series: [{
+        type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100,
+        progress: { show: true, width: 14, itemStyle: { color } },
+        axisLine: { lineStyle: { width: 14, color: [[1, '#e5e7eb']] } },
+        axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+        pointer: { show: false },
+        detail: { valueAnimation: true, fontSize: 26, offsetCenter: [0, 0], formatter: '{value}%', color: textColor },
+        data: [{ value }],
+      }],
+    });
+  gauge('chart-ai-rate', d.kpis.ai_reply_rate, '#10b981', '#047857');
+  gauge('chart-handoff-rate', d.kpis.handoff_rate, '#ef4444', '#b91c1c');
+  gauge('chart-bargain-rate', d.kpis.bargain_resolve_rate, '#f59e0b', '#b45309');
 
-  // 8. 转人工率仪表
-  mount('chart-handoff-rate', {
-    series: [{
-      type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100,
-      progress: { show: true, width: 14, itemStyle: { color: '#ef4444' } },
-      axisLine: { lineStyle: { width: 14, color: [[1, '#e5e7eb']] } },
-      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-      pointer: { show: false },
-      detail: { valueAnimation: true, fontSize: 26, offsetCenter: [0, 0], formatter: '{value}%', color: '#b91c1c' },
-      data: [{ value: 6.4 }],
-    }],
-  });
-
-  // 9. 议价成功率仪表
-  mount('chart-bargain-rate', {
-    series: [{
-      type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100,
-      progress: { show: true, width: 14, itemStyle: { color: '#f59e0b' } },
-      axisLine: { lineStyle: { width: 14, color: [[1, '#e5e7eb']] } },
-      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-      pointer: { show: false },
-      detail: { valueAnimation: true, fontSize: 26, offsetCenter: [0, 0], formatter: '{value}%', color: '#b45309' },
-      data: [{ value: 71.3 }],
-    }],
-  });
-
-  // 10. 新增客户（近 14 天柱状）
+  // 10. 新增客户
   mount('chart-new-cust', mkOption({
-    xAxis: { type: 'category', data: days, axisLabel: { fontSize: 9 } },
+    xAxis: { type: 'category', data: d.new_cust_trend.dates, axisLabel: { fontSize: 9 } },
     yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
     series: [{
       type: 'bar', barWidth: '50%', itemStyle: { color: '#10b981', borderRadius: [3, 3, 0, 0] },
-      data: [18, 22, 19, 25, 21, 28, 31, 26, 30, 33, 29, 35, 32, 37],
+      data: d.new_cust_trend.counts,
     }],
   }));
 
   // 11. 客户标签分布
+  const tagColors = ['#10b981', '#f59e0b', '#3b82f6', '#ef4444'];
   mount('chart-tags', {
     tooltip: { trigger: 'item' },
     legend: { bottom: 0, textStyle: { fontSize: 11 } },
     series: [{
       type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'],
       label: { formatter: '{b} {d}%', fontSize: 11 },
-      data: [
-        { value: 45, name: '老客', itemStyle: { color: '#10b981' } },
-        { value: 38, name: '议价中', itemStyle: { color: '#f59e0b' } },
-        { value: 26, name: '售前意向', itemStyle: { color: '#3b82f6' } },
-        { value: 12, name: '售后中', itemStyle: { color: '#ef4444' } },
-      ],
+      data: (d.customer_tags.length ? d.customer_tags : [{ name: '暂无', value: 0 }])
+        .map((x, i) => ({ ...x, itemStyle: { color: tagColors[i % tagColors.length] } })),
     }],
   });
 }
@@ -185,8 +185,16 @@ function onResize() {
   for (const c of charts) c.resize();
 }
 
-onMounted(() => {
-  initCharts();
+onMounted(async () => {
+  try {
+    const d = await http<BoardData>('/admin/analytics/board?days=14');
+    KPIS.value = kpisFrom(d);
+    initCharts(d);
+    demo.value = false;
+  } catch (e) {
+    errMsg.value = String(e);
+    // 接口失败：保持演示数据兜底
+  }
   window.addEventListener('resize', onResize);
 });
 onBeforeUnmount(() => {
@@ -200,7 +208,8 @@ onBeforeUnmount(() => {
   <div class="db">
     <div class="db-head">
       <span class="db-title">数据看板</span>
-      <span v-if="demo" class="db-demo">演示数据 · 接口就绪后自动切换真实统计</span>
+      <span v-if="demo" class="db-demo">演示数据{{ errMsg ? '（接口失败：' + errMsg.slice(0, 60) + '）' : ' · 加载中' }}</span>
+      <span v-else class="db-live">真实统计</span>
     </div>
 
     <!-- KPI 卡片行 -->
@@ -208,7 +217,7 @@ onBeforeUnmount(() => {
       <div v-for="k in KPIS" :key="k.label" class="db-kpi">
         <div class="db-kpi-label">{{ k.label }}</div>
         <div class="db-kpi-value">{{ k.value }}</div>
-        <div class="db-kpi-delta" :class="{ up: k.up }">{{ k.delta }} 较上周</div>
+        <div class="db-kpi-delta" :class="{ up: k.up }">{{ k.delta }}</div>
       </div>
     </div>
 
@@ -226,7 +235,7 @@ onBeforeUnmount(() => {
       <div class="db-card db-rates">
         <div class="db-rate-item"><div class="db-card-title">AI 自动回复率</div><div id="chart-ai-rate" class="db-chart h180"></div></div>
         <div class="db-rate-item"><div class="db-card-title">转人工率</div><div id="chart-handoff-rate" class="db-chart h180"></div></div>
-        <div class="db-rate-item"><div class="db-card-title">议价成功率</div><div id="chart-bargain-rate" class="db-chart h180"></div></div>
+        <div class="db-rate-item"><div class="db-card-title">议价解决率</div><div id="chart-bargain-rate" class="db-chart h180"></div></div>
       </div>
 
       <div class="db-card"><div class="db-card-title">新增客户（近 14 天）</div><div id="chart-new-cust" class="db-chart h240"></div></div>
@@ -242,6 +251,10 @@ onBeforeUnmount(() => {
 .db-demo {
   font-size: 11px; color: #92400e; background: #fffbeb;
   border: 1px solid #fde68a; border-radius: 999px; padding: 2px 10px;
+}
+.db-live {
+  font-size: 11px; color: #047857; background: #ecfdf5;
+  border: 1px solid #a7f3d0; border-radius: 999px; padding: 2px 10px;
 }
 
 .db-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
