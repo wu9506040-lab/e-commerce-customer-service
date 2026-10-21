@@ -37,7 +37,7 @@ const API = '/api';
 export const isAuthed: Ref<boolean | null> = ref(null);
 
 /** 统一 fetch 包装：带 cookie + JSON */
-async function http<T>(
+export async function http<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
