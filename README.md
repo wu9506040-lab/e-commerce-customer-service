@@ -99,15 +99,9 @@ sequenceDiagram
 
 ![人工坐席工作台](docs/screenshots/workbench.png)
 
-**对话窗口**（AI 浅蓝气泡 / 人工深蓝气泡 / 买家灰色气泡，右上角标区分）
+**数据看板**（ECharts 11 图：消息趋势 / 渠道分布 / 响应时间 / 热门问题 TOP10 / AI 率仪表 / 客户统计）
 
-![对话窗口](docs/screenshots/chat-window.png)
-
-**数据看板**（ECharts：消息趋势 / 渠道分布 / 响应时间 / 热门问题 TOP10 / AI 率仪表）
-
-![数据看板](docs/screenshots/dashboard-1.png)
-
-![数据看板-下](docs/screenshots/dashboard-2.png)
+> 截图待看板切换真实统计数据后更新（当前为演示数据模式）。
 
 ---
 
