@@ -79,6 +79,9 @@ watch(
 
 // 状态徽章（京东风：扁平 + 红/灰）
 const statusMeta = (status: string) => {
+  // V21-P0.2：虚拟商品即发即达——shipped 显示"已发货"而非"运输中"（无物流）
+  const vDelivered = (props.order as any).auto_delivery && status === 'shipped';
+  if (vDelivered) return { label: '已发货', cls: 'st-shipped' };
   const map: Record<string, { label: string; cls: string }> = {
     pending:   { label: '待支付', cls: 'st-pending' },
     paid:      { label: '已支付', cls: 'st-paid' },
