@@ -142,6 +142,28 @@ sequenceDiagram
 
 ---
 
+## 🤖 Agent 能力（V20 / V21）
+
+### 多 Agent 协作制
+4 个意图域专家（政策 / 商品 / 订单 / 退款）实现统一 `AgentProtocol`，注册表分派；支持动态转交（转交率有 metrics 观测）与双意图双专家补答——一句话两个问题，两个专家先后作答。
+
+### 受控写操作（human-in-the-loop）
+写操作（订单修改、虚拟商品自动发货）不走裸调用：**两步确认 + 审批票据**——票据幂等键绑定完整参数（LLM 重试改参数 = 无票拒绝），交付记录按订单唯一（双层幂等防重复发货），全量审计落 JSONL。门控 fail-closed：校验失败宁可拒绝执行。
+
+### Agent 状态持久化
+退款 LangGraph 状态机接入 Checkpointer（SQLite），会话维度 thread——进程中断后从断点续跑，不重复决策；决策历史可回放审计。
+
+### 议价策略引擎
+买家议价的让步决策由确定性规则引擎给出（不二价人设：赠品梯度加码），LLM 只负责话术；价格白名单校验拦截幻觉报价。
+
+### 评测治理
+- **三层评测**：330 题召回 hit@k + 60 题话术回归 + 20 组多轮场景
+- **黄金集防篡改**：每题 query+expected 的规范化 sha256 记入 MANIFEST，评测入口强制校验——改动评测集本身即拒绝评测（`scripts/eval_freeze.py`）
+- **badcase 回流**：失败案例入独立池，修复验证后隔版本晋级
+
+### 决策可观测
+每轮对话落一条结构化 trace（意图路由方法 / 置信度 / 降级 / 缓存命中 / 延迟分段），自动处理率与转人工率可量化（`scripts/agent_metrics.py`）。
+
 ## 🛠 技术栈
 
 | 层 | 技术 |
@@ -179,7 +201,8 @@ mysql -h 127.0.0.1 -P 3307 -u cs_user -p customer_service < deploy/mysql/init/01
 python scripts/ingest_kb.py
 
 # 6. 闲鱼账号接入（可选）
-#    浏览器登录闲鱼 → F12 复制 Cookie → 存为 cookie.txt（项目根目录）
+#    配置登录态：cookie.txt（项目根目录，含登录 Cookie），支持
+#    四级自愈（重签 → 续期 → 浏览器自动刷新 → 人工介入）
 #    多账号：编辑 backend/config/accounts.json（参考 accounts.example.json）
 
 # 7. 启动 daemon + 看门狗
@@ -201,10 +224,11 @@ python scripts/watchdog_xianyu_daemon.py &
 
 | 指标 | 数值 |
 |------|------|
-| 后端 Python | 280 文件 / 51,000+ 行 |
-| 前端 Vue3/TS | 27 文件 / 8,400+ 行 |
-| 测试 | 97 个测试文件 / 23,000+ 行 |
-| Git 提交 | 310+（活跃开发中） |
+| 后端 Python | 419 文件 / 84,000+ 行（含测试） |
+| 前端 Vue3/TS | 33 文件 / 9,800+ 行 |
+| 测试 | 1,205 passed / 1205+ 用例（pytest 实测口径） |
+| Git 提交 | 320+（活跃开发中） |
+| Function Call 工具 | 19 个（含虚拟商品自动发货） |
 | 端到端延迟 | 54s → 8-15s（分阶段优化，全程日志拆解） |
 
 ---
