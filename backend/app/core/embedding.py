@@ -72,8 +72,9 @@ def embed_text(text: str) -> List[float]:
 # =============================================================
 # 配置
 # =============================================================
-QWEN_API_KEY = settings.QWEN_API_KEY
-DASHSCOPE_BASE_URL = settings.DASHSCOPE_BASE_URL
+# V21：embedding 独立凭证优先（chat 提供商可切换，embedding 向量空间绑定原提供商）
+QWEN_API_KEY = settings.EMBEDDING_API_KEY or settings.QWEN_API_KEY
+DASHSCOPE_BASE_URL = settings.EMBEDDING_BASE_URL or settings.DASHSCOPE_BASE_URL
 # DashScope text-embedding-v3（1024 维，与 Qdrant collection 匹配）
 EMBEDDING_MODEL = "text-embedding-v3"
 EMBEDDING_DIM = 1024
