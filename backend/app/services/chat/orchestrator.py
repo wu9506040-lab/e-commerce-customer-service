@@ -844,7 +844,7 @@ class Synthesizer:
         """列表型问题返回全量在售商品；非列表型返回 None（走原 keyword 搜）。"""
         if not cls._PRODUCT_LIST_PAT.search(query or ""):
             return None
-        return ProductTool.list_products(limit=8)
+        return ProductTool.list_products(limit=20)  # 全量在售（DB 当前 10 款，上限防膨胀）
 
     @staticmethod
     def _handle_product(
