@@ -64,6 +64,30 @@ const streaming = ref(false);
 const streamingText = ref('');
 const streamingMeta = ref<StreamEvent | null>(null);
 
+// V21 M3-1 前端：状态机步骤指示器（decide → fetch_policy → synthesize → escalate）
+const FLOW_STEPS = [
+  { key: 'decide', label: '意图决策' },
+  { key: 'fetch_policy', label: '政策检索' },
+  { key: 'synthesize', label: '生成回复' },
+] as const;
+const flowStage = computed(() => (streamingMeta.value as any)?.flow_stage ?? null);
+const flowStepIdx = computed(() => {
+  if (!flowStage.value) return -1;
+  const i = FLOW_STEPS.findIndex(s => s.key === flowStage.value);
+  return i >= 0 ? i : (flowStage.value === 'escalate' ? FLOW_STEPS.length : -1);
+});
+
+// V21 P0 前端：审批确认快捷按钮（检测最近 AI 消息的确认提示，替代手动打字）
+const showQuickConfirm = computed(() => {
+  const last = messages.value[messages.value.length - 1];
+  if (!last || last.role !== 'assistant') return false;
+  const c = String(last.content ?? '');
+  return c.includes('requires_user_input') || c.includes('回复「确认」') || c.includes('请用户回复「确认」');
+});
+async function quickConfirm() {
+  await sendMessage('确认');
+}
+
 const conversationsLoading = ref(false);
 const messagesLoading = ref(false);
 const error = ref('');
@@ -434,6 +458,23 @@ watch(
     />
 
     <main class="chat-main">
+      <!-- V21 M3-1：LangGraph 状态机步骤指示器（流式时显示） -->
+      <div v-if="streaming && flowStepIdx >= 0" class="flow-steps">
+        <template v-for="(step, i) in FLOW_STEPS" :key="step.key">
+          <div class="flow-node" :class="{ active: i === flowStepIdx, done: i < flowStepIdx }">
+            <span class="flow-dot"></span>
+            <span class="flow-label">{{ step.label }}</span>
+          </div>
+          <div v-if="i < FLOW_STEPS.length - 1" class="flow-line" :class="{ done: i < flowStepIdx }"></div>
+        </template>
+      </div>
+
+      <!-- V21 P0：审批确认快捷按钮（AI 请求确认时显示） -->
+      <div v-if="showQuickConfirm && !streaming" class="quick-confirm">
+        <span class="qc-hint">Agent 请求确认此操作</span>
+        <button class="qc-btn" @click="quickConfirm">✓ 确认执行</button>
+      </div>
+
       <div v-if="messagesLoading" class="loading-tip">加载消息中…</div>
 
       <div v-if="streaming" class="streaming-indicator">
@@ -558,4 +599,59 @@ watch(
 .csat-bar button:disabled { opacity: .5; cursor: default; }
 .csat-bar input { flex: 1; min-width: 140px; border: 1px solid #e3e6ea; border-radius: 6px; padding: 3px 8px; }
 .csat-bar .done { color: #2e7d32; font-weight: 600; }
+</style>
+
+<style scoped>
+/* V21 M3-1：状态机步骤指示器 */
+.flow-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  background: var(--gray-100);
+  border: 1px solid var(--glass-brd);
+  border-radius: var(--radius-base);
+}
+.flow-node { display: flex; align-items: center; gap: 6px; opacity: 0.45; transition: all .3s; }
+.flow-node.active { opacity: 1; }
+.flow-node.done { opacity: 0.85; }
+.flow-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--gray-400);
+}
+.flow-node.active .flow-dot {
+  background: var(--jd-red);
+  box-shadow: var(--accent-glow);
+  animation: flow-pulse 1.2s ease-in-out infinite;
+}
+.flow-node.done .flow-dot { background: var(--ok); }
+.flow-label { font-size: 13px; color: var(--gray-700); }
+.flow-node.active .flow-label { color: var(--gray-900); font-weight: 600; }
+.flow-line { width: 34px; height: 2px; background: var(--gray-400); }
+.flow-line.done { background: var(--jd-red); }
+@keyframes flow-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.35); }
+}
+
+/* V21 P0：审批确认快捷卡片 */
+.quick-confirm {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; margin-bottom: 8px;
+  background: var(--jd-red-light);
+  border: 1px solid var(--glass-brd);
+  border-radius: var(--radius-base);
+}
+.qc-hint { font-size: 14px; color: var(--gray-700); }
+.qc-btn {
+  padding: 6px 18px;
+  background: var(--accent-gradient);
+  color: #fff; border: none;
+  border-radius: var(--radius-sm);
+  font-size: 14px; font-weight: 600;
+  box-shadow: var(--accent-glow);
+}
+.qc-btn:hover { filter: brightness(1.15); }
 </style>
