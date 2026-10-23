@@ -69,9 +69,10 @@ onMounted(async () => {
 });
 
 function onAsk(sku: string) {
+  // V21 UX：不自动发问——只带商品上下文进聊天页，用户自己提问
   router.push({
     name: 'chat',
-    query: { q: `${sku} 怎么样` },
+    query: { sku },
   });
 }
 
