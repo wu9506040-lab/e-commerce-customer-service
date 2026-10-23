@@ -127,6 +127,15 @@ class VirtualDeliveryFlow:
             card = str(result.get("card_secret", ""))
             _step("卡密分配", f"库存扣减 · 交付记录 #{result.get('record_id', '-')}")
 
+            # ---------- Step 4.5: 订单状态流转 paid → shipped ----------
+            # 虚拟商品即发即达：不留在"待发货"，否则客服查询会答"仓库等待发货"
+            # 与已自动发货的事实矛盾（状态一致性 > 保留手动发货演示路径）
+            from app.services.order_lifecycle import OrderLifecycle
+            from app.models.order import OrderStatus
+
+            OrderLifecycle._update_status(order_no, OrderStatus.SHIPPED.value)
+            _step("订单状态流转", "paid → shipped（即发即达，无需物流）")
+
             # 时间线快照落库（订单列表/详情页展示决策链）
             get_delivery_service().save_timeline(order_no, steps, round((time.perf_counter() - started) * 1000, 1))
 

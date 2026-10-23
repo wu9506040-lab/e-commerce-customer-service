@@ -47,10 +47,29 @@ class MockLogisticsService:
                 return None
 
             logistics_status, location = _STATUS_MAP.get(order.status, ("未知", "未知"))
+            carrier = "顺丰"
+
+            # V21-P0.2：虚拟商品——交付记录存在即"数字交付"，不模拟实体物流
+            try:
+                from app.services.delivery_service import get_delivery_service
+
+                delivery = get_delivery_service().get_record(order_no)
+                if delivery is not None:
+                    return Logistics(
+                        order_no=order_no,
+                        tracking_no=f"VD{order_no[3:]}",  # Virtual Delivery
+                        carrier="AI 客服自动发货",
+                        status="已自动发货（卡密见订单页）",
+                        last_location="数字交付",
+                        estimated_arrival=None,
+                    )
+            except Exception:  # noqa: BLE001 —— 交付库不可用回落实体物流 mock
+                logger.debug("[mock_logistics] 交付记录查询失败（回落实体 mock）", exc_info=True)
+
             return Logistics(
                 order_no=order_no,
                 tracking_no=f"SF{order_no[3:]}",     # 与原 get_logistics mock 兼容
-                carrier="顺丰",
+                carrier=carrier,
                 status=logistics_status,
                 last_location=location,
                 estimated_arrival=None,
