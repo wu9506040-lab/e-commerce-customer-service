@@ -1030,7 +1030,10 @@ class Synthesizer:
             )
         except Exception:
             pass
-        yield from stream_dispatcher.stream_llm(prompt, context_block=context_block)
+        yield from stream_dispatcher.stream_llm(
+            prompt, context_block=context_block,
+            max_tokens=1400 if listed is not None else 256,  # V21：清单需要更长输出
+        )
 
     @staticmethod
     def _handle_policy(

@@ -56,6 +56,7 @@ def stream_llm(
     context_block: Optional[str] = None,
     system_prompt: Optional[str] = None,  # V18-P0：caller 全量 system prompt（优先级最高）
     history: Optional[list] = None,  # V18-P0：多轮历史（xianyu 快速通道追问用）
+    max_tokens: int = 256,  # V21：列表型商品清单需要更长输出（默认 256 压长度）
 ) -> Generator[tuple[str, Any], None, None]:
     """单 LLM 流式调用 + done 事件（§9 并发限流 semaphore=10 + 3.3 预算）
 
@@ -94,7 +95,7 @@ def stream_llm(
         )
     try:
         try:
-            for chunk in get_llm_provider().stream_chat(messages, temperature=0.3, max_tokens=256):
+            for chunk in get_llm_provider().stream_chat(messages, temperature=0.3, max_tokens=max_tokens):
                 full_answer += chunk
                 yield ("token", chunk)
         except StreamTruncatedError as e:
