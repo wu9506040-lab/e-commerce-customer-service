@@ -1,4 +1,13 @@
 <script setup lang="ts">
+
+// V21-P0.2：真实商品图优先（.png），加载失败回落插画（.svg）
+function coverSrc(p: { cover_url: string }) {
+  return p.cover_url.replace(/\.svg$/, '.png');
+}
+function coverFallback(e: Event, p: { cover_url: string }) {
+  const img = e.target as HTMLImageElement;
+  if (!img.dataset.fb) { img.dataset.fb = '1'; img.src = p.cover_url; }
+}
 /**
  * 商品卡片（京东风）
  * 三种密度：shop（橱窗）/ detail（详情页大图）/ mini（消息内嵌）
@@ -64,7 +73,7 @@ function onAsk() {
     <template v-else-if="product">
       <!-- shop 密度：直接 img（点击进详情），detail：左侧大图 -->
       <div v-if="density !== 'mini'" class="cover">
-        <img :src="product.cover_url" :alt="product.name" loading="lazy" />
+        <img :src="coverSrc(product)" :alt="product.name" loading="lazy" @error="coverFallback($event, product)" />
       </div>
 
       <div class="info">
