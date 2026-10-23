@@ -289,6 +289,8 @@ class Settings(BaseSettings):
     AGENT_TICKET_TTL_SECONDS: int = 600
     # 双意图双专家协作（V21 M3-2）：一句话两个意图时，主专家答完补答次意图
     ENABLE_DUAL_INTENT_DISPATCH: bool = False
+    # 虚拟商品自动发货（V21 P0）：卡密库存与交付记录的 SQLite 路径
+    DELIVERY_DB: str = "data/delivery.db"
 
 
 settings = Settings()
