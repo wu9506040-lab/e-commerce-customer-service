@@ -65,6 +65,17 @@ const streamingText = ref('');
 const streamingMeta = ref<StreamEvent | null>(null);
 
 // V21 M3-1 前端：状态机步骤指示器（decide → fetch_policy → synthesize → escalate）
+// V21 UX：商品/订单咨询上下文（从商品页/订单页跳转携带，不自动发问）
+const pendingContext = ref<{ sku?: string; orderNo?: string }>({});
+const contextBanner = computed(() => {
+  if (pendingContext.value.sku) return { label: '商品', value: pendingContext.value.sku };
+  if (pendingContext.value.orderNo) return { label: '订单', value: pendingContext.value.orderNo };
+  return null;
+});
+function clearContext() {
+  pendingContext.value = {};
+}
+
 const FLOW_STEPS = [
   { key: 'decide', label: '意图决策' },
   { key: 'fetch_policy', label: '政策检索' },
@@ -256,6 +267,8 @@ function waitForOnline(maxMs: number = RESUME_ONLINE_TIMEOUT_MS): Promise<boolea
 async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string }) {
   if (streaming.value) return;
   if (!text.trim()) return;
+  // V21 UX：未显式传 ctx 时自动附带咨询上下文（商品/订单页进入后，追问都带着上下文）
+  const effCtx = ctx ?? (Object.keys(pendingContext.value).length ? pendingContext.value : undefined);
 
   error.value = '';
 
@@ -294,7 +307,7 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
     while (true) {
       let iter: AsyncGenerator<StreamEvent, void, void>;
       if (resumeAttempt === 0) {
-        iter = streamChat(text, startSessionId, ctx);
+        iter = streamChat(text, startSessionId, effCtx);
       } else if (streamId && lastEventId !== undefined) {
         // startSessionId 现在总是有效（新会话已预生成 UUID）
         iter = resumeChat(
@@ -302,7 +315,7 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
           streamId,
           text,
           lastEventId,
-          ctx,
+          effCtx,
         );
       } else {
         // 无法 resume（无 streamId）→ 抛出原始错误
@@ -431,12 +444,18 @@ watch(
 watch(
   () => [route.query.q, route.query.sku, route.query.order_no],
   async ([q, sku, orderNo]) => {
+    // V21 UX：从商品/订单页跳转 = 用户想咨询这个品/单 → 只挂上下文，不自动发问；
+    // 显式 q（预填问题）仍保留自动发送（向后兼容）
+    const ctx: { sku?: string; orderNo?: string } = {};
+    if (typeof sku === 'string' && sku) ctx.sku = sku;
+    if (typeof orderNo === 'string' && orderNo) ctx.orderNo = orderNo;
+    pendingContext.value = ctx;
+
     if (q && typeof q === 'string' && !streaming.value) {
-      const ctx: { sku?: string; orderNo?: string } = {};
-      if (typeof sku === 'string' && sku) ctx.sku = sku;
-      if (typeof orderNo === 'string' && orderNo) ctx.orderNo = orderNo;
-      // 清掉 query 避免重复发（在 sendMessage 之后清，避免 watch 重入时丢失 context）
       await sendMessage(q, Object.keys(ctx).length ? ctx : undefined);
+      router.replace({ query: {} });
+    } else if (!q && Object.keys(ctx).length) {
+      // 只挂上下文：清掉 query 防止刷新重复触发（上下文保留在组件状态里）
       router.replace({ query: {} });
     }
   },
@@ -467,6 +486,13 @@ watch(
           </div>
           <div v-if="i < FLOW_STEPS.length - 1" class="flow-line" :class="{ done: i < flowStepIdx }"></div>
         </template>
+      </div>
+
+      <!-- V21 UX：商品/订单咨询上下文横幅（从商品页/订单页进入时显示） -->
+      <div v-if="contextBanner" class="ctx-banner">
+        <span class="ctx-label">正在咨询{{ contextBanner.label }}</span>
+        <span class="ctx-value">{{ contextBanner.value }}</span>
+        <button class="ctx-close" @click="clearContext" title="取消关联">×</button>
       </div>
 
       <!-- V21 P0：审批确认快捷按钮（AI 请求确认时显示） -->
@@ -654,4 +680,30 @@ watch(
   box-shadow: var(--accent-glow);
 }
 .qc-btn:hover { filter: brightness(1.15); }
+</style>
+
+<style scoped>
+/* V21 UX：咨询上下文横幅 */
+.ctx-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; margin-bottom: 8px;
+  background: var(--gray-100);
+  border: 1px solid var(--glass-brd);
+  border-radius: var(--radius-base);
+  font-size: 13px;
+}
+.ctx-label { color: var(--gray-500); }
+.ctx-value {
+  color: var(--gray-900); font-weight: 600;
+  padding: 2px 10px;
+  background: var(--jd-red-light);
+  border-radius: var(--radius-sm);
+}
+.ctx-close {
+  margin-left: auto;
+  background: none; border: none;
+  color: var(--gray-500); font-size: 16px;
+  cursor: pointer; padding: 0 4px;
+}
+.ctx-close:hover { color: var(--gray-900); }
 </style>

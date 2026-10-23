@@ -69,12 +69,10 @@ function onAsk() {
   if (!product.value) return;
   // M9.5：把 sku 一起带过去 → chat 后端注入【当前商品】到 prompt
   // 这样 AI 不会再问"您问的是哪款"，直接基于商品信息回答
+  // V21 UX：不自动发问——只带商品上下文进聊天页，用户自己提问
   router.push({
     name: 'chat',
-    query: {
-      q: `${product.value.sku} 怎么样`,
-      sku: product.value.sku,
-    },
+    query: { sku: product.value.sku },
   });
 }
 
