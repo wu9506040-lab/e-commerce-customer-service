@@ -185,7 +185,22 @@ class OrderLifecycle:
                 status_code=409,
             )
         OrderLifecycle._update_status(order_no, OrderStatus.PAID.value)
-        return {"order_no": order_no, "status": OrderStatus.PAID.value}
+
+        # V21-P0.2：支付事件发布——虚拟商品由事件消费者（VirtualDeliveryFlow）
+        # 走 Agent 工具链自动履约；实体商品无人消费，走原有人工/用户触发发货。
+        # 履约失败不回滚付款（付款已成功），记日志后由人工/重试兜底。
+        auto_delivery = None
+        try:
+            from app.services.virtual_delivery_flow import VirtualDeliveryFlow
+
+            auto_delivery = VirtualDeliveryFlow.process_paid_order(user_id, order_no)
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "[order_lifecycle] 虚拟商品履约事件处理失败 order=%s", order_no
+            )
+        return {"order_no": order_no, "status": OrderStatus.PAID.value, "auto_delivery": auto_delivery}
 
     # =============================================================
     # paid → shipped（发货，演示场景允许用户触发）

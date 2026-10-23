@@ -32,6 +32,7 @@ class OrderActionResponse(BaseModel):
     order_no: str
     status: str
     refund_no: Optional[str] = None  # 仅退款时有
+    auto_delivery: Optional[dict] = None  # V21-P0.2：虚拟商品支付事件的自动履约时间线
 
 
 class RefundRequest(BaseModel):
@@ -88,6 +89,7 @@ class OrderSummaryOut(BaseModel):
     total_amount: float
     create_time: Optional[str] = None
     item_count: int = Field(0, description="商品行数（item_count）")
+    auto_delivery: Optional[dict] = None  # V21-P0.2：虚拟商品已自动履约（含卡密脱敏）
 
 
 class OrderListResponse(BaseModel):
@@ -101,3 +103,4 @@ class OrderDetailOut(BaseModel):
     order: OrderSummaryOut
     items: list[OrderItemOut] = []
     logistics: Optional[LogisticsOut] = None
+    auto_delivery: Optional[dict] = None  # V21-P0.2：虚拟商品已自动履约

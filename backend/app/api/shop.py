@@ -88,12 +88,22 @@ def get_product(sku: str):
 # 订单（需要登录，越权防护由 OrderTool 保证）
 # =============================================================
 def _order_summary(order_dict: dict, item_count: int) -> OrderSummaryOut:
+    # V21-P0.2：附带虚拟商品自动履约记录（无记录时为 None，列表零开销近似——
+    # get_record 是 SQLite 单键查询，订单列表量级 demo 场景可忽略）
+    auto_delivery = None
+    try:
+        from app.services.delivery_service import get_delivery_service
+
+        auto_delivery = get_delivery_service().get_record(order_dict["order_no"])
+    except Exception:  # noqa: BLE001
+        pass
     return OrderSummaryOut(
         order_no=order_dict["order_no"],
         status=order_dict["status"],
         total_amount=order_dict["total_amount"],
         create_time=order_dict.get("create_time"),
         item_count=item_count,
+        auto_delivery=auto_delivery,
     )
 
 
@@ -180,10 +190,20 @@ def get_order_detail(
     logistics_dict = OrderTool.get_logistics(order_no)
     logistics = LogisticsOut(**logistics_dict) if logistics_dict else None
 
+    # V21-P0.2：自动履约时间线（详情页展示）
+    detail_auto_delivery = None
+    try:
+        from app.services.delivery_service import get_delivery_service
+
+        detail_auto_delivery = get_delivery_service().get_record(order_no)
+    except Exception:  # noqa: BLE001
+        pass
+
     return OrderDetailOut(
         order=_order_summary(order_dict, len(items)),
         items=items,
         logistics=logistics,
+        auto_delivery=detail_auto_delivery,
     )
 
 

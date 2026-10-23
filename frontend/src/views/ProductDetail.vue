@@ -190,6 +190,7 @@ function openProduct(s: string) {
               </svg>
               咨询客服
             </button>
+            <p v-if="(product as any)?.attributes?.type === 'virtual'" class="virtual-hint">⚡ 数字商品 · 拍下付款后由 AI 客服自动发货（卡密即时到账）</p>
             <button
               class="buy-btn-primary"
               :disabled="buying || product.stock === 0"
@@ -551,4 +552,7 @@ function openProduct(s: string) {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+</style>
+<style scoped>
+.virtual-hint { margin: 8px 0 0; font-size: 13px; color: var(--jd-red); font-weight: 600; }
 </style>
