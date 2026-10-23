@@ -24,6 +24,9 @@ services:
       QWEN_API_KEY: ${QWEN_API_KEY}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL}
       QWEN_MODEL: ${QWEN_MODEL}
+      # V21：embedding 独立凭证（空 = 回落 QWEN_API_KEY/DASHSCOPE_BASE_URL）
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       # 数据库
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}?charset=utf8mb4
       # 缓存

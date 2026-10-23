@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     QWEN_API_KEY: str = ""
     DASHSCOPE_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     QWEN_MODEL: str = "qwen-max"
+    # V21：embedding 独立凭证（空 = 回落 QWEN_API_KEY/DASHSCOPE_BASE_URL）——
+    # 支持 chat 与 embedding 使用不同 LLM 提供商（向量空间绑定原提供商，不可混用）
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = ""
 
     # ---- 日志 ----
     LOG_LEVEL: str = "INFO"
