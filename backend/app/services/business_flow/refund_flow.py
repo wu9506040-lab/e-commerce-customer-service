@@ -211,9 +211,13 @@ class RefundFlow:
         order_no: Optional[str] = None,
         context_block: str = "",
         history: Optional[list[dict]] = None,
+        session_id: Optional[str] = None,
     ) -> None:
         self.query = query
         self.user_id = user_id
+        # V20 亮点1：会话维度（有 session_id 才允许 checkpoint 续跑；
+        # 测试/无会话调用走一次性轨迹——只审计，不 resume，避免跨用例串状态）
+        self.session_id = session_id
         self.intent_result = intent_result
         self.order_no = order_no
         self.context_block = context_block
@@ -417,7 +421,33 @@ class RefundFlow:
         # 前端可订阅 flow_stage 实现阶段指示器（"正在决策 → 召回政策 → 生成回复"）
         decide_result_emitted = False
         try:
-            for event in refund_graph_app.stream(initial_state, stream_mode="updates"):
+            # V20 亮点1：Agent 状态持久化——同用户同订单共享一条 thread 轨迹。
+            # 轨迹未完成（进程中断等）时用 resume 语义续跑，而不是重头再决策；
+            # checkpointer 未启用（type=none / 初始化失败）时保持旧行为。
+            from app.core.agent_checkpointer import build_thread_id, get_checkpointer
+
+            thread_config = None
+            unfinished = False
+            if get_checkpointer() is not None:
+                thread_config = {"configurable": {"thread_id": build_thread_id(
+                    self.session_id, self.user_id, effective_order_no, self.query,
+                )}}
+                try:
+                    snap = refund_graph_app.get_state(thread_config)
+                    unfinished = bool(snap.next)  # next 非空 = 图未走到 END
+                    if unfinished:
+                        logger.warning(
+                            "[refund_flow] 检测到未完成轨迹 thread=%s，从断点续跑",
+                            thread_config["configurable"]["thread_id"],
+                        )
+                except Exception:  # noqa: BLE001 —— 状态查询失败不阻塞主流程
+                    logger.exception("[refund_flow] checkpoint 状态查询失败，按新流程执行")
+
+            for event in refund_graph_app.stream(
+                None if unfinished else initial_state,
+                config=thread_config,
+                stream_mode="updates",
+            ):
                 for node_name, state_update in event.items():
                     if node_name.startswith("__"):
                         continue

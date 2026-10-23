@@ -52,6 +52,7 @@ from app.services import profile_service
 
 from app.services.chat import prompt_assembler, stream_dispatcher
 from app.services.chat.refund_handler import handle_refund_v2, handle_refund_v3
+from app.services.agents.registry import AgentContext, get_expert  # V21 M3-1
 # M14 Stage 5：audit 上报（5 个 resolver action 路径全留痕）
 from app.services.audit_service import try_log_action
 # M14 Stage 3：BusinessFlow 抽象（仅 refund_query 接入；其他 intent 暂不抽象）
@@ -332,67 +333,33 @@ class Synthesizer:
             })
             return
         try:
-            if primary == "order_query":
-                metrics.inc_chat(primary, v3_engine="-")  # M8
-                # M9.5：传 order_no 让 order_query 优先用跳转来的订单
-                # M14：传 session_id 让 OrderContextResolver 加载会话上下文
-                # V12：传 secondary_intent_block 注入 prompt
-                dispatch_gen = Synthesizer._handle_order(
-                    query, user_id, intent_result,
-                    order_no=order_no, context_block=context_block,
-                    session_id=session_id, secondary_intent_block=secondary_intent_block,
+            # V21 M3-1：多 Agent 协作制——意图 → 意图域专家实体（AgentProtocol）
+            # 分派决策收敛到专家（RefundAgent 内含 xianyu/Flow/V3/V2 四路），
+            # orchestrator 只负责组装上下文与事件流透传；行为与原 if/elif 等价。
+            _expert = get_expert(primary)
+            if _expert is None:
+                # 兜底：未注册意图按 policy 专家处理（保持旧行为）
+                logger.warning(f"intent {primary!r} 无注册专家，回落 policy_expert", extra={"intent": primary})
+                _expert = get_expert("policy_query")
+            _ctx = AgentContext(
+                query=query, user_id=user_id, intent_result=intent_result,
+                session_id=session_id, order_no=order_no, sku=sku,
+                context_block=context_block, history=history,
+                secondary_intent_block=secondary_intent_block,
+                search_queries=search_queries, channel=channel, buyer_unb=buyer_unb or "",
+            )
+            _expert.refine(_ctx)  # 转交钩子 v1：专家可重定向意图（redirect_intent）
+            if _ctx.redirect_intent and _ctx.redirect_intent != primary:
+                logger.info(
+                    f"agent handoff: {primary} → {_ctx.redirect_intent}",
+                    extra={"intent": primary, "handoff": _ctx.redirect_intent},
                 )
-            elif primary == "refund_query":
-                # V16.8 P0-A：channel=xianyu 走闲鱼 refund_handler（避免商城的
-                # OrderService → ASK_LOGIN 拦截把咸鱼买家挡在外面）
-                # 设计原则：智能客服不操作退款，XianyuRefundHandler 直接读
-                # xianyu_orders 表 + 转人工/拒绝/无订单记录 三个分支
-                if channel == "xianyu":
-                    logger.info(
-                        "refund_query → xianyu (P0-A channel branch)",
-                        extra={"intent": primary, "channel": "xianyu"},
-                    )
-                    metrics.inc_chat(primary, v3_engine="xianyu")  # M8：xianyu 路径独立计数
-                    dispatch_gen = handle_xianyu_refund(
-                        query=query,
-                        buyer_unb=buyer_unb or "",
-                        intent_result=intent_result,
-                    )
-                else:
-                    # M14 Stage 3：BusinessFlow 抽象（灰度 ENABLE_BUSINESS_FLOW=True 时走 RefundFlow）
-                    # RefundFlow 包装 V3 LangGraph + yield flow_stage meta；与 handle_refund_v3 行为兼容
-                    flow = create_business_flow(
-                        intent="refund_query",
-                        query=query,
-                        user_id=user_id,
-                        intent_result=intent_result,
-                        order_no=order_no,
-                        context_block=context_block,
-                        history=history,
-                    )
-                    if flow is not None:
-                        logger.info(
-                            f"refund_query → {flow.name}",
-                            extra={"intent": primary, "flow": flow.name},
-                        )
-                        metrics.inc_chat(primary, v3_engine="flow")  # M8：Flow 路径独立计数
-                        dispatch_gen = flow.run()
-                    elif settings.USE_LANGGRAPH_REFUND:
-                        # 灰度关闭 Flow → V3/V2 二选一
-                        logger.info("refund_query → LangGraph V3", extra={"intent": primary})
-                        metrics.inc_chat(primary, v3_engine="v3")  # M8
-                        dispatch_gen = handle_refund_v3(query, user_id, intent_result, order_no=order_no, context_block=context_block, history=history, secondary_intent_block=secondary_intent_block)
-                    else:
-                        metrics.inc_chat(primary, v3_engine="v2")  # M8
-                        dispatch_gen = handle_refund_v2(query, user_id, intent_result, order_no=order_no, context_block=context_block, secondary_intent_block=secondary_intent_block)
-            elif primary == "product_query":
-                metrics.inc_chat(primary, v3_engine="-")  # M8
-                # V12：传 secondary_intent_block 注入 prompt
-                dispatch_gen = Synthesizer._handle_product(query, intent_result, history, sku=sku, context_block=context_block, search_queries=search_queries, secondary_intent_block=secondary_intent_block)
-            else:  # policy_query
-                metrics.inc_chat(primary, v3_engine="-")  # M8
-                # V12：传 secondary_intent_block 注入 prompt
-                dispatch_gen = Synthesizer._handle_policy(query, intent_result, history, context_block=context_block, search_queries=search_queries, secondary_intent_block=secondary_intent_block)
+                metrics.inc_agent_handoff(primary, _ctx.redirect_intent)
+                _redirected = get_expert(_ctx.redirect_intent)
+                if _redirected is not None:
+                    primary = _ctx.redirect_intent
+                    _expert = _redirected
+            dispatch_gen = _expert.dispatch(_ctx)
 
             yielded_token = False
             try:

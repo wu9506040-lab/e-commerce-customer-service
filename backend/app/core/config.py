@@ -279,6 +279,14 @@ class Settings(BaseSettings):
     # 流式并发闸（stream_dispatcher._LLM_SEMAPHORE）：容量与排队等待上限
     LLM_SEMAPHORE_SIZE: int = 10
     LLM_SEMAPHORE_ACQUIRE_TIMEOUT: float = 15.0
+    # Agent 记忆持久化（V20 亮点1）：refund_graph 状态落盘，进程重启可恢复可审计
+    AGENT_CHECKPOINTER_TYPE: str = "sqlite"   # sqlite | memory | none
+    AGENT_CHECKPOINTER_DB: str = "data/agent_checkpoints.sqlite3"
+    # Agent 决策追踪（V20 亮点3）：一轮一行 JSONL，业务价值指标（亮点4）的数据源
+    AGENT_TRACE_ENABLED: bool = True
+    AGENT_TRACE_DIR: str = "data/agent_traces"
+    # 受控写操作审批门控（V20 亮点2）：确认票据 TTL（秒），过期需重新确认
+    AGENT_TICKET_TTL_SECONDS: int = 600
 
 
 settings = Settings()

@@ -227,6 +227,11 @@ async def chat(
             sku=payload.sku, order_no=payload.order_no,
         )
 
+        # V20 亮点3：Agent 决策追踪——一轮一条 JSONL（亮点4 业务指标的来源）
+        from app.services.chat.agent_trace import AgentTrace
+
+        agent_trace = AgentTrace(session_id, user_id, getattr(payload, "channel", None), payload.query)
+
         # M11：InputGuard 3 层防御（在最早期拦住垃圾/闲聊/重复，省 LLM token）
         # V16.3.3 修正：channel=xianyu 时 bypass guard（已注入 BuyerProfile + ItemPrompt，guard 误判率高）
         is_xianyu = getattr(payload, "channel", None) == "xianyu"
@@ -267,6 +272,7 @@ async def chat(
                 f"/chat guard blocked: layer={guard_result.layer} "
                 f"reason={guard_result.reason} {user_ctx}"
             )
+            agent_trace.flush("blocked")
             return
 
         # M14 V3+：P0 高风险关键词检测（投诉/赔付/质量/主动要人工）
@@ -318,6 +324,8 @@ async def chat(
                 f"/chat handoff (P0 {p0_category}): handoff_id={handoff_payload.handoff_id} "
                 f"kw={p0_keyword} session={session_id[:12]}... {user_ctx}"
             )
+            agent_trace.mark("degraded", True)
+            agent_trace.flush("handoff_p0")
             return
 
         # M14 V3：转人工关键词检测（在 IntentService.classify 之前，跳过 LLM 调用）
@@ -354,6 +362,8 @@ async def chat(
                 f"/chat handoff (user_requested): handoff_id={handoff_payload.handoff_id} "
                 f"session={session_id[:12]}... {user_ctx}"
             )
+            agent_trace.mark("degraded", True)
+            agent_trace.flush("handoff_user")
             return
 
         # M13.1：refund_query 不进缓存（meta refundable/reason 是 order 相关的，不能复用）
@@ -466,6 +476,9 @@ async def chat(
                 detail={"query_len": len(payload.query), "answer_len": len(cached_answer)},
             )
             logger.info(f"/chat cache hit: session={session_id[:12]}... {user_ctx}")
+            agent_trace.mark("cache_hit", True)
+            agent_trace.mark("intent_method", "cache_hit")
+            agent_trace.flush("cache_hit")
             return
 
         full_answer = ""
@@ -543,6 +556,7 @@ async def chat(
                 if event_type == "_intent":
                     # V13(2.3)：意图快照内部事件——chat 消费，不外发 SSE
                     intent_snap = data
+                    agent_trace.mark_intent(data)
                     continue
                 elif event_type == "meta":
                     seq += 1
@@ -554,6 +568,9 @@ async def chat(
                         meta_payload.setdefault("intent_confidence", intent_snap.get("confidence"))
                         if intent_snap.get("upgraded"):
                             meta_payload["intent_upgraded"] = True
+                    # V20 亮点3：人工接管/升级事件 → degraded 标记
+                    if meta_payload.get("intent") == "handoff" or meta_payload.get("handoff"):
+                        agent_trace.mark("degraded", True)
                     contexts = meta_payload.get("contexts", [])
                     scores = meta_payload.get("scores", [])
                     yield _sse_format({"type": "meta", **meta_payload}, seq=seq)
@@ -667,6 +684,7 @@ async def chat(
                     metrics.record_chat_latency(
                         round((time.perf_counter() - chat_start) * 1000, 1)
                     )
+                    agent_trace.flush("ok")
                     logger.info(
                         f"/chat stream done: session={session_id[:12]}..., "
                         f"answer_len={len(full_answer)}, hits={len(contexts)} {user_ctx}"
@@ -690,10 +708,12 @@ async def chat(
             except Exception as e:
                 logger.warning(f"checkpoint 同步落盘失败: {e}")
             # 不再 yield（连接已断，yield 无效）
+            agent_trace.flush("cancelled")
             raise
         except ValueError as e:
             error_msg = str(e)
             logger.error(f"/chat stream 参数错误: {error_msg} {user_ctx}")
+            agent_trace.flush("error", error_type="ValueError")
             yield _sse_format({"type": "error", "message": error_msg})
             yield _sse_format({"type": "closed"})
         except Exception as e:
@@ -701,6 +721,7 @@ async def chat(
             logger.exception(
                 f"/chat stream 调用失败: session={session_id[:12]}... {user_ctx}"
             )
+            agent_trace.flush("error", error_type=type(e).__name__)
             yield _sse_format({"type": "error", "message": error_msg})
             yield _sse_format({"type": "closed"})
 

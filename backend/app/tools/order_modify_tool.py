@@ -27,6 +27,8 @@ from app.services.order_modify.protocols import OrderModifyService
 
 logger = logging.getLogger(__name__)
 
+from app.services.agent_gating import get_approval_gate  # V20 亮点2：写操作审批票据
+
 
 # =============================================================
 # 确认机制（统一 helper · spec §2.3）
@@ -85,7 +87,21 @@ class OrderModifyTool:
         action_desc = f"将订单 {order_no} 的收货地址改为「{new_address}」"
         confirmation = _check_confirmation(confirmed, action_desc)
         if confirmation is not None:
+            confirmation["ticket"] = get_approval_gate().request(
+                "order_modify.address", user_id,
+                {"order_no": order_no, "new_address": new_address},
+            )
             return confirmation
+
+        # Step 1.5: V20 亮点2 审批票据校验+消费（幂等：同票据不可二次执行）
+        from app.services.agent_gating import get_approval_gate as _g
+        ok, reason = _g().verify_and_consume(
+            "order_modify.address", user_id,
+            {"order_no": order_no, "new_address": new_address},
+        )
+        if not ok:
+            return {"error": f"write_gated: {reason}",
+                    "hint": "请先走确认流程重新发起（需重新生成审批票据）"}
 
         # Step 2: 调 Service 写
         try:
@@ -128,7 +144,20 @@ class OrderModifyTool:
         action_desc = f"将订单 {order_no} 的 SKU={sku} {qty_desc}"
         confirmation = _check_confirmation(confirmed, action_desc)
         if confirmation is not None:
+            confirmation["ticket"] = get_approval_gate().request(
+                "order_modify.item_spec", user_id,
+                {"order_no": order_no, "sku": sku, "new_qty": new_qty},
+            )
             return confirmation
+
+        from app.services.agent_gating import get_approval_gate as _g
+        ok, reason = _g().verify_and_consume(
+            "order_modify.item_spec", user_id,
+            {"order_no": order_no, "sku": sku, "new_qty": new_qty},
+        )
+        if not ok:
+            return {"error": f"write_gated: {reason}",
+                    "hint": "请先走确认流程重新发起（需重新生成审批票据）"}
 
         try:
             svc: OrderModifyService = (
@@ -167,7 +196,18 @@ class OrderModifyTool:
         action_desc = f"合并订单 {order_list_str}"
         confirmation = _check_confirmation(confirmed, action_desc)
         if confirmation is not None:
+            confirmation["ticket"] = get_approval_gate().request(
+                "order_modify.merge", user_id, {"order_nos": order_nos},
+            )
             return confirmation
+
+        from app.services.agent_gating import get_approval_gate as _g
+        ok, reason = _g().verify_and_consume(
+            "order_modify.merge", user_id, {"order_nos": order_nos},
+        )
+        if not ok:
+            return {"error": f"write_gated: {reason}",
+                    "hint": "请先走确认流程重新发起（需重新生成审批票据）"}
 
         try:
             svc: OrderModifyService = (
