@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS delivery_records (
     sku TEXT NOT NULL,
     card_secret TEXT NOT NULL,
     ticket_id TEXT NOT NULL,                -- 审批票据回链（V20 亮点2）
-    delivered_at INTEGER NOT NULL
+    delivered_at INTEGER NOT NULL,
+    steps_json TEXT                         -- V21-P0.2：履约时间线（决策链快照）
 );
 """
 
@@ -120,19 +121,43 @@ class DeliveryService:
         logger.info("[delivery] order=%s sku=%s 已发货 ticket=%s", order_no, sku, ticket_id)
         return {"status": "delivered", "card_secret": secret, "duplicate": False}
 
+    def _ensure_steps_column(self) -> None:
+        """旧库懒迁移：delivery_records 补 steps_json 列（幂等）。"""
+        with self._conn() as c:
+            cols = {r[1] for r in c.execute("PRAGMA table_info(delivery_records)")}
+            if "steps_json" not in cols:
+                c.execute("ALTER TABLE delivery_records ADD COLUMN steps_json TEXT")
+
+    def save_timeline(self, order_no: str, steps: list[dict], latency_ms: float) -> None:
+        """V21-P0.2：持久化履约决策链快照（列表/详情页展示用）。"""
+        self._ensure_steps_column()
+        with self._conn() as c:
+            c.execute(
+                "UPDATE delivery_records SET steps_json=? WHERE order_no=?",
+                (json.dumps({"steps": steps, "latency_ms": latency_ms}, ensure_ascii=False), order_no),
+            )
+
     def get_record(self, order_no: str) -> Optional[dict]:
+        self._ensure_steps_column()
         with self._conn() as c:
             row = c.execute(
-                "SELECT order_no, sku, card_secret, delivered_at "
+                "SELECT order_no, sku, card_secret, delivered_at, steps_json "
                 "FROM delivery_records WHERE order_no=?",
                 (order_no,),
             ).fetchone()
         if row is None:
             return None
-        return {
+        rec = {
             "order_no": row[0], "sku": row[1],
             "card_secret": row[2], "delivered_at": row[3],
         }
+        if row[4]:
+            try:
+                rec.update(json.loads(row[4]))
+                rec["status"] = "delivered"
+            except (TypeError, ValueError):
+                pass
+        return rec
 
 
 def get_delivery_service() -> DeliveryService:

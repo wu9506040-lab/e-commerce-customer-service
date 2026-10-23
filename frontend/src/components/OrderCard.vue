@@ -117,6 +117,7 @@ const actionDef = computed<ActionDef | null>(() => {
       return { key: 'pay', label: '立即付款', cls: 'btn-primary', available: true };
     case 'paid':
       // demo 用：让用户自己点发货（真实流程由商家操作）
+      if ((props.order as any).auto_delivery) return null; // V21-P0.2：已自动发货
       return { key: 'ship', label: '模拟发货', cls: 'btn-primary', available: true };
     case 'shipped':
       return { key: 'confirm', label: '确认签收', cls: 'btn-primary', available: true };
@@ -128,6 +129,13 @@ const actionDef = computed<ActionDef | null>(() => {
     default:
       return null;
   }
+});
+
+// V21-P0.2：虚拟商品自动履约记录（列表 summary 或详情接口携带）
+const autoDelivery = computed(() => {
+  const fromList = (props.order as any).auto_delivery as Record<string, unknown> | null | undefined;
+  const fromDetail = (detail.value as any)?.auto_delivery as Record<string, unknown> | null | undefined;
+  return fromList ?? fromDetail ?? null;
 });
 
 const acting = ref(false);
@@ -190,6 +198,9 @@ function onRefundCancel() {
       <span :class="['status-badge', statusMeta(order.status).cls]">
         {{ statusMeta(order.status).label }}
       </span>
+      <span v-if="autoDelivery && autoDelivery.status === 'delivered'" class="ad-badge">
+        🤖 Agent 已自动发货
+      </span>
     </header>
 
     <!-- list 模式：简略 -->
@@ -204,6 +215,22 @@ function onRefundCancel() {
       </div>
       <div class="order-row time">
         <span>下单时间 {{ formatTime(order.create_time) }}</span>
+      </div>
+      <!-- V21-P0.2：Agent 自动发货时间线 -->
+      <div v-if="autoDelivery" class="ad-panel">
+        <div class="ad-title">
+          Agent 自动履约 · {{ autoDelivery.policy === 'merchant_preauthorized' ? '商家预授权策略' : autoDelivery.policy }}
+          <span class="ad-latency">{{ autoDelivery.latency_ms }}ms</span>
+        </div>
+        <ol class="ad-steps">
+          <li v-for="(st, i) in (autoDelivery.steps || [])" :key="i" :class="{ fail: !st.ok }">
+            <span class="ad-dot">{{ st.ok ? '✓' : '✕' }}</span>{{ st.name }} — {{ st.detail }}
+          </li>
+        </ol>
+        <div v-if="autoDelivery.card_secret" class="ad-card">
+          卡密：<code>{{ autoDelivery.card_secret }}</code>
+          <span class="ad-hint">（已写入交付记录，重复发货会被幂等拦截）</span>
+        </div>
       </div>
       <div v-if="actionError" class="action-error">{{ actionError }}</div>
       <div class="order-actions">
@@ -466,4 +493,19 @@ function onRefundCancel() {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+</style>
+<style scoped>
+/* V21-P0.2 auto-delivery badge & timeline */
+.ad-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--jd-red-light); color: var(--jd-red); border: 1px solid var(--glass-brd); font-weight: 600; }
+.ad-panel { margin-top: 8px; padding: 10px 12px; background: var(--gray-100); border: 1px dashed var(--glass-brd); border-radius: var(--radius-sm); font-size: 13px; }
+.ad-title { font-weight: 600; color: var(--gray-900); display: flex; gap: 8px; align-items: center; }
+.ad-latency { margin-left: auto; font-weight: 400; color: var(--gray-500); font-size: 12px; }
+.ad-steps { margin: 6px 0 0; padding-left: 4px; list-style: none; display: grid; gap: 4px; }
+.ad-steps li { display: flex; gap: 6px; align-items: baseline; color: var(--gray-700); }
+.ad-steps li.fail { color: var(--jd-red); }
+.ad-dot { color: var(--ok); font-weight: 700; }
+.ad-steps li.fail .ad-dot { color: var(--jd-red); }
+.ad-card { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--glass-brd); color: var(--gray-900); }
+.ad-card code { font-size: 13px; background: var(--gray-0); padding: 2px 6px; border-radius: 4px; }
+.ad-hint { margin-left: 8px; font-size: 12px; color: var(--gray-500); }
 </style>
