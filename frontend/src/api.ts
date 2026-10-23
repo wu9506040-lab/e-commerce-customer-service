@@ -52,7 +52,19 @@ export async function http<T>(
     let detail = `HTTP ${res.status}`;
     try {
       const body = await res.json();
-      detail = body.detail ?? detail;
+      // FastAPI 422 的 detail 是数组 [{loc,msg,...}]，需转成可读文案
+      const d = body.detail;
+      if (typeof d === 'string') detail = d;
+      else if (Array.isArray(d) && d.length > 0) {
+        const first = d[0] ?? {};
+        const field = Array.isArray(first.loc) ? String(first.loc[first.loc.length - 1]) : '';
+        const msg = String(first.msg ?? '参数校验失败');
+        detail = field ? `${field}: ${msg}` : msg;
+        if (detail.includes('min_length') || detail.includes('at least')) detail = '密码至少 8 位';
+        if (detail.includes('pattern') || detail.includes('username')) detail = '用户名只能用字母、数字、下划线（3-64 位）';
+      } else if (d && typeof d === 'object') {
+        detail = JSON.stringify(d);
+      }
     } catch {
       /* ignore */
     }
@@ -320,7 +332,19 @@ export async function* streamChat(
     let detail = `HTTP ${res.status}`;
     try {
       const body = await res.json();
-      detail = body.detail ?? detail;
+      // FastAPI 422 的 detail 是数组 [{loc,msg,...}]，需转成可读文案
+      const d = body.detail;
+      if (typeof d === 'string') detail = d;
+      else if (Array.isArray(d) && d.length > 0) {
+        const first = d[0] ?? {};
+        const field = Array.isArray(first.loc) ? String(first.loc[first.loc.length - 1]) : '';
+        const msg = String(first.msg ?? '参数校验失败');
+        detail = field ? `${field}: ${msg}` : msg;
+        if (detail.includes('min_length') || detail.includes('at least')) detail = '密码至少 8 位';
+        if (detail.includes('pattern') || detail.includes('username')) detail = '用户名只能用字母、数字、下划线（3-64 位）';
+      } else if (d && typeof d === 'object') {
+        detail = JSON.stringify(d);
+      }
     } catch {
       /* ignore */
     }
@@ -447,7 +471,19 @@ export async function* resumeChat(
     let detail = `HTTP ${res.status}`;
     try {
       const body = await res.json();
-      detail = body.detail ?? detail;
+      // FastAPI 422 的 detail 是数组 [{loc,msg,...}]，需转成可读文案
+      const d = body.detail;
+      if (typeof d === 'string') detail = d;
+      else if (Array.isArray(d) && d.length > 0) {
+        const first = d[0] ?? {};
+        const field = Array.isArray(first.loc) ? String(first.loc[first.loc.length - 1]) : '';
+        const msg = String(first.msg ?? '参数校验失败');
+        detail = field ? `${field}: ${msg}` : msg;
+        if (detail.includes('min_length') || detail.includes('at least')) detail = '密码至少 8 位';
+        if (detail.includes('pattern') || detail.includes('username')) detail = '用户名只能用字母、数字、下划线（3-64 位）';
+      } else if (d && typeof d === 'object') {
+        detail = JSON.stringify(d);
+      }
     } catch {
       /* ignore */
     }

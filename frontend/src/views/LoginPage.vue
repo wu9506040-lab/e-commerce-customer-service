@@ -78,7 +78,7 @@ async function onRegister() {
     return;
   }
   if (password.value.length < 6) {
-    error.value = '密码至少 6 位';
+    error.value = '密码至少 8 位';
     return;
   }
   if (password.value !== passwordConfirm.value) {
@@ -183,7 +183,7 @@ onMounted(async () => {
           <label>密码</label>
           <input
             v-model="password"
-            type="password"
+            type="password" minlength="8"
             placeholder="请输入密码"
             autocomplete="current-password"
             required
@@ -228,7 +228,7 @@ onMounted(async () => {
           <label>密码 <em>*</em></label>
           <input
             v-model="password"
-            type="password"
+            type="password" minlength="8"
             placeholder="至少 6 位"
             autocomplete="new-password"
             required
@@ -239,7 +239,7 @@ onMounted(async () => {
           <label>确认密码 <em>*</em></label>
           <input
             v-model="passwordConfirm"
-            type="password"
+            type="password" minlength="8"
             placeholder="再输入一次"
             autocomplete="new-password"
             required
