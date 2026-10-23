@@ -229,7 +229,7 @@ onMounted(async () => {
           <input
             v-model="password"
             type="password" minlength="8"
-            placeholder="至少 6 位"
+            placeholder="至少 8 位"
             autocomplete="new-password"
             required
             :disabled="loading"
