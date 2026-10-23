@@ -156,10 +156,20 @@ def main() -> int:
     args = parser.parse_args()
 
     import app.services.intent_service as intent_mod
+    from app.services.eval.golden_manifest import verify_manifest
 
     root = Path(__file__).resolve().parents[1]
     cases_path = Path(args.cases) if args.cases else root / "data" / "eval_multiturn_v1.json"
     cases = load_cases(cases_path)
+
+    # V21-EV 治理：评测前校验黄金集未被篡改（MANIFEST 缺失则警告放行，首次使用前先 freeze）
+    ok, violations = verify_manifest(root)
+    if not ok:
+        print("[blocked] 黄金集校验失败——评测结果不可信，拒绝评测：")
+        for v in violations:
+            print(f"  - {v}")
+        print("[fix] python scripts/eval_freeze.py --verify 排查；确为合法变更则走 --freeze 发版")
+        return 1
 
     t0 = time.perf_counter()
     results = [eval_case_offline(c, intent_mod) for c in cases]
