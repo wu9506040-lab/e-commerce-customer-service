@@ -1,4 +1,13 @@
 <script setup lang="ts">
+
+// V21-P0.2：真实商品图优先（.png），加载失败回落插画（.svg）
+function coverSrc(p: { cover_url: string }) {
+  return p.cover_url.replace(/\.svg$/, '.png');
+}
+function coverFallback(e: Event, p: { cover_url: string }) {
+  const img = e.target as HTMLImageElement;
+  if (!img.dataset.fb) { img.dataset.fb = '1'; img.src = p.cover_url; }
+}
 /**
  * 商品详情页（京东风）
  * 左侧大图 + 右侧名称/价格/规格/描述/CTA
@@ -132,13 +141,13 @@ function openProduct(s: string) {
         <!-- 左：商品图 -->
         <div class="left">
           <div class="cover">
-            <img :src="product.cover_url" :alt="product.name" />
+            <img :src="coverSrc(product)" :alt="product.name" @error="coverFallback($event, product)" />
           </div>
           <div class="thumbs">
-            <div class="thumb active"><img :src="product.cover_url" /></div>
-            <div class="thumb"><img :src="product.cover_url" /></div>
-            <div class="thumb"><img :src="product.cover_url" /></div>
-            <div class="thumb"><img :src="product.cover_url" /></div>
+            <div class="thumb active"><img :src="coverSrc(product)" @error="coverFallback($event, product)" /></div>
+            <div class="thumb"><img :src="coverSrc(product)" @error="coverFallback($event, product)" /></div>
+            <div class="thumb"><img :src="coverSrc(product)" @error="coverFallback($event, product)" /></div>
+            <div class="thumb"><img :src="coverSrc(product)" @error="coverFallback($event, product)" /></div>
           </div>
         </div>
 
@@ -214,7 +223,7 @@ function openProduct(s: string) {
             class="related-item"
             @click="openProduct(p.sku)"
           >
-            <div class="related-cover"><img :src="p.cover_url" /></div>
+            <div class="related-cover"><img :src="coverSrc(p)" @error="coverFallback($event, p)" /></div>
             <div class="related-name">{{ p.name }}</div>
             <div class="related-price">¥{{ p.price.toLocaleString('zh-CN') }}</div>
           </div>
