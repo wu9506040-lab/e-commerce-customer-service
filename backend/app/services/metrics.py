@@ -67,6 +67,7 @@ class Metrics:
         self.chat_total = 0
         self.chat_by_intent: Dict[str, int] = {}
         self.chat_by_v3_engine: Dict[str, int] = {}
+        self.agent_handoffs: Dict[str, int] = {}  # V21 M3-1：专家转交计数 "from->to"
         self.chat_latency_ms: Deque[float] = deque(maxlen=self.LATENCY_WINDOW)
         self.chat_answer_tokens_total = 0
         self.chat_retrieve_hits_sum = 0  # 求和，snapshot 算 avg
@@ -212,6 +213,12 @@ class Metrics:
     def record_chat_latency(self, latency_ms: float) -> None:
         with self._lock:
             self.chat_latency_ms.append(latency_ms)
+
+    def inc_agent_handoff(self, from_intent: str, to_intent: str) -> None:
+        """V21 M3-1：专家 Agent 间转交计数（可观测转交率）"""
+        with self._lock:
+            key = f"{from_intent}->{to_intent}"
+            self.agent_handoffs[key] = self.agent_handoffs.get(key, 0) + 1
 
     def record_answer_tokens(self, n: int) -> None:
         with self._lock:

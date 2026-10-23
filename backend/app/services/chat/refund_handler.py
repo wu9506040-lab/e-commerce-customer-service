@@ -245,6 +245,7 @@ def handle_refund_v3(
     context_block: str = "",
     history: Optional[list[dict]] = None,
     secondary_intent_block: str = "",  # V12：V3 路径暂不注入（RefundFlow 改造留 V13）
+    session_id: Optional[str] = None,  # V20 亮点1：透传给 RefundFlow 做 checkpoint thread
 ) -> Generator[Tuple[str, Any], None, None]:
     """refund_query V3：委托 RefundFlow.run()（M14 V3 重构）。
 
@@ -277,5 +278,6 @@ def handle_refund_v3(
         order_no=order_no,
         context_block=context_block,
         history=history,
+        session_id=session_id,
     )
     yield from flow.run()

@@ -146,7 +146,13 @@ def test_merge_orders_unconfirmed_returns_needs_confirmation(mock_svc):
 # #6 merge_orders · confirmed=True → 调 Service
 # =============================================================
 def test_merge_orders_confirmed_executes_service(mock_svc):
-    """#6 confirmed=True → 调 Service → MergeResult.model_dump()"""
+    """#6 confirmed=True → 调 Service → MergeResult.model_dump()
+
+    V20 亮点2：写操作带审批票据——先走 unconfirmed 申请票据（同参数），
+    再 confirmed=True 消费。票据幂等键绑定参数，参数不同即无票可消费。
+    """
+    from app.services.agent_gating import get_approval_gate
+    get_approval_gate().request("order_modify.merge", 1001, {"order_nos": ["ORD001", "ORD002"]})
     result = OrderModifyTool.merge_orders(1001, ["ORD001", "ORD002"], confirmed=True)
     assert result["success"] is True
     assert result["primary_order_no"] == "ORD001"

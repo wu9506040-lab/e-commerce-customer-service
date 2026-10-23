@@ -26,9 +26,9 @@ def _collect(gen):
 # =============================================================
 class TestRefundChannelBranch:
 
-    @patch("app.services.chat.orchestrator.handle_xianyu_refund")
-    @patch("app.services.chat.orchestrator.handle_refund_v3")
-    @patch("app.services.chat.orchestrator.handle_refund_v2")
+    @patch("app.services.xianyu.orchestrator_bridge.handle_xianyu_refund")
+    @patch("app.services.chat.refund_handler.handle_refund_v3")
+    @patch("app.services.chat.refund_handler.handle_refund_v2")
     def test_xianyu_channel_routes_to_bridge(self, mock_v2, mock_v3, mock_bridge):
         """channel=xianyu → handle_xianyu_refund, 不调 v2/v3"""
         from app.services.chat.orchestrator import Synthesizer
@@ -73,8 +73,8 @@ class TestRefundChannelBranch:
         assert any(e[1].get("channel") == "xianyu" for e in meta_events), \
             "meta 事件必须含 channel=xianyu"
 
-    @patch("app.services.chat.orchestrator.handle_xianyu_refund")
-    @patch("app.services.chat.orchestrator.handle_refund_v3")
+    @patch("app.services.xianyu.orchestrator_bridge.handle_xianyu_refund")
+    @patch("app.services.chat.refund_handler.handle_refund_v3")
     def test_web_channel_routes_to_v3(self, mock_v3, mock_bridge):
         """channel=web（或 None）→ 走商城 V3（不调 xianyu bridge）"""
         from app.services.chat.orchestrator import Synthesizer
@@ -98,6 +98,8 @@ class TestRefundChannelBranch:
             },
         ):
             with patch.object(__import__("app.core.config", fromlist=["settings"]).settings,
+                              "ENABLE_BUSINESS_FLOW", False):
+              with patch.object(__import__("app.core.config", fromlist=["settings"]).settings,
                               "USE_LANGGRAPH_REFUND", True):
                 events = _collect(Synthesizer.run_stream(
                     "我要退款",
@@ -110,8 +112,8 @@ class TestRefundChannelBranch:
         assert not mock_bridge.called, "channel=web 不应该调 xianyu bridge"
         assert any(e[1].get("v3_engine") == "v3" for e in events if e[0] == "meta")
 
-    @patch("app.services.chat.orchestrator.handle_xianyu_refund")
-    @patch("app.services.chat.orchestrator.handle_refund_v3")
+    @patch("app.services.xianyu.orchestrator_bridge.handle_xianyu_refund")
+    @patch("app.services.chat.refund_handler.handle_refund_v3")
     def test_none_channel_defaults_to_v3(self, mock_v3, mock_bridge):
         """channel=None → 向后兼容走商城 V3"""
         from app.services.chat.orchestrator import Synthesizer
@@ -134,6 +136,8 @@ class TestRefundChannelBranch:
             },
         ):
             with patch.object(__import__("app.core.config", fromlist=["settings"]).settings,
+                              "ENABLE_BUSINESS_FLOW", False):
+              with patch.object(__import__("app.core.config", fromlist=["settings"]).settings,
                               "USE_LANGGRAPH_REFUND", True):
                 _collect(Synthesizer.run_stream(
                     "我要退款", user_id=42,

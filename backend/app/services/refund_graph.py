@@ -855,7 +855,11 @@ def build_refund_graph():
     workflow.add_edge("synthesize", END)
     workflow.add_edge("escalate", END)
 
-    return workflow.compile()
+    # V20 亮点1：Agent 状态持久化——未完成流程可恢复、决策历史可审计。
+    # get_checkpointer() 返回 None 时（type=none/初始化失败）保持旧行为。
+    from app.core.agent_checkpointer import get_checkpointer
+
+    return workflow.compile(checkpointer=get_checkpointer())
 
 
 # 单例（应用启动时编译一次）

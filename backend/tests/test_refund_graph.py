@@ -14,6 +14,7 @@ tests/services/test_decide_node.py 全覆盖；本文件只测：
 不依赖 MySQL / Qdrant / LLM API，可独立运行。
 """
 import json
+import uuid
 from unittest.mock import patch
 
 import pytest
@@ -93,7 +94,7 @@ class TestRefundGraphPaths:
         ]
 
         from app.services.refund_graph import refund_graph_app
-        result = refund_graph_app.invoke(_base_state())
+        result = refund_graph_app.invoke(_base_state(), config={"configurable": {"thread_id": "t-" + str(uuid.uuid4())[:8]}})
 
         assert "可以退" in result["final_answer"]
         # 走 synthesize 路径不查政策
@@ -110,7 +111,7 @@ class TestRefundGraphPaths:
         mock_policy.search_policy.return_value = [{"text": "七天无理由退货规则..."}]
 
         from app.services.refund_graph import refund_graph_app
-        result = refund_graph_app.invoke(_base_state())
+        result = refund_graph_app.invoke(_base_state(), config={"configurable": {"thread_id": "t-" + str(uuid.uuid4())[:8]}})
 
         assert mock_policy.search_policy.called
         assert result["policy_docs"]
@@ -124,7 +125,7 @@ class TestRefundGraphPaths:
         ]
 
         from app.services.refund_graph import refund_graph_app
-        result = refund_graph_app.invoke(_base_state(query="我要投诉"))
+        result = refund_graph_app.invoke(_base_state(query="我要投诉"), config={"configurable": {"thread_id": "t-" + str(uuid.uuid4())[:8]}})
 
         # escalate 节点产 escalate_result，不产 final_answer
         assert "escalate_result" in result
@@ -150,7 +151,7 @@ class TestDecideRetryLoop:
         ]
 
         from app.services.refund_graph import refund_graph_app
-        result = refund_graph_app.invoke(_base_state())
+        result = refund_graph_app.invoke(_base_state(), config={"configurable": {"thread_id": "t-" + str(uuid.uuid4())[:8]}})
 
         assert "可以退" in result["final_answer"]
         assert mock_provider.return_value.chat.call_count == 3
@@ -166,7 +167,7 @@ class TestDecideRetryLoop:
         ]
 
         from app.services.refund_graph import refund_graph_app
-        result = refund_graph_app.invoke(_base_state())
+        result = refund_graph_app.invoke(_base_state(), config={"configurable": {"thread_id": "t-" + str(uuid.uuid4())[:8]}})
 
         assert mock_provider.return_value.chat.call_count == 3
         assert "escalate_result" in result
@@ -182,7 +183,7 @@ class TestDecideRetryLoop:
         ]
 
         from app.services.refund_graph import refund_graph_app
-        result = refund_graph_app.invoke(_base_state())
+        result = refund_graph_app.invoke(_base_state(), config={"configurable": {"thread_id": "t-" + str(uuid.uuid4())[:8]}})
 
         assert "可以退" in result["final_answer"]
         assert result.get("decide_retry_count") == 1
