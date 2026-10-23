@@ -360,6 +360,11 @@ class Synthesizer:
                     primary = _ctx.redirect_intent
                     _expert = _redirected
             dispatch_gen = _expert.dispatch(_ctx)
+            # V21 M3-2：双意图双专家协作——主专家答完补答次意图（灰度开关）
+            if getattr(settings, "ENABLE_DUAL_INTENT_DISPATCH", False):
+                from app.services.agents.coordinator import chain_with_secondary
+
+                dispatch_gen = chain_with_secondary(dispatch_gen, _ctx, primary)
 
             yielded_token = False
             try:
