@@ -20,6 +20,7 @@ refund 双轨制 V2/V3 逻辑在 chat.refund_handler。
 - refund_query 委托：经由 chat.refund_handler
 - intent 分派：本模块完成
 """
+import re
 import logging
 import re as _re
 from typing import Any, Generator, Optional, Tuple
@@ -833,6 +834,18 @@ class Synthesizer:
             card["resolved_order_no"] = result.effective_order_no
         return card
 
+    # V21：列表型问题 → 全量商品清单（此前整句 keyword 搜不到 → LLM 答"没有详细信息"）
+    _PRODUCT_LIST_PAT = re.compile(
+        r"(哪些产品|有哪些产品|有什么产品|卖什么|产品列表|商品列表|都卖|在售商品|有哪些商品)"
+    )
+
+    @classmethod
+    def _maybe_list_products(cls, query: str) -> Optional[list]:
+        """列表型问题返回全量在售商品；非列表型返回 None（走原 keyword 搜）。"""
+        if not cls._PRODUCT_LIST_PAT.search(query or ""):
+            return None
+        return ProductTool.list_products(limit=8)
+
     @staticmethod
     def _handle_product(
         query: str, intent_result: dict, history: Optional[list[dict]],
@@ -865,7 +878,14 @@ class Synthesizer:
         # 优先用 sku 实体精确查；查不到时回退到 keyword 搜（MySQL 里 SKU=SKU001，
         # 但商品 name 包含 ZP1，所以 keyword="ZP1" 能命中 SKU001）
         products = []
-        if effective_sku:
+        # V21 产品规则（店铺级 vs 商品级）：
+        # - 从商品详情页进入（effective_sku 存在）= 用户想咨询**这个品** → 单品优先，不做全量清单
+        # - 店铺入口泛问"你们有哪些产品"（无 sku）→ 返回全量在售清单（keyword 搜不出商品名）
+        if not effective_sku:
+            listed = Synthesizer._maybe_list_products(query)
+            if listed is not None:
+                products = listed
+        if not products and effective_sku:
             exact = ProductTool.get_by_sku(effective_sku)
             if exact:
                 products = [exact]
