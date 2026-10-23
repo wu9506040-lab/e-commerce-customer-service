@@ -312,14 +312,15 @@ class ReplyScheduler:
         is_tech = any(kw in t for kw in cls._TECH_KEYWORDS)
         parts = []
         if is_price:
-            # V18-P0.1：与 yaml"不二价框架"对齐——梯度走赠品加码而非降价
-            # （此前"价格梯度让步"与人设"不让价"打架，LLM 随机站队）
+            # V21 亮点6 接线：赠品梯度由 bargain_ladder 确定性引擎决策
+            # （V18-P0.1 不二价人设不变；硬编码 prompt 迁入引擎，LLM 只负责话术）
+            from app.services.xianyu.bargain_ladder import decide_gift_offer
+
+            _decision = decide_gift_offer(bargain_count or 1)
             parts.append(
-                "【议价模式】价格不让（不二价），用赠品补偿守价。梯度："
-                "第1次送数据线；第2次加 18W 充电头；第3次赠品拉满并促单"
-                "（拍下改价马上发）；出价过低果断拒绝，强调成色与价值。"
+                f"【议价模式】{_decision['instruction']}"
                 "简短直接，每句≤10字，总字数≤40字。"
-                + (f"当前是第{bargain_count}轮。" if bargain_count else "")
+                + (f"当前是第{_decision['round']}轮。" if bargain_count else "")
             )
         if is_tech:
             parts.append(

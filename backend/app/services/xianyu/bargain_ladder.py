@@ -8,11 +8,10 @@
   确定性规则；LLM 只负责把 decided 的价格说成人话。
 
 阶梯规则（默认，per-SKU 可覆盖）：
-  轮次 1：不让价（拒绝话术）
-  轮次 2：让 3%
-  轮次 3：让 5%
-  轮次 ≥4：底价托底（"问主管"拖延模板）
-  底价 = 商品价 × (1 - max_discount)；任何一轮的 offer 不得低于底价。
+  price 模式：轮次 1 不让 / 2 让 3% / 3 让 5% / ≥4 底价托底（底价 = 价 × (1-max_discount)）
+  gift 模式（与 V18-P0.1"不二价人设"对齐）：价格不让，梯度加赠品——
+    轮次 1 拒绝 / 2 送数据线 / 3 加 18W 充电头 / ≥4 赠品拉满并促单
+  两种模式都由引擎确定性决策，LLM 只负责话术。
 
 输出给 LLM 的契约：
   {"strategy": "reject|concede|floor", "price": 期望报价 or None,
@@ -86,4 +85,40 @@ def _result(strategy: str, price: Optional[float], floor: float, bargain_round: 
         "floor_price": floor,
         "round": int(bargain_round),
         "instruction": instructions[strategy],
+    }
+
+
+# =============================================================
+# gift 模式（V18-P0.1 不二价人设 · daemon 接线用）
+# =============================================================
+
+# 默认赠品梯度（与 reply_scheduler._build_intent_prompt 原硬编码一致）
+DEFAULT_GIFT_LADDER = {1: None, 2: "数据线", 3: "18W 充电头"}
+
+
+def decide_gift_offer(bargain_round: int, gift_ladder: Optional[dict[int, str]] = None) -> dict[str, Any]:
+    """不二价人设的赠品梯度决策（确定性，替代 reply_scheduler 硬编码 prompt）。
+
+    Returns:
+        strategy="reject"     : 轮次 1，不送（守价话术）
+        strategy="gift"       : gift=本轮赠品（tier 递增，促单）
+        strategy="final"      : 赠品拉满并促单（拍下改价马上发）
+    """
+    ladder = gift_ladder or DEFAULT_GIFT_LADDER
+    rn = int(bargain_round)
+    gift = ladder.get(rn)
+
+    if rn <= 1:
+        return {
+            "strategy": "reject", "gift": None, "tier": 0, "round": rn,
+            "instruction": "坚定表示当前已是优惠价，可提示关注店铺活动，禁止承诺赠品以外的让价",
+        }
+    if rn > max(ladder):  # 阶梯走完 → 赠品拉满促单（必须在 gift=None 判断前，末档之后无定义）
+        return {
+            "strategy": "final", "gift": "全部赠品", "tier": rn, "round": rn,
+            "instruction": "赠品已拉满：数据线 + 18W 充电头等全送，促单（拍下改价马上发），禁止再让价",
+        }
+    return {
+        "strategy": "gift", "gift": gift, "tier": rn, "round": rn,
+        "instruction": f"价格不让，赠送{gift}作为补偿（语气自然，突出专属感），禁止降价",
     }
