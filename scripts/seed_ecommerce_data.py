@@ -2,7 +2,7 @@
 seed_ecommerce_data.py - 注入电商 mock 数据到 MySQL
 
 数据规模（M1 设计）：
-  - 10 商品（对齐 docs/ecommerce_kb/products.json 的 SKU001-SKU010）
+  - 11 商品（SKU001-SKU010 实体 + SKU2001 虚拟自动发货）
   - 5 订单（覆盖 5 个状态：pending/paid/shipped/delivered/refunded）
   - 6 订单明细
   - 1 退款（对应 refunded 订单）
@@ -80,6 +80,9 @@ PRODUCTS = [
      "attrs": {"axis": "红轴", "layout": "87 TKL"}},
     {"sku": "SKU010", "name": "智选科技 MS1 无线鼠标",            "price": 199,  "stock": 250,
      "attrs": {"weight": "56g", "connection": "三模"}},
+    # V21-P0.2：虚拟商品（事件驱动自动发货）——attributes.type=virtual 是履约事件订阅标记
+    {"sku": "SKU2001", "name": "智选科技 VIP 会员年卡（数字商品）", "price": 99,   "stock": 20,
+     "attrs": {"type": "virtual", "delivery": "card", "benefit": "12 个月 VIP"}},
 ]
 PRODUCTS_BY_SKU = {p["sku"]: p for p in PRODUCTS}
 
