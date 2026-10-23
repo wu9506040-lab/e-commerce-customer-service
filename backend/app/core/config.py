@@ -287,6 +287,8 @@ class Settings(BaseSettings):
     AGENT_TRACE_DIR: str = "data/agent_traces"
     # 受控写操作审批门控（V20 亮点2）：确认票据 TTL（秒），过期需重新确认
     AGENT_TICKET_TTL_SECONDS: int = 600
+    # 双意图双专家协作（V21 M3-2）：一句话两个意图时，主专家答完补答次意图
+    ENABLE_DUAL_INTENT_DISPATCH: bool = False
 
 
 settings = Settings()
