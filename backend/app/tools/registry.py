@@ -66,6 +66,21 @@ class ToolSpec:
 # =============================================================
 # 3. Registry（静态注册表）
 # =============================================================
+def _run_auto_delivery(args: dict, ctx: ToolContext) -> dict:
+    """auto_delivery: 虚拟商品自动发货（两步确认 + 审批票据）。"""
+    from app.tools.auto_delivery_tool import deliver
+
+    user_id = ctx.user_id
+    if user_id is None or user_id == 0:
+        return {"error": "anonymous user cannot trigger delivery"}
+    order_no = args.get("order_no")
+    sku = args.get("sku")
+    if not order_no or not sku:
+        return {"error": "order_no and sku are required"}
+    confirmed = bool(args.get("confirmed", False))
+    return deliver(user_id, order_no, sku, confirmed=confirmed)
+
+
 def _run_lookup_order(args: dict, ctx: ToolContext) -> dict:
     """lookup_order: 查订单详情（含商品、金额、物流）。"""
     # 延迟 import 避免 registry ↔ order_tool 循环依赖
@@ -306,6 +321,31 @@ def _run_merge_orders(args: dict, ctx: ToolContext) -> dict:
 
 
 REGISTRY: dict[str, ToolSpec] = {
+    "auto_delivery": ToolSpec(
+        name="auto_delivery",
+        description="虚拟商品自动发货（卡密类）。仅当用户明确要求发货且订单已支付时调用；"
+                    "首次调用返回 needs_confirmation（含票据），用户确认后带 confirmed=true 再次调用完成发货。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "order_no": {
+                    "type": "string",
+                    "description": "订单号，例如 'ORD20240101001'",
+                },
+                "sku": {
+                    "type": "string",
+                    "description": "虚拟商品 SKU，例如 'SKU1002'",
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "用户是否已确认发货，首次调用固定为 false",
+                    "default": False,
+                },
+            },
+            "required": ["order_no", "sku"],
+        },
+        runner=_run_auto_delivery,
+    ),
     "lookup_order": ToolSpec(
         name="lookup_order",
         description="查询指定订单号的订单详情（含商品、金额、物流）。"
