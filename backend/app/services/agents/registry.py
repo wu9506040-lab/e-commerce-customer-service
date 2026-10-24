@@ -1,5 +1,7 @@
-"""专家 Agent 注册表（V21 M3-1）：意图 → 专家实体。"""
+"""专家 Agent 注册表（V21 M3-1 专科 4 个 + M3-3 全科兜底 = 五专家）。"""
 from __future__ import annotations
+
+from typing import Optional
 
 from app.services.agents.base import AgentContext, AgentProtocol
 from app.services.agents.experts import (
@@ -8,9 +10,13 @@ from app.services.agents.experts import (
     ProductAgent,
     RefundAgent,
 )
+from app.services.agents.generalist import GeneralistAgent
 
 _REGISTRY: dict[str, AgentProtocol] = {}
-for _agent in (PolicyAgent(), ProductAgent(), OrderAgent(), RefundAgent()):
+for _agent in (
+    PolicyAgent(), ProductAgent(), OrderAgent(), RefundAgent(),
+    GeneralistAgent(),  # V21 M3-3：第五专家——开放问题 FC 兜底（intents=("general",)）
+):
     for _intent in _agent.intents:
         _REGISTRY[_intent] = _agent
 
@@ -29,4 +35,5 @@ __all__ = [
     "AgentProtocol",
     "get_expert",
     "all_experts",
+    "GeneralistAgent",
 ]

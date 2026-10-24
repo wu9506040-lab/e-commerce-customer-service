@@ -7,17 +7,18 @@ Orchestrator（Sprint 3 拆分自 synthesizer.py）
 - _handle_order / _handle_product / _handle_policy
 - _DIRECT_ANSWER_PATTERNS 直答关键词
 - 分派异常 → fallback 到 V1.2 统一 RAG
-- refund_query 委托 chat.refund_handler.handle_refund_v2 / handle_refund_v3
+- refund_query 委托 agents/experts.RefundAgent（V21 专家化收口；V2/V3 引擎
+  本体与降级阶梯契约在 chat.refund_handler）
 
 边界：不构造 prompt（委托 prompt_assembler）；不做 LLM 流式（委托 stream_dispatcher）；
-refund 双轨制 V2/V3 逻辑在 chat.refund_handler。
+退款引擎路由在 agents/experts.RefundAgent，降级阶梯契约在 chat.refund_handler。
 
 范围引用：
 - 系统 Prompt：经由 prompt_assembler.SYSTEM_PROMPT_BASE（最终走 prompt_loader）
 - LLM 调用：经由 stream_dispatcher.stream_llm
 - 简单文本：经由 stream_dispatcher.stream_simple
 - 滑动窗口：经由 stream_dispatcher.search_by_keyword_window
-- refund_query 委托：经由 chat.refund_handler
+- refund_query 委托：经由 agents/experts.RefundAgent
 - intent 分派：本模块完成
 """
 import re
@@ -52,14 +53,12 @@ from app.tools.product_tool import ProductTool
 from app.services import profile_service
 
 from app.services.chat import prompt_assembler, stream_dispatcher
-from app.services.chat.refund_handler import handle_refund_v2, handle_refund_v3
 from app.services.agents.registry import AgentContext, get_expert  # V21 M3-1
 # M14 Stage 5：audit 上报（5 个 resolver action 路径全留痕）
 from app.services.audit_service import try_log_action
-# M14 Stage 3：BusinessFlow 抽象（仅 refund_query 接入；其他 intent 暂不抽象）
-from app.services.business_flow import create_business_flow
 # V16.8 P0-A：闲鱼退款 bridge（channel=xianyu 时调，绕过商城 OrderService 登录拦截）
-from app.services.xianyu.orchestrator_bridge import handle_xianyu_refund
+# V21 收口：refund 引擎路由（含 xianyu bridge / BusinessFlow / V3 / V2 降级阶梯）
+# 已收敛到 agents/experts.RefundAgent，orchestrator 不再直接 import 退款 handler。
 
 logger = logging.getLogger(__name__)
 
@@ -122,22 +121,11 @@ class Synthesizer:
             except Exception:
                 pass
 
-        # C2：Agent Function Calling 灰度入口（ENABLE_AGENT_FC=True 时）
-        # FC 路径独立：不走 query rewrite / profile / intent 分派；
-        # 异常自包 try/except fallback 到 V1.2 RAG（与既有 fallback 路径一致）
-        if settings.ENABLE_AGENT_FC:
-            from app.services.chat.agent_runner import run_stream_agent
-            try:
-                yield from run_stream_agent(query, user_id=user_id, history=history)
-                return
-            except Exception as e:
-                logger.exception(
-                    f"synth.agent_fc 异常，fallback 到 V1.2 RAG: {e}",
-                    extra={"intent": "agent_fc_error"},
-                )
-                for event_type, data in v12_rag_run_stream(query, 5, history):
-                    yield (event_type, data)
-                return
+        # V21 M3-3：五专家合成——FC 全科 Agent 不再在此整体接管（旧"两套引擎
+        # 灰度切换"已收敛为一套多 Agent）。ENABLE_AGENT_FC 语义变为
+        # "是否启用全科兜底"，路由发生在下方专家分派处：
+        #  专科管确定性（4 意图域专家），全科管开放性（method=default /
+        #   未注册意图 → GeneralistAgent，见 dispatch 段注释）。
 
         # V18-P0（2026-10-17）：xianyu IM 快速通道 —— 实测 rewrite(LLM) +
         # multi-query(LLM) + RAG 检索前置吃掉 ~20s，是 IM 回复慢的主因。
@@ -337,9 +325,28 @@ class Synthesizer:
             # V21 M3-1：多 Agent 协作制——意图 → 意图域专家实体（AgentProtocol）
             # 分派决策收敛到专家（RefundAgent 内含 xianyu/Flow/V3/V2 四路），
             # orchestrator 只负责组装上下文与事件流透传；行为与原 if/elif 等价。
+            # V21 M3-3：五专家合成——开放问题 → FC 全科 Agent 兜底。
+            # 触发条件（满足其一且 ENABLE_AGENT_FC=True）：
+            #   ① method=default：规则 + LLM 兜底分类都定不了意图的开放问题
+            #     （旧路径会答非所问地查政策 RAG）；
+            #   ② 未注册意图：primary 不在专家注册表。
+            # ENABLE_AGENT_FC=False 或 FC 异常 → 保持旧行为（回落 policy_expert /
+            # V1.2 RAG），专科路由不受影响——"专科管确定性 + 全科管开放性"。
             _expert = get_expert(primary)
-            if _expert is None:
-                # 兜底：未注册意图按 policy 专家处理（保持旧行为）
+            if settings.ENABLE_AGENT_FC and (
+                intent_result.get("method") == "default" or _expert is None
+            ):
+                from app.services.agents.generalist import GeneralistAgent
+
+                logger.info(
+                    f"generalist takeover: primary={primary} "
+                    f"method={intent_result.get('method')}",
+                    extra={"intent": primary, "generalist": True},
+                )
+                metrics.inc_chat("generalist", v3_engine="fc")  # M8 看板可见
+                _expert = GeneralistAgent()
+            elif _expert is None:
+                # 兜底：未注册意图按 policy 专家处理（FC 关闭时保持旧行为）
                 logger.warning(f"intent {primary!r} 无注册专家，回落 policy_expert", extra={"intent": primary})
                 _expert = get_expert("policy_query")
             _ctx = AgentContext(
@@ -878,6 +885,7 @@ class Synthesizer:
         # 优先用 sku 实体精确查；查不到时回退到 keyword 搜（MySQL 里 SKU=SKU001，
         # 但商品 name 包含 ZP1，所以 keyword="ZP1" 能命中 SKU001）
         products = []
+        listed = None  # V21 修：单品路径（effective_sku 存在）不进清单分支，下方 max_tokens 判空需初始化
         # V21 产品规则（店铺级 vs 商品级）：
         # - 从商品详情页进入（effective_sku 存在）= 用户想咨询**这个品** → 单品优先，不做全量清单
         # - 店铺入口泛问"你们有哪些产品"（无 sku）→ 返回全量在售清单（keyword 搜不出商品名）

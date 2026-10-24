@@ -76,7 +76,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # ---- V3 LangGraph 开关（默认关闭，需手动设 true 启用）----
-    # 控制 synthesizer._handle_refund 走 V2.x service 版还是 V3 LangGraph 版
+    # V21 收口语义：true → RefundFlow（LangGraph 主引擎）；false → 降级引擎 V2
+    # （RefundService 复合工具 + 政策 RAG，不依赖 LangGraph/Checkpointer——
+    # 老部署兼容档）。图引擎异常时 refund_flow.py 保险丝也会落到 V2，
+    # 每次兜底计 metrics v3_engine="v2"（V2 退役条件见 refund_handler 模块注释）。
     USE_LANGGRAPH_REFUND: bool = False
 
     # ---- Demo 访客登录（公开 demo 站点用）----
@@ -153,9 +156,11 @@ class Settings(BaseSettings):
     ENABLE_PROMPT_VERSIONING: bool = False
 
     # ---- C2: Agent Function Calling 框架 ----
-    # 启用后 orchestrator 把 FC-capable query 路由到 chat.agent_runner
-    # （tools/registry.py 注册的 lookup_order / search_product / search_policy）
-    # 默认 false（灰度用），关闭时走原 intent 分派路径（CLAUDE.md §9.2.2 隔离）
+    # V21 M3-3：语义收敛为"是否启用全科兜底"——不再整体接管（旧两套引擎
+    # 灰度切换已合成一套多 Agent）。True 时 method=default / 未注册意图的
+    # 开放问题路由到 GeneralistAgent（agent_runner FC 编排，工具见
+    # tools/registry.py 的 lookup_order / search_product / search_policy）；
+    # False 时开放问题保持旧行为回落 policy_expert。
     ENABLE_AGENT_FC: bool = False
     # Agent 主循环最大工具轮次（防 LLM 死循环/成本失控）
     # 经验值 5：足够覆盖"查订单 → 查商品 → 查政策"三步场景

@@ -69,10 +69,13 @@ class OrderAgent(AgentProtocol):
 
 
 class RefundAgent(AgentProtocol):
-    """退款专家：四路分派（xianyu / BusinessFlow / LangGraph V3 / V2）。
+    """退款专家：四级降级阶梯（V21 收口——每级有明确失败条件与接管方）。
 
-    原逻辑在 orchestrator.py 的 refund_query 分支，V21 M3-1 原样迁入——
-    行为等价，唯一的增量是这些分支决策收敛到专家实体内部。
+    xianyu bridge → ① RefundFlow（LangGraph 主引擎，ENABLE_BUSINESS_FLOW）
+    → ② handle_refund_v2（图引擎异常保险丝，不依赖 LangGraph/Checkpointer）
+    → ③ 转人工（EscalationService AGENT_UNAVAILABLE）。
+    契约全文见 refund_handler.py 模块 docstring；V2 退役条件也写在那里
+    （v2 兜底连续一个迭代周期零命中才可下线，防止永久双轨）。
     """
 
     name = "refund_expert"

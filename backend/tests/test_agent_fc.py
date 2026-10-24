@@ -327,69 +327,136 @@ class TestAgentFCMaxTurns:
 
 
 # =============================================================
-# 6. Orchestrator 集成（FC 灰度门禁）
+# 6. Orchestrator 集成（V21 M3-3：五专家合成——FC 只兜开放问题）
 # =============================================================
-class TestOrchestratorFCIntegration:
-    """orchestrator 在 ENABLE_AGENT_FC=True 时必须走 agent_runner。"""
+class _StubExpert:
+    """专科 stub：验证"确定性意图不进 FC"用。"""
 
-    def test_enabled_routes_to_agent_runner(self, monkeypatch):
+    name = "stub_expert"
+    intents = ("policy_query",)
+
+    def refine(self, ctx):
+        pass
+
+    def dispatch(self, ctx):
+        yield ("token", "专科回答")
+        yield ("done", {"answer": "专科回答"})
+
+
+class TestOrchestratorFCIntegration:
+    """ENABLE_AGENT_FC 语义 = 是否启用全科兜底（V21 M3-3 起不再整体接管）。
+
+    路由规则（orchestrator dispatch 段）：
+      - method=default / 未注册意图 且 ENABLE_AGENT_FC=True → GeneralistAgent（FC）
+      - 确定性意图（rule/llm 分类成功）→ 4 专科，永不进 FC
+      - ENABLE_AGENT_FC=False → 开放问题回落 policy_expert（旧行为）
+    """
+
+    _DEFAULT_INTENT = {
+        "intents": [{"intent": "policy_query", "confidence": 0.5}],
+        "primary": "policy_query", "entities": {},
+        "method": "default", "confidence": 0.5,
+    }
+    _RULE_INTENT = {
+        "intents": [{"intent": "policy_query", "confidence": 1.0}],
+        "primary": "policy_query", "entities": {},
+        "method": "rule", "confidence": 1.0,
+    }
+
+    def test_default_method_routes_to_generalist(self, monkeypatch):
+        """method=default（规则+LLM 都定不了）且开关开 → 进 FC 全科。"""
         from app.core.config import settings
         from app.services.chat.orchestrator import Synthesizer
 
         monkeypatch.setattr(settings, "ENABLE_AGENT_FC", True)
 
-        # mock agent_runner.run_stream_agent
         def fake_run_stream_agent(query, user_id=None, history=None):
             yield ("meta", {"agent_marker": True})
             yield ("token", "X")
             yield ("done", {"answer": "from agent"})
 
         with patch("app.services.chat.agent_runner.run_stream_agent",
-                   side_effect=fake_run_stream_agent) as mock_runner:
-            events = _consume(Synthesizer.run_stream("test", user_id=1))
+                   side_effect=fake_run_stream_agent) as mock_runner, \
+             patch("app.services.intent_service.IntentService.classify",
+                   return_value=dict(self._DEFAULT_INTENT)):
+            events = _consume(Synthesizer.run_stream("帮我写段文案", user_id=1))
 
-        # 确认 orchestrator 调了 agent_runner
         mock_runner.assert_called_once()
         assert mock_runner.call_args.kwargs["user_id"] == 1
-
-        # 确认 events 来源于 agent_runner（不含 intent classify 产生的 meta）
         agent_metas = [e[1] for e in events if e[0] == "meta"
                        and e[1].get("agent_marker")]
         assert len(agent_metas) == 1
 
-    def test_disabled_does_not_route_to_agent_runner(self, monkeypatch):
-        """ENABLE_AGENT_FC=False 时 orchestrator 调 agent_runner.run_stream_agent 0 次。"""
+    def test_rule_intent_never_routes_to_generalist(self, monkeypatch):
+        """确定性意图（method=rule）→ 专科处理，FC 零调用（专科管确定性）。"""
+        from app.core.config import settings
+        from app.services.chat.orchestrator import Synthesizer
+
+        monkeypatch.setattr(settings, "ENABLE_AGENT_FC", True)
+
+        with patch("app.services.chat.agent_runner.run_stream_agent") as mock_runner, \
+             patch("app.services.chat.orchestrator.get_expert",
+                   return_value=_StubExpert()), \
+             patch("app.services.intent_service.IntentService.classify",
+                   return_value=dict(self._RULE_INTENT)):
+            events = _consume(Synthesizer.run_stream("退货政策是什么", user_id=1))
+
+        mock_runner.assert_not_called()
+        assert ("token", "专科回答") in events
+
+    def test_unregistered_intent_routes_to_generalist(self, monkeypatch):
+        """primary 不在注册表 且开关开 → 进 FC 全科（而非回落 policy）。"""
+        from app.core.config import settings
+        from app.services.chat.orchestrator import Synthesizer
+
+        monkeypatch.setattr(settings, "ENABLE_AGENT_FC", True)
+
+        def fake_run_stream_agent(query, user_id=None, history=None):
+            yield ("meta", {"agent_marker": True})
+            yield ("done", {"answer": "from agent"})
+
+        with patch("app.services.chat.agent_runner.run_stream_agent",
+                   side_effect=fake_run_stream_agent), \
+             patch("app.services.chat.orchestrator.get_expert",
+                   return_value=None) as mock_get, \
+             patch("app.services.intent_service.IntentService.classify",
+                   return_value=dict(self._RULE_INTENT)):
+            events = _consume(Synthesizer.run_stream("奇怪的问题", user_id=1))
+
+        mock_get.assert_called_once()  # 仅一次路由查询，未二次回落 policy_expert
+        agent_metas = [e[1] for e in events if e[0] == "meta"
+                       and e[1].get("agent_marker")]
+        assert len(agent_metas) == 1
+
+    def test_disabled_default_falls_back_to_policy(self, monkeypatch):
+        """开关关 + method=default → 保持旧行为回落 policy_expert，FC 零调用。"""
         from app.core.config import settings
         from app.services.chat.orchestrator import Synthesizer
 
         monkeypatch.setattr(settings, "ENABLE_AGENT_FC", False)
 
         with patch("app.services.chat.agent_runner.run_stream_agent") as mock_runner, \
-             patch("app.services.chat.orchestrator.v12_rag_run_stream") as mock_v12:
-            # 让 v12_rag_run_stream 立即返一个 done 事件，避免真跑 RAG
-            mock_v12.return_value = iter([("done", {"answer": "v12 fallback"})])
-            # mock intent_service 防止真跑分类
-            # 【2026-10-10 CI 修复】mock 停留在 V11 旧结构，orchestrator V12 起读
-            # intent_result["primary"]（orchestrator.py:167），旧 mock 触发 KeyError
-            with patch("app.services.intent_service.IntentService.classify",
-                       return_value={"intents": [{"intent": "policy_query", "confidence": 1.0}],
-                                     "primary": "policy_query", "entities": {},
-                                     "method": "rule", "confidence": 1.0}):
-                events = _consume(Synthesizer.run_stream("test", user_id=1))
+             patch("app.services.chat.orchestrator.get_expert",
+                   return_value=_StubExpert()), \
+             patch("app.services.intent_service.IntentService.classify",
+                   return_value=dict(self._DEFAULT_INTENT)):
+            events = _consume(Synthesizer.run_stream("帮我写段文案", user_id=1))
 
-        # agent_runner 0 次调用（走的是普通 intent 分派路径）
         mock_runner.assert_not_called()
-        # events 应来自普通路径（不包含 agent_marker）
-        agent_metas = [e[1] for e in events if e[0] == "meta"
-                       and e[1].get("agent_marker")]
-        assert len(agent_metas) == 0
+        assert ("token", "专科回答") in events
 
 
 # =============================================================
 # 7. Orchestrator FC 异常 fallback 到 V1.2
 # =============================================================
 class TestOrchestratorFCFallback:
-    """agent_runner 异常时 orchestrator 必须 fallback 到 V1.2 RAG。"""
+    """全科兜底（agent_runner）异常时 orchestrator 必须 fallback 到 V1.2 RAG。"""
+
+    _DEFAULT_INTENT = {
+        "intents": [{"intent": "policy_query", "confidence": 0.5}],
+        "primary": "policy_query", "entities": {},
+        "method": "default", "confidence": 0.5,
+    }
 
     def test_agent_runner_exception_falls_back_to_v12(self, monkeypatch):
         from app.core.config import settings
@@ -405,7 +472,9 @@ class TestOrchestratorFCFallback:
 
         with patch("app.services.chat.agent_runner.run_stream_agent",
                    side_effect=broken_run_stream_agent) as mock_runner, \
-             patch("app.services.chat.orchestrator.v12_rag_run_stream") as mock_v12:
+             patch("app.services.chat.orchestrator.v12_rag_run_stream") as mock_v12, \
+             patch("app.services.intent_service.IntentService.classify",
+                   return_value=dict(self._DEFAULT_INTENT)):
             mock_v12.return_value = iter([("done", {"answer": "fallback ok"})])
             events = _consume(Synthesizer.run_stream("test", user_id=1))
 
@@ -418,22 +487,21 @@ class TestOrchestratorFCFallback:
         assert done_events[0]["answer"] == "fallback ok"
 
     def test_agent_runner_disabled_runtime_error_falls_back(self, monkeypatch):
-        """ENABLE_AGENT_FC=False 时 agent_runner 抛 RuntimeError → orchestrator fallback。"""
+        """配置不一致（agent_runner 内部检测 ENABLE_AGENT_FC=False）→ fallback。"""
         from app.core.config import settings
         from app.services.chat.orchestrator import Synthesizer
 
         monkeypatch.setattr(settings, "ENABLE_AGENT_FC", True)
 
-        # agent_runner 内部检测到 ENABLE_AGENT_FC=False 抛 RuntimeError
-        # （monkeypatch 的 ENABLE_AGENT_FC=False 仅对 run_stream_agent 内部生效，
-        #   orchestrator 自己读的是 settings，模拟"配置不一致"）
         def broken_run_stream_agent(query, user_id=None, history=None):
             raise RuntimeError("ENABLE_AGENT_FC=False")
             yield  # noqa
 
         with patch("app.services.chat.agent_runner.run_stream_agent",
                    side_effect=broken_run_stream_agent), \
-             patch("app.services.chat.orchestrator.v12_rag_run_stream") as mock_v12:
+             patch("app.services.chat.orchestrator.v12_rag_run_stream") as mock_v12, \
+             patch("app.services.intent_service.IntentService.classify",
+                   return_value=dict(self._DEFAULT_INTENT)):
             mock_v12.return_value = iter([("done", {"answer": "fallback ok"})])
             events = _consume(Synthesizer.run_stream("test", user_id=1))
 
