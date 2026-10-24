@@ -1,14 +1,35 @@
 """
-Refund Handler（Sprint 3 拆分自 chat/orchestrator.py + 2026-07-18 改造）
+Refund Handler——退款引擎本体 + 降级阶梯（V21 收口：从"临时双轨"改为显式契约）
 
-职责：refund_query 意图的两条实现路径（V2 RefundService + V3 LangGraph）
-- handle_refund_v2：USE_LANGGRAPH_REFUND=false 或 V3 异常时 fallback；调 RefundService.check_refundable_with_policy
-- handle_refund_v3：默认路径；走 refund_graph_app.stream()，judge/fetch_policy/synthesize/escalate 节点顺序处理
+V21 之前这里挂着"临时双轨态，V3 稳定后清理"的模糊注释。实际审查结论：
+V2 不是待清理的遗留，而是**退款四级降级阶梯的第 2 级**，每一级都有明确的
+失败条件与接管方：
 
-边界：
+    1. RefundFlow（LangGraph 主引擎）      —— 正常态（demo .env.dev 即此档）
+       decide / fetch_policy / synthesize / escalate + Checkpointer 续跑
+    2. handle_refund_v2（本文件，保险丝）  —— 图引擎异常时接管
+       refund_flow.py:539 except → handle_refund_v2；纯 RefundService 复合工具
+       + 政策 RAG + LLM 综合，**不依赖 LangGraph / Checkpointer / Redis**
+    3. 转人工（EscalationService）         —— V2 也失败
+       refund_flow.py:553 → EscalationReason.AGENT_UNAVAILABLE
+
+为什么必须留 V2（不是"看着像没想清楚"）：
+- LangGraph + Checkpointer 本身是新增失败面——2026-10-22 实测：容器 sqlite
+  残留 checkpoint 触发错误 resume，退款流直接报错。这一类故障只有第 2 级
+  （不碰图引擎的 V2）能兜住；删 V2 意味着图一挂退款就只剩转人工。
+- 开关语义：USE_LANGGRAPH_REFUND=false 时 V2 是唯一退款引擎（老部署兼容），
+  不是"没得退"。
+
+V2 的退役条件（写死，防止永久双轨）：
+- 观察指标：metrics v3_engine="v2" 计数（M8 看板）——图异常兜底每次进 V2 都会计数
+- 删除条件：连续一个迭代周期（2 周）v2 兜底零命中 + 图内异常 0 次，
+  方可删除本函数 + refund_flow.py 保险丝 + escalation agent_unavailable 链路
+  + 对应测试（test_synthesizer_refund.TestFallback 等）。在那之前保留。
+
+职责边界：
 - 不构造 prompt（委托 prompt_assembler）
 - 不做 LLM 流式（委托 stream_dispatcher；V3 LangGraph 自身处理 token 输出）
-- 不做 intent 分派（委托 orchestrator 调用本模块的函数）
+- 不做 intent 分派（分派决策在 agents/experts.RefundAgent，M21 收口）
 
 2026-07-18 改造：fetch_order 阶段接入 OrderContextResolver 自动解析
 - 真实业务场景：顾客不报订单号，CS 用系统查
@@ -106,14 +127,15 @@ def handle_refund_v2(
     context_block: str = "",
     secondary_intent_block: str = "",  # V12：多意图 secondary 提示
 ) -> Generator[Tuple[str, Any], None, None]:
-    """refund_query V2.x：调 RefundService（复合 tool + policy）
+    """refund_query 降级引擎（V2.x）：调 RefundService（复合 tool + policy）
 
-    V3 起作为 fallback：USE_LANGGRAPH_REFUND=false 时使用，或 LangGraph 版异常时回退。
-
-    .. deprecated::
-        V3 LangGraph refund_graph 上线后的临时双轨态。V3 稳定后（预计下一个里程碑）
-        删除本函数 + 关闭 USE_LANGGRAPH_REFUND 开关 + 删除对应测试。
-        截止 2026-06-28：chat_e2e #5/#6 已用 V3 路径通过。
+    .. deprecated:: 语义已由 V21 收口取代——不再是"待清理的临时双轨"，
+        而是**退款降级阶梯第 2 级**（见模块 docstring 的完整契约）。
+        仅在两种情况下进入本函数：
+        ① USE_LANGGRAPH_REFUND=false（老部署兼容，V2 是唯一退款引擎）；
+        ② RefundFlow 图引擎异常 → refund_flow.py 保险丝接管（每次计数
+        metrics v3_engine="v2"）。图引擎稳定运行一个迭代周期零兜底后，
+        按模块 docstring 的退役条件整体下线。
     """
     # V16.5 全链路日志：HANDLE_REFUND 入口
     log_event("HANDLE_REFUND", "INFO", str(user_id), str(user_id),
