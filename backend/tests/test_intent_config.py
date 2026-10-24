@@ -72,9 +72,12 @@ class TestIntentModuleLoadsYAML:
     def test_intent_yaml_pattern_counts_preserved(self):
         """pattern 数量守卫：基线 21+33+12+18=84；V16.8 P0-C
         + chitchat 8 条 + product_query 上 6 闲聊兜底上移到 chitchat（-6+0=12，复合 query 5 条仍留）
-        → 21+33+12+22+8 = 96。V18（2026-10-17）order_query +1（'查订单'，规则层接住
-        golden set easy case，此前依赖 LLM 兜底、限流时落 default）；product_query +1
-        （'容量'，产品参数问法规则化）→ 98。
+        → 21+33+12+22+8 = 96。V18（2026-10-17）order_query +1（'查订单'）；product_query +1
+        （'容量'）→ 98。V18.3 product_query +3（'多重/重量/克重'）→ 101。
+        V21 product_query +8（列表型在售咨询：哪些产品/哪些商品/有什么产品/有什么商品/
+        卖什么/产品列表/商品列表/在售）→ 21+33+13+34+8 = 109。
+        注：V21 给 intent_service._NON_CHITCHAT_KEYWORDS 补的 '多少钱/运费/邮费/优惠'
+        是短路过滤词，不在本 YAML 计数内。
         改数量必须是有意的，同步更新此断言。"""
         from app.services.config_loader import get_config_loader
 
@@ -83,9 +86,9 @@ class TestIntentModuleLoadsYAML:
         assert yaml_counts["refund_query"] == 21
         assert yaml_counts["policy_query"] == 33
         assert yaml_counts["order_query"] == 13
-        assert yaml_counts["product_query"] == 23
+        assert yaml_counts["product_query"] == 34
         assert yaml_counts["chitchat"] == 8  # V16.8 P1-F 加回 "^在么" 8 条
-        assert sum(yaml_counts.values()) == 98
+        assert sum(yaml_counts.values()) == 109
 
     def test_intent_rules_constants_match_yaml(self):
         """intent_service.INTENT_RULES 与 YAML 字段一一对应（防偏移）。"""

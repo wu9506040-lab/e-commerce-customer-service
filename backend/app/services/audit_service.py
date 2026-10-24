@@ -44,20 +44,27 @@ def try_log_action(
         error_msg: 失败原因（result=fail 时填写）
     """
     # with_safe_session 内部已吞咽所有异常 + warning
-    with with_safe_session(commit=True) as db:
-        log = OperationLog(
-            user_id=user.id if user else None,
-            username=user.username if user else None,
-            action=action,
-            target_type=target_type,
-            target_id=target_id,
-            ip=ip,
-            user_agent=user_agent,
-            detail=detail,
-            result=result,
-            error_msg=error_msg,
-        )
-        db.add(log)
+    # V21 修：with_safe_session 只吞 yield 块内的异常——get_engine() 在 DB 不可达
+    # 时于 session 构造期（yield 之前）就抛 OperationalError，穿透到这里会把
+    # 调用方业务流打崩（违背本函数"best-effort 审计不抛"的契约，实测 MySQL
+    # 宕机时 /chat 直挂）。补齐外层吞咽。
+    try:
+        with with_safe_session(commit=True) as db:
+            log = OperationLog(
+                user_id=user.id if user else None,
+                username=user.username if user else None,
+                action=action,
+                target_type=target_type,
+                target_id=target_id,
+                ip=ip,
+                user_agent=user_agent,
+                detail=detail,
+                result=result,
+                error_msg=error_msg,
+            )
+            db.add(log)
+    except Exception as e:  # noqa: BLE001 —— 审计是 best-effort，绝不影响主流程
+        logger.warning(f"audit log failed (swallowed): {e}")
         logger.debug(
             f"audit: action={action}, target={target_type}/{target_id}, "
             f"user={user.username if user else 'anonymous'}"
