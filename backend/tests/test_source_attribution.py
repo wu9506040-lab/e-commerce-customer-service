@@ -181,8 +181,23 @@ def test_handle_order_with_data_uses_tagged_prompt():
         captured_prompts.append(messages[1]["content"])
         return iter(["订单在运输中"])
 
+    from app.services.chat.orchestrator import Synthesizer
+    from app.services.context import OrderResolverAction, OrderResolverResult
+
     with patch("app.services.chat.orchestrator.OrderService") as os_mock, \
-         patch("app.services.chat.stream_dispatcher.get_llm_provider") as provider_mock:
+         patch("app.services.chat.orchestrator.get_order_context_resolver") as resolver_mock, \
+         patch("app.services.chat.stream_dispatcher.get_llm_provider") as provider_mock, \
+         patch.object(Synthesizer, "_build_order_card_payload",
+                      return_value={"type": "order_card", "density": "mini", "items": []}):
+        # V21 修：M14 Resolver 在自己的模块里 import OrderTool 查库，只 patch
+        # orchestrator.OrderService 拦不住 → 本机（无 MySQL）gaierror、容器（有
+        # MySQL）靠真库碰巧绿。stub Resolver 决策 + 订单卡构建，测试不依赖真实 DB。
+        resolver_mock.return_value.resolve.return_value = OrderResolverResult(
+            action=OrderResolverAction.DIRECT_ANSWER,
+            effective_order_no="ORD001",
+            total_orders=1,
+            reason="test_stub",
+        )
         os_mock.get_order_detail.return_value = {
             "order": fake_order, "items": [{"product_name": "ZP1", "qty": 1, "subtotal": 2999}],
             "logistics": fake_logistics,

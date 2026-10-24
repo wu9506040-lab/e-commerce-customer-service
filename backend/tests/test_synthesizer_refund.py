@@ -100,13 +100,18 @@ class TestRefundDispatch:
         assert not mock_tool.get_order_by_no.called
 
     @patch("app.services.chat.refund_handler.OrderService")
-    @patch("app.services.chat.orchestrator.settings")
-    def test_v3_when_env_true(self, mock_settings, mock_order_svc):
-        """USE_LANGGRAPH_REFUND=True → 走 V3 LangGraph 版"""
-        mock_settings.USE_LANGGRAPH_REFUND = True
-        mock_settings.LOG_LEVEL = "INFO"
-        # C2 灰度默认关；否则 MagicMock 默认 truthy 会误触发 FC 路径
-        mock_settings.ENABLE_AGENT_FC = False
+    def test_v3_when_env_true(self, mock_order_svc, monkeypatch):
+        """USE_LANGGRAPH_REFUND=True → 走 V3 LangGraph 版
+
+        V21 修：此前 patch 的是 orchestrator.settings——V21 专家化重构后分派
+        决策迁入 RefundAgent（experts.py 读 app.core.config 全局 settings），
+        patch orchestrator 命名空间不再影响路由；容器里靠 .env.dev 真值碰巧绿、
+        本机（无该 env）走 V2 → V1.2 fallback 撞真 LLM 报 QWEN_API_KEY。
+        改为 monkeypatch 全局 settings，测试不再依赖运行环境变量。
+        decide 输入同步对齐 V13(1.1) 契约：需要真实决策 JSON（与 test_path1 同式）。
+        """
+        monkeypatch.setattr(settings, "USE_LANGGRAPH_REFUND", True)
+        monkeypatch.setattr(settings, "ENABLE_BUSINESS_FLOW", False)
 
         # V3 走 LangGraph，不走 V2 的 OrderService.list_user_orders 兜底
         # （除非 order_no 为空时还会用一次）
@@ -121,7 +126,10 @@ class TestRefundDispatch:
             mock_tool.get_order_by_no.return_value = make_order(days_ago=3)
             mock_rf_tool.get_order_by_no.return_value = make_order(days_ago=3)
             mock_policy.search_policy.return_value = [{"text": "7天无理由"}]
-            mock_provider.return_value.chat.return_value = {"reply": "可以退"}
+            mock_provider.return_value.chat.side_effect = [
+                {"reply": _decide_reply("synthesize", policy_needed=False)},
+                {"reply": "可以退"},
+            ]
 
             from app.services.chat.orchestrator import Synthesizer
             events = collect_events(Synthesizer.run_stream(
@@ -134,6 +142,11 @@ class TestRefundDispatch:
             # V3 路径：应该调 RefundFlow 内部的 OrderTool（M14 V3：judge 移到 run()）
             assert mock_rf_tool.get_order_by_no.called
             assert mock_provider.return_value.chat.called
+            # meta 带 v3_engine=langgraph（确证进了 LangGraph 而非 fallback）
+            assert any(
+                ev[0] == "meta" and ev[1].get("v3_engine") == "langgraph"
+                for ev in events
+            )
 
 
 # ============ 测试 handle_refund_v3 4 条路径 ============
