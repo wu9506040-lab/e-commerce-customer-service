@@ -6,6 +6,7 @@ from app.services.agents.base import AgentContext
 from app.services.agents.coordinator import (
     chain_with_secondary,
     get_secondary_intent,
+    get_secondary_intents,
 )
 from app.services.agents.experts import PolicyAgent, ProductAgent, RefundAgent
 
@@ -102,3 +103,45 @@ def test_chain_secondary_failure_does_not_break_primary(monkeypatch):
     events = list(chain_with_secondary(_make_primary_gen(), _ctx(), "order_query"))
     assert ("token", "主回答") in events
     assert ("done", {"answer": "主回答"}) in events
+
+
+# ---------- V21 M3-4：合并批多意图依次答 ----------
+
+def test_get_secondary_intents_keeps_order_and_dedupes():
+    """rule_multi 场景：顺序 = 买家消息顺序；去重；跳过 primary。"""
+    assert get_secondary_intents({"intents": [
+        {"intent": "order_query"}, {"intent": "product_query"},
+        {"intent": "policy_query"}, {"intent": "product_query"},
+    ]}, "order_query") == ["product_query", "policy_query"]
+
+
+def test_chain_answers_all_secondaries_in_message_order(monkeypatch):
+    """合并批 3 意图：主专家答完，次专家按 intents 顺序依次补答。"""
+    monkeypatch.setattr(settings, "ENABLE_DUAL_INTENT_DISPATCH", True, raising=False)
+
+    calls: list[str] = []
+
+    def fake_dispatch(self, ctx):
+        calls.append(ctx.intent_result["primary"])
+        yield ("token", f"answer-{ctx.intent_result['primary']}")
+
+    from app.services.agents.experts import OrderAgent
+    for agent_cls in (PolicyAgent, ProductAgent, RefundAgent, OrderAgent):
+        monkeypatch.setattr(agent_cls, "dispatch", fake_dispatch)
+
+    ctx = _ctx(primary="order_query", secondary=None)
+    ctx.intent_result["intents"] = [
+        {"intent": "order_query", "confidence": 1.0},
+        {"intent": "product_query", "confidence": 1.0},
+        {"intent": "policy_query", "confidence": 1.0},
+    ]
+    events = list(chain_with_secondary(_make_primary_gen(), ctx, "order_query"))
+
+    # 次意图按消息顺序依次答（product 先于 policy）
+    assert calls == ["product_query", "policy_query"]
+    handoffs = [e[1]["intent"] for e in events
+                if e[0] == "meta" and e[1].get("handoff_secondary")]
+    assert handoffs == ["product_query", "policy_query"]
+    assert ("token", "answer-product_query") in events
+    assert ("token", "answer-policy_query") in events
+    assert ("token", "主回答") in events

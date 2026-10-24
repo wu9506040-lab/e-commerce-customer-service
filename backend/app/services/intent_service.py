@@ -259,8 +259,8 @@ class IntentService:
         entities = IntentService._extract_entities(query)
 
         # V18（2026-10-17）：多消息合并还原 — 见 _MERGED_MSG_HEADER 注释。
-        # 逐条原文跑短路+规则，任一命中即返回；再试拼接原文（跨消息规则，
-        # 如"怎么"+"退款"分两条发）；全未命中才 LLM 兜底（喂干净原文）。
+        # 逐条原文跑短路+规则；再试拼接原文（跨消息规则，如"怎么"+"退款"
+        # 分两条发）；全未命中才 LLM 兜底（喂干净原文）。
         merged_texts = _split_merged_query(query)
         if merged_texts:
             candidates = merged_texts + [" ".join(merged_texts)]
@@ -270,10 +270,22 @@ class IntentService:
             llm_query = query
 
         # 1. 短消息短路 + 规则匹配（V18 抽取到 _short_or_rule）
-        for cand in candidates:
-            hit = IntentService._short_or_rule(cand, entities)
-            if hit:
-                return hit
+        # V21 M3-4（连发混合意图 · 闲聊让路）：合并批内闲聊命中不再直接返回——
+        # 旧逻辑 `for cand: if hit: return hit` 第一个命中的意图胜出，买家连发
+        # "在吗 + 这个多大 + 多少钱" 时首条闲聊短路整批 → 实质问题全漏
+        # （问候变体"老板在吗/亲在吗"不在 scheduler 剥离白名单，仍会进到这里）。
+        # 新逻辑：合并批逐条收集实质意图（去重、保持消息顺序），收集到任一
+        # 即以多意图结果返回（primary=首个实质意图，其余交 chain_with_secondary
+        # 依次补答）；全部候选都只命中闲聊才真正判闲聊。单条消息路径不变。
+        if merged_texts and len(merged_texts) > 1:
+            multi = IntentService._classify_merged_batch(candidates, entities)
+            if multi is not None:
+                return multi
+        else:
+            for cand in candidates:
+                hit = IntentService._short_or_rule(cand, entities)
+                if hit:
+                    return hit
 
         # 2. LLM 兜底（V12：根据灰度开关走单/多意图路径）
         try:
@@ -303,6 +315,62 @@ class IntentService:
     # ---------- 私有 ----------
 
     @staticmethod
+    def _classify_merged_batch(candidates: list[str], entities: dict) -> Optional[dict]:
+        """V21 M3-4：合并批"闲聊让路"分类（仅多消息合并批调用）。
+
+        逐条跑短路+规则：闲聊命中让路继续；实质意图（非 chitchat）按消息
+        顺序收集去重。返回值三种：
+          - 多意图结果（method=rule_multi，primary=首个实质意图）：收集到任一实质意图
+          - 闲聊结果（method=rule_short）：所有候选都只命中闲聊
+          - None：所有候选都没命中任何东西 → 交回 LLM 兜底
+
+        Why 不复用 _wrap_with_intent_alias：它会按 confidence 排序 + top-K=2
+        截断，会打散"消息顺序 = 回答顺序"的约定、丢掉第 3+ 个实质意图。
+        这里直接构造完整结构（含 V12 intent/confidence 兼容别名）。
+        """
+        collected: list[dict] = []
+        saw_chitchat = False
+        for cand in candidates:
+            hit = IntentService._short_or_rule(cand, entities)
+            if not hit:
+                continue
+            name = hit["primary"]
+            if name == "chitchat":
+                saw_chitchat = True  # 让路：后面可能还有实质问题
+                continue
+            if all(item["intent"] != name for item in collected):
+                collected.append({"intent": name, "confidence": 1.0})
+
+        if collected:
+            primary = collected[0]["intent"]
+            metrics.inc_intent_method("rule")  # 规则命中口径不变（多意图仍是规则层）
+            logger.info(
+                f"intent(rule_multi): intents={[i['intent'] for i in collected]} "
+                f"primary={primary}（合并批闲聊让路）"
+            )
+            return {
+                "intents": collected,
+                "primary": primary,
+                "method": "rule_multi",
+                "entities": entities,
+                # V12 兼容别名（与 _wrap_with_intent_alias 一致）
+                "intent": primary,
+                "confidence": collected[0]["confidence"],
+            }
+
+        if saw_chitchat:
+            return _wrap_with_intent_alias(
+                {
+                    "intents": [{"intent": "chitchat", "confidence": 1.0}],
+                    "primary": "chitchat",
+                    "method": "rule_short",
+                    "entities": entities,
+                },
+                candidates[0],
+            )
+        return None
+
+    @staticmethod
     def _short_or_rule(query: str, entities: dict) -> Optional[dict]:
         """V18：单条消息的 短消息短路 + 规则匹配（从 classify 抽取，逻辑不变）。
 
@@ -324,6 +392,8 @@ class IntentService:
             "价格", "库存", "型号", "规格", "续航", "颜色", "多大", "几个",
             "多重", "重量", "瓦时",  # V18.3: 重量类参数问法（'有多重?'4字曾误短路 chitchat）
             "保修", "活动", "促销", "包邮", "发票", "折扣",
+            # V21 M3-4：4 字实质问法此前漏网被误短路（连发批内被闲聊让路跳过）
+            "多少钱", "运费", "邮费", "优惠",
         ])
         has_meaningful_keyword = any(kw in stripped for kw in _NON_CHITCHAT_KEYWORDS)
         _PUNCT_SET = frozenset("?.？！。,~ ")
