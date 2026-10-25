@@ -1,6 +1,6 @@
 # M14 业务闭环构造数据验证
 
-> **目的**：用 mock 数据触发 M14 4 actions + RefundFlow 4 分支 + Tool 调用 + 边界 case，生成简历可用的数据背书。
+> **目的**：用 mock 数据触发 M14 4 actions + RefundFlow 4 分支 + Tool 调用 + 边界 case，生成项目文档可用的数据背书。
 
 ## 目录结构
 
@@ -18,12 +18,12 @@ scripts/m14_validation/
 data/m14_validation/
 ├── raw.json                          # 原始结果（100 条）
 ├── failed_cases.json                 # 失败 case 详情
-└── m14_validation_report.md          # 简历同步建议的 markdown 报告
+└── m14_validation_report.md          # 对外指标同步建议的 markdown 报告
 ```
 
 ## 4 核心指标
 
-| 指标 | 公式 | 简历怎么写 |
+| 指标 | 公式 | 项目文档怎么写 |
 |------|------|-----------|
 | **主动查询覆盖率** | (DIRECT_ANSWER + SHOW_PICKER) 成功数 / Resolver 决策数 | "100 scenarios 验证 4 actions 决策分布，覆盖率 XX%" |
 | **业务流程完成率** | RefundFlow.run() 走完所有 stage 数 / RefundFlow 调用数 | "RefundFlow 30 场景流程完成率 XX%" |
@@ -91,8 +91,8 @@ DELETE FROM orders WHERE user_id BETWEEN 10001 AND 10010;
 PYTHONPATH=backend python scripts/m14_validation/run_validation.py --cleanup-only
 ```
 
-## 与简历的对应
+## 与项目文档的对应
 
-报告自动生成"§5 简历同步建议"小节，包含 4 段可直接复制到简历的 bullet。完整路径：
+报告自动生成"§5 对外指标同步建议"小节，包含 4 段可直接复制到项目文档的 bullet。完整路径：
 
 `data/m14_validation/m14_validation_report.md` 第 5 节

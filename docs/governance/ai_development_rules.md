@@ -64,7 +64,7 @@ docs/                                  行数   状态
 ├── test_coverage.md                   —    测试覆盖说明
 ├── refund_graph_v3.png                —    退款流程图
 ├── ecommerce_kb/                      —    知识库数据（gitignore）
-└── _private/                          —    简历素材（gitignore）
+└── _private/                          —    个人素材（gitignore）
 ```
 
 **核心问题：**
@@ -850,7 +850,7 @@ docs/
 - [监控配置](operations/monitoring.md)
 - [健康检查](operations/healthcheck.md)
 
-### 面试 / 简历
+### 对外讲解
 - [_private/resume_snippet.md](_private/resume_snippet.md)（不进 Git）
 
 ## 按类型看

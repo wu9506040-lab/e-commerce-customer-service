@@ -645,7 +645,7 @@ DATABASE_URL="mysql+pymysql://cs_user:pwd@mysql:3306/customer_service?charset=ut
 | F | 启动 **Sprint 5 阶段 2**：traffic_ratio 灰度 + 5 YAML 迁移 | PM 视角灰度，等业务真正需要时启动（用户 MVP 决策暂缓） |
 | G | 启动 **Sprint 6**：多租户 MVP 预备（tenant_id 字段补齐） | §9.4.3 多租户扩展能力；M14 conversation_context 表已预留（待 Sprint 6 同步加 tenant_id） |
 | H | 优化 **OrderCard `detailError` UX**（M10 遗留小瑕疵） | `Failed to fetch` 内联展示；不在 .error-banner 全局但 UX 不友好 |
-| I | 用户侧动作：M14 release notes 复制到 Gitee Releases / healthcheck.io UUID / 简历 baseline 同步 | 文档已就绪，等用户操作 |
+| I | 用户侧动作：M14 release notes 复制到 Gitee Releases / healthcheck.io UUID / 对外指标 baseline 同步 | 文档已就绪，等用户操作 |
 
 ---
 

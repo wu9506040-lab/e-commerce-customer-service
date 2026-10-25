@@ -178,7 +178,7 @@ V5 的"3 失败但幻觉都是 0"是 LLM 偶然（本次 v6.2% 是非确定性 �
 | P2 | refund_graph unknown 分支兜底（V5 提的 P3）| 30 min |
 | P2 | CI env diff 检查（`.env` vs `.env.dev`）| 30 min |
 | P2 | T2.2 POLICY_QUOTE_REQUIRED 已生效，V7 重跑验证政策覆盖率显著提升 | 30 min |
-| P2 | T2.3 简历 baseline 同步 V6 数字 | 10 min |
+| P2 | T2.3 对外指标 baseline 同步 V6 数字 | 10 min |
 
 ---
 

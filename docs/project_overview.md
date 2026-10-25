@@ -97,7 +97,7 @@ E:\智能客服\
 ├── deploy/                      # Docker Compose（5 容器）+ nginx + mysql init
 ├── docs/                        # 架构文档/审计报告/吸收笔记（10+ 篇）
 │   ├── rag_data_platform.md     #   RAG 数据中台设计
-│   ├── project_report.md        #   简历版项目报告
+│   ├── project_report.md        #   汇报版项目报告
 │   └── reference_absorption_notes.md # 参考项目逐模块对照笔记
 ├── scripts/                     # daemon 启动/watchdog/入库流水线/评测脚本
 ├── docs/ecommerce_kb/           # 知识库源文件（JSON/PDF/MD → Qdrant）

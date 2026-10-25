@@ -103,7 +103,7 @@
 | 7 | Sprint 5-2（traffic_ratio 灰度 + 5 YAML 迁移）| Sprint 5 后续 | ⏳ 按需启动 |
 | 8 | Sprint 6 多租户 MVP 预备 | Roadmap §3.7 | ⏳ 待启动 |
 | 9 | OrderCard `detailError` UX 优化 | M10 遗留 | ⏳ UX |
-| 10 | 用户侧：M14 release notes / healthcheck.io UUID / 简历 baseline | I 项 | ⏳ 用户操作 |
+| 10 | 用户侧：M14 release notes / healthcheck.io UUID / 对外指标 baseline | I 项 | ⏳ 用户操作 |
 
 ---
 
@@ -350,7 +350,7 @@ P2-2（A6 RRF 加权） + P2-3（V14.x 第 2 Flow） + P2-4（C4 live + Agent FC
 
 | ID | 缺口 | 价值 | 工时 | 优先级 |
 |----|------|------|------|--------|
-| **P4-1** | admin 全局会话查询 API（跨用户审计 + 按 user_id / 时间 / 关键词过滤）| ⭐⭐⭐⭐⭐ 简历 RBAC + 运营审计必问 | 1.5-2h | **P0 推荐先做** |
+| **P4-1** | admin 全局会话查询 API（跨用户审计 + 按 user_id / 时间 / 关键词过滤）| ⭐⭐⭐⭐⭐ RBAC 与运营审计能力 | 1.5-2h | **P0 推荐先做** |
 | **P4-2** | 运营聚合指标 API（日活会话趋势 / 7 日响应延迟 P50/P95 / 转人工分布 / hit@K 实时统计）| ⭐⭐⭐⭐ 可观测性驾驶舱 | 2-3h | ✅ 已完成 · 2026-07-19 |
 | **P4-3** | 单对话 export + replay JSON（重放某次对话复现 bug）| ⭐⭐⭐ 调试效率翻倍 | 1h | P2 |
 | **P4-4** | `messages.contexts` JSON 索引（M3 生产规模才需要）| ⭐ MVP 不急 | 30min | P3 |
@@ -423,7 +423,7 @@ P4-4 索引（M3 生产规模才需要，暂搁置）
 | 维度 | 原 v11 §11 | 新增 v11 §12 |
 |------|-----------|-------------|
 | 焦点 | RAG 优化（召回 + 切片 + rerank）| 可观测性（admin + 聚合 + 调试）|
-| 简历加分 | 算法能力（RRF/BM25/HyDE）| 工程能力（RBAC + 审计 + 可观测性）|
+| 能力加分 | 算法能力（RRF/BM25/HyDE）| 工程能力（RBAC + 审计 + 可观测性）|
 | 业务价值 | 提升 AI 回答质量 | 降低运营/调试成本 |
 | 投入产出 | 中（需真实数据验证 hit@K 提升）| 高（功能明确，admin 全局查询一次写完即用）|
 

@@ -4287,7 +4287,7 @@ A5 是用户优先级排序里的**第一项**（"性能提升明显"）。
 
 - **per-request executor > module-level 单例**：module-level 池有 3 个隐患：1) 跨请求共享状态，配置改动难生效；2) 线程泄漏风险（shutdown 调用复杂）；3) 测试难隔离。per-request `with` 块让生命周期与请求对齐，自动释放，**符合"最小惊讶"原则**
 - **不改 async generator 是关键约束**：改成 async generator 跨 3 模块（orchestrator + chat + policy_service），违反 §5 Scope Lock。`ThreadPoolExecutor` 是在"不改接口签名"前提下拿并行性能的最简方案
-- **latency benchmark 是产品决策的物证**：从"我们觉得并行会快"到"实测 5.3x 加速"，是给未来的我们 / 面试官的硬数据。比 profile / 估算靠谱得多
+- **latency benchmark 是产品决策的物证**：从"我们觉得并行会快"到"实测 5.3x 加速"，是给未来的我们 / 外部评审的硬数据。比 profile / 估算靠谱得多
 - **mock sleep 是 benchmark 的瑞士军刀**：避开真实 Provider（Qdrant / LLM 网络抖动），用 `time.sleep(0.3)` 模拟"IO 密集 + 大致耗时"，覆盖 80% 真实场景；剩余 20%（embedding / qdrant 真实延迟）用生产 hit@K 报告补充
 - **GIL 不是并行障碍**：IO 密集场景（httpx / socket）下 GIL 在等待时释放，多线程实际并行。CPU 密集才需要 multiprocessing 或 asyncio。判断标准：**profile 一下看是否主要时间在 IO wait**（本场景是）
 - **scope lock 的实操价值**：A5 改动仅 2 个文件（policy_service + config），**orchestrator / chat.py 零改动**，SSE Resume / ChatPage / Intent 等其他模块**完全无需回归测试**。这就是单模块改动的复利收益
@@ -4485,7 +4485,7 @@ PolicyService.search_multi_policy
 **驱动**：
 - 「RAG 进阶优化」需要 **A/B 数据**而不是拍脑袋
 - 「Agent 框架」上线前需要 **决策质量评测**（function call 选对 tool 比例）
-- 简历/面试需要「自建评测体系」的硬证据
+- 工程质量需要「自建评测体系」的硬证据
 
 ### Tech（技术栈）
 
@@ -5132,27 +5132,27 @@ M14: 在 chat/orchestrator.py 周围补 4 层基础设施
 
 ## What（做了什么）
 
-为 M14 业务闭环写了 4 个构造数据验证脚本，给简历"主动查询"加数据背书：
+为 M14 业务闭环写了 4 个构造数据验证脚本，给"主动查询"加数据背书：
 
 | 脚本 | 职责 |
 |------|------|
 | `scripts/m14_validation/mock_data.py` | 10 user × 0-5 订单 = 26 订单；customer_profile 业务数据结构 |
 | `scripts/m14_validation/query_pool.py` | 100 business scenarios：resolver 40 / refund 30 / tool 20 / edge 10 |
 | `scripts/m14_validation/run_validation.py` | 主入口：临时启 4 灰度开关 → 跑 100 scenarios → 计算 4 核心指标 |
-| `scripts/m14_validation/README.md` | 用法 + 异常中断恢复 + 简历同步建议 |
+| `scripts/m14_validation/README.md` | 用法 + 异常中断恢复 + 对外指标同步建议 |
 
 输出（脚本跑后产生）：
 - `data/m14_validation/raw.json`（100 条结果）
 - `data/m14_validation/failed_cases.json`
-- `data/m14_validation/m14_validation_report.md`（含简历可直接复制的 bullet）
+- `data/m14_validation/m14_validation_report.md`（含可直接复用的成果描述）
 
 ## Why（为什么）
 
 按用户最近的"求职包装"策略（见 `project_m14_done.md` 上下文）：
 - M14 代码已闭环（5 灰度开关默认 False → dead branch）但**没有真实流量数据**
-- HR 看简历"实现用户上下文感知 Agent"会问"线上跑过吗？多少用户？"
+- 读者看到项目"实现用户上下文感知 Agent"会问"线上跑过吗？多少用户？"
 - 用构造数据验证：把 M14 4 actions + RefundFlow 4 分支 + Tool 调用跑一遍
-- 跑出来的数字（覆盖率 / 完成率 / 成功率 / Hallucination Free Rate）直接写进简历
+- 跑出来的数字（覆盖率 / 完成率 / 成功率 / Hallucination Free Rate）直接写入对外文档
 - 不用"线上化幻觉"——明说"基于构造订单数据完成端到端验证"
 
 ## Tech（技术栈）
@@ -5217,9 +5217,9 @@ cleanup_mock_data()                           # 26 个 Order hard delete
 
 - **不属于 M14 4 层基础设施**：验证脚本是外部工具（scripts/），不动 `app/`
 - **属于求职包装工具集**：和 `eval_agent_fc.py` / `eval_hitk.py` / `verify_refund_state_machine.py` 同类
-- **是简历 → 项目的反向链接**：简历数字从此报告产出；报告每次跑更新数字
+- **是文档 → 项目的反向链接**：对外指标从此报告产出；报告每次跑更新数字
 
-## 简历同步模板（报告 §5 自动生成）
+## 对外指标同步模板（报告 §5 自动生成）
 
 ```text
 ■ Agent 编排: 100 business scenarios 验证 4 actions 决策分布，覆盖率 75%
@@ -5240,12 +5240,12 @@ cleanup_mock_data()                           # 26 个 Order hard delete
 - `project_m14_done.md` — M14 4 层基础设施 + 5 灰度开关
 - `feedback_script_load_dotenv_import.md` — load_dotenv 必须在 main() 入口（不在 import 期）
 - `feedback_test_factory_singleton.md` — `get_order_context_resolver()` 工厂单例注意事项（本脚本不涉及，pytest 才需要 reset）
-- `feedback_resume_no_ai_flavor.md` — 简历数据按业务倒推，不堆砌（"覆盖 4 actions 分布"而不是"覆盖 X% 场景"）
+- `feedback_resume_no_ai_flavor.md` — 项目文档数据按业务倒推，不堆砌（"覆盖 4 actions 分布"而不是"覆盖 X% 场景"）
 - `feedback_docker_restart_vs_rebuild.md` — 改 Python 代码必须 `--build`；本脚本不需（不动 backend 镜像）
 
 ---
 
-## §45 · M14 构造验证 V2 全套整改（2026-07-18 · 真实话术驱动 + NL 抽取 + 5 真指标 · 简历同步落地）
+## §45 · M14 构造验证 V2 全套整改（2026-07-18 · 真实话术驱动 + NL 抽取 + 5 真指标 · 对外指标同步落地）
 
 **范围**：M14 智能客服升级"业务闭环验证"100 场景构造数据整改。背景：上一阶段 4 个伪指标（主动查询覆盖率 75% / 业务流程完成率 100% / Tool 调用成功率 100% / 幻觉-free 100%）被用户质疑"模拟的业务和数据要有依据合理"，自审发现 6 个根因问题（详见 `data/m14_validation/m14_validation_report.md` 顶部「整改说明」）。
 
@@ -5291,7 +5291,7 @@ cleanup_mock_data()                           # 26 个 Order hard delete
 5. **escalate 测的不是 business.md 定义的升级**（只测了 1/5 类触发）
 6. **mock 数据无业务依据**（10 user 26 order 不是真实电商分布）
 
-记忆规则 "feedback_resume_baseline.md：只列当下可实测数字，避免面试官当场重测翻车" 也要求简历数字必须可复现。
+记忆规则 "feedback_resume_baseline.md：只列当下可实测数字，避免外部评审当场重测翻车" 也要求对外指标必须可复现。
 
 ### Tech（技术栈）
 
@@ -5363,7 +5363,7 @@ cleanup_mock_data()  # try/finally 自动清理 70 单
 
 - **验证脚本是外部工具**（`scripts/m14_validation/`），不动 `app/` / `backend/`
 - **属于求职包装工具集**：与 `eval_agent_fc.py` / `eval_hitk.py` / `verify_refund_state_machine.py` 同类
-- **是简历 → 项目的反向链接**：简历数字从此报告产出；报告每次跑更新数字
+- **是文档 → 项目的反向链接**：对外指标从此报告产出；报告每次跑更新数字
 - **数据双向校验**：报告 §4 真幻觉明细 + §6 真实场景展示 = 可逐 case 复现
 
 ### Tests
@@ -5382,19 +5382,19 @@ cleanup_mock_data()  # try/finally 自动清理 70 单
 - **不验证 ENABLE_CONTEXT_STORE**：conversation_contexts 表依赖未跑（避免 schema 改动）
 - **data/real_corpus.json gitignored**：100 条话术是公开整理（如泄露到公网无安全风险，但保留语料治理灵活性）
 
-### 简历同步
+### 对外指标同步
 
 | 文件 | 改动 |
 |------|------|
 | `docs/_private/resume_zhongwei.html` | 构造验证 bullet: 4 伪指标（75%/100%/100%/100%）→ 5 真指标（48%/60%/100%/28%/15%）；Agent 评测 bullet: 0.733/0.667/**0.000** → 0.733/0.667/**1.000**（修 SSE 双层 data 解析 bug 后真基线）|
 | `docs/_private/resume_snippet.md` | 项目描述 bullet #4 同步；量化数字表新增"M14 真实话术回归 100 场景 / 5 真指标" 行；更新日志加 2026-07-18 改动 |
 
-**记忆规则对齐**：所有新数字均可通过 `python scripts/m14_validation/run_validation.py` 现场复现；面试官追问可直接 demo，不翻车。
+**记忆规则对齐**：所有新数字均可通过 `python scripts/m14_validation/run_validation.py` 现场复现；外部评审追问可直接 demo，不翻车。
 
 ### 关联记忆
 
-- `feedback_resume_baseline.md` — 简历只列可实测数字
-- `feedback_resume_no_ai_flavor.md` — 简历数字按业务倒推
+- `feedback_resume_baseline.md` — 项目文档只列可实测数字
+- `feedback_resume_no_ai_flavor.md` — 对外指标按业务倒推
 - `feedback_docker_mysql_localhost.md` — Windows → Docker MySQL 走 localhost:3307
 - `feedback_script_load_dotenv_import.md` — load_dotenv 在 main() 入口
 - `project_c4_live_v1_done.md` — Agent 评测 hal_free 1.000 真基线（修 SSE 双层 data 解析 bug 后）
@@ -5432,7 +5432,7 @@ cleanup_mock_data()  # try/finally 自动清理 70 单
 3. 工程化成熟度 signal：展示"AI 知道自己不行 + 工程化兜底"远比"功能多"有说服力
 
 **MVP 边界克制（不做的事）**：
-- ❌ 工单持久化表（MVP 不需要；payload 推到前端即可，面试讲设计）
+- ❌ 工单持久化表（MVP 不需要；payload 推到前端即可，评审时讲设计）
 - ❌ LLM 生成摘要（直接塞最近 5 条原文，<1s 延迟）
 - ❌ 低 confidence 自动检测（需 LLM 加字段，工程量大，边际收益低）
 - ❌ 人工坐席工作台（完全 out of scope）
@@ -5564,7 +5564,7 @@ LangGraph escalate 节点 (质量问题无凭证) → EscalationService.handoff(
 - **降级文本固定**：`settings.ENABLE_ESCALATION_HANDOFF=False` 时返"系统繁忙"，不区分 user_requested / agent_unavailable
 - **前端无 retry**：HandoffCard 渲染后用户无法"撤回转人工"；backlog 加 cancel 按钮
 
-### 简历同步
+### 对外指标同步
 
 | 文件 | 改动 |
 |------|------|
@@ -5650,14 +5650,14 @@ console error 0 → step 7 page.fill 成功 → V3 LangGraph 链路通
 
 ### Architecture Role（在系统中的位置）
 
-- **公网演示入口**：http://120.79.27.124:5173 是 HR/面试官 5 秒看懂技术深度的入口，10/10 PASS 是简历 baseline 的核心数字
+- **公网演示入口**：http://120.79.27.124:5173 是 HR/外部评审 5 秒看懂技术深度的入口，10/10 PASS 是对外指标 baseline 的核心数字
 - **数据准备责任**：deploy/mysql/init/*.sql 是 ECS 首次部署时初始化数据的唯一机会（空 data dir），后续 ECS 重建如果保留 data 卷则 seed 跳过
 - **前端兼容底线**：`crypto?.X?.() ?? fallback` 模式应该推广到所有浏览器原生 API（structuredClone、TextEncoder、ResizeObserver 等），避免 headless 验证翻车
 
 ### 关联记忆
 
-- `feedback_resume_baseline.md` — 简历只列可实测数字
-- `feedback_resume_no_ai_flavor.md` — 简历数字按业务倒推
+- `feedback_resume_baseline.md` — 项目文档只列可实测数字
+- `feedback_resume_no_ai_flavor.md` — 对外指标按业务倒推
 - `project_m14_done.md` — M14 4 层基础设施 + 5 灰度开关
 
 ---
@@ -7820,7 +7820,7 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 ## §67 · V14 刷数字复跑揪出 prompt 缓存静默陈旧 + 修复锁死 + 死文件清理（2026-10-11）
 
 ### 1. 背景
-按存档接续"刷数字三件"债（README 677 滞后、v3 简历 hit@5/测试数/覆盖率仍是洗库前旧口径）。铁律先行：写数字前本机全量复跑。Docker Desktop 自恢复昨晚重建的五容器（api healthy、qdrant 136 点 = 新库世代）。
+按存档接续"刷数字三件"债（README 677 滞后、v3 项目文档 hit@5/测试数/覆盖率仍是洗库前旧口径）。铁律先行：写数字前本机全量复跑。Docker Desktop 自恢复昨晚重建的五容器（api healthy、qdrant 136 点 = 新库世代）。
 
 ### 2. 复跑现形：口径差 1 的真相是掷硬币
 - 全量 690 = 688 绿 + 2 红；存档口径"689 绿 + 1 环境项"——差值即问题。
@@ -7842,7 +7842,7 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 ### 5. 终验（2026-10-11 实测权威口径）
 - 测试池 **693 = 692 绿 + 1 环境项**（source_attribution），覆盖率 **69%**（8684 语句/2719 miss），ruff E9+F82x 0 错；test_prompt_loader_version.py 19 条全绿；原 flaky 五连跑全绿。
 - 评测 v13 三级报告在库（data/eval_hitk_v13_*.json，330 题 source 级）：dense 0.700 → hybrid 0.733 → +rerank 0.779；hit@1 0.427→0.576；hit@10 0.812（旧 0.882 系脏库 doc_id 口径，跨口径不引用）。
-- 数字刷新落地：README 五处（badges 632→693/67→69%/hit@5 旧口径→新三级、战绩卡 677→693+V14 组、"660+"→693、复跑日期）；v3 简历 md+构建 HTML 同步（114 篇/136 chunks、三级消融、693/69%）。
+- 数字刷新落地：README 五处（badges 632→693/67→69%/hit@5 旧口径→新三级、战绩卡 677→693+V14 组、"660+"→693、复跑日期）；v3 项目文档 md+构建 HTML 同步（114 篇/136 chunks、三级消融、693/69%）。
 - 重建 api 容器（带 V14 修复）后活体 22 例退款端到端复验 **22/22**，health 全组件 ok，feature flags 自报与部署口径一致。
 
 ### 6. 死文件清理
@@ -7898,13 +7898,13 @@ PR #1 完整走通 feature branch → PR → CI 红 → 诊断 → 修复 → CI
 - cross_user 看似 PASS 实则非自己票：方案重读 alice id 并 reset 票面 args 字节级一致；attacker_model 用原始 args JSON（不是模仿品）
 - sweep_expired import 时机：脚本必须 setdefault JWT_SECRET/DATABASE_URL 后再 import 业务模块，否则触发 _validate_jwt_secret 拒启动
 
-### 7. 弹药同步
+### 7. 数据亮点同步
 - README 战绩卡新增 human-in-the-loop 行（一行密度+出处）
-- 弹药 §0 早已收口（详见 README）；§12 第 7 行从"落地中"升"已落地+12 步 PASS"；§13 一键复现清单加 `verify_confirm_ticket.py` 命令
+- 数据亮点 §0 早已收口（详见 README）；§12 第 7 行从"落地中"升"已落地+12 步 PASS"；§13 一键复现清单加 `verify_confirm_ticket.py` 命令
 
 ### 8. 教训
 - "业务铁律"和"代码铁律"是两回事：前者是规范（写在 README 不出错），后者必须用 4 件套硬编码（不写代码就是空话）；本次落地后规范→代码的可验证桥梁走通
-- args_hash 这种"看起来不关键"的字段也是面试考点："AI 偷改金额"是培训材料的经典反例——你的四件套里这一条最锐利
+- args_hash 这种"看起来不关键"的字段也是技术评审考点："AI 偷改金额"是培训材料的经典反例——你的四件套里这一条最锐利
 - 演练脚本第一次跑就暴露两个真实 bug（session_id 冲突、args_hash 列宽），再次印证"先 run 再 ship"——比任何 review 都早发现问题
 
 ### 1. 根因
@@ -7939,7 +7939,7 @@ deadline 单元 6 + qwen.chat clamp/budget-exit 2 + qwen.stream_chat 入口拒 1
 - 短路评估 `if rem is not None and rem <= 0:` 中 `rem` 被取两次（短路救不到"非 None"分支）——改成 `rem = _deadline.remaining(); if rem is not None and rem <= 0:` 单次取。
 - 注册端 5/min 限流 + login 同样限流让 register-and-login-then-rate-limit 联调被卡——绕开：直连 DB 预创用户（passlib bcrypt + INSERT），20 路 /chat 复用同一 admin cookie（L3 是同 query 限不限 user）。
 
-### 7. 口径升级（弹药 §12 已同步）
+### 7. 口径升级（数据亮点 §12 已同步）
 §12 五道场景题全部从"正在做/状态标清"升到"已落地 + 实测数字"：
 - 大模型调用失败：实测单请求 66.98s，熔断后 0ms
 - 超时/慢请求：90s + 分段上限 + 流式逐 chunk 预算
@@ -7967,7 +7967,7 @@ deadline 单元 6 + qwen.chat clamp/budget-exit 2 + qwen.stream_chat 入口拒 1
 - **演示脚本第二遍 FAIL 揪出语义正确行为**：与首轮同文问句 → 哈希相同 → 👎 落 merged 行 bump 而非新池行——去重语义按设计工作，但校验脚本必须用唯一问句 + status=new 过滤（校验脚本自己也要出厂验证）。
 - **unique 约束字符串按列名解析**：mapped_column("signal_type", …) 后 `UniqueConstraint("query_hash","signal")` 集合期 KeyError——改约束串用真实列名。
 
-### 3. 口径升级（简历已同步）
+### 3. 口径升级（项目文档已同步）
 "👎 差评经 intent 快照反查——badcase 采集→人工审核→回归评测闭环**在建**" → 采集（三信号自动入池）+ 审核（API 状态机+稳定键标注）+ 合入（脚本防漂移+备份+回写）**已运行**，活体校验命令可复现。诚实边界不变：合入仍需人工确认（半自动是设计而非缺陷——评测集质量靠人审兜底）；低置信扫描阈值 0.6 是经验值无分布依据（E6'/2.5 黄金集后再校准）。
 
 
@@ -7992,15 +7992,15 @@ OPTIMIZATION §3.4 圈的"意图黄金集"原说"每类 ≥30 条（规则易错
 | 分类别 F1 | refund_query 67.6 / policy_query 88.4 / order_query 52.3 / product_query 32.7 |
 | 难度规则命中率 | easy 77.2% / medium 34.0% / hard 29.4% / adversarial 21.9% |
 
-### 4. 弹药同步
+### 4. 数据亮点同步
 - README 战绩卡新增 2.5 行（一行密度+出处）
-- 弹药 §13 同步（新增 eval_intent_classify 命令）
+- 数据亮点 §13 同步（新增 eval_intent_classify 命令）
 
-### 5. 实战洞察（可上简历 / 面试）
+### 5. 实战洞察（可上项目文档 / 技术评审）
 - **policy_query 88.4%** 证明 2.3 修补的"退款.*到账"等时效类规则确实命中——这是工程改进的证据链
 - **product_query 32.7%** 难是事实（口语化查询难模板化）——承认局限，不粉饰
 - **adversarial 21.9%** E6' 边界场景（矛盾/政策外/连珠/情绪化）——这才是 agent 真正要 LLM 兜底的部分
-- 简历一句话：**"意图路由 170 条黄金集，离线评测：规则层覆盖 51.2%/精度 88.5%，E6' 对抗集 21.9% 是 LLM 兜底真实责任区"**
+- 项目文档一句话：**"意图路由 170 条黄金集，离线评测：规则层覆盖 51.2%/精度 88.5%，E6' 对抗集 21.9% 是 LLM 兜底真实责任区"**
 
 ### 6. 踩坑 3 则
 - 三层 mock 路径：`get_llm_provider` 不是被 `classify()` 直接调用——LLM 走的是 `_llm_classify`/`_llm_classify_multi` 类方法；不patch 全层走真 LLM 触发 QWEN_API_KEY 校验异常被吞默认返 policy_query（污染指标）
@@ -8008,9 +8008,9 @@ OPTIMIZATION §3.4 圈的"意图黄金集"原说"每类 ≥30 条（规则易错
 - 总数与 by_intent 之和不一：由两层 mock 走两条路径导致部分样本未计入；下一步把 mock 简化为单层（装饰器栈式）
 
 ### 7. 教训
-- "AI 帮你生成黄金集"不是终点，必须跑脚本产生 F1/P/R 这种硬数字；否则弹药卡里只能写"设计原则"
+- "AI 帮你生成黄金集"不是终点，必须跑脚本产生 F1/P/R 这种硬数字；否则数据亮点卡里只能写"设计原则"
 - mock LLM 路径要逐层 trace：`get_llm_provider` vs `_llm_classify` vs `_llm_classify_multi` 是三条路径，每条都要打补丁——单层 mock 必漏
-- E6' adversarial 是面试真问的："你们的边界场景覆盖了吗"——32 条对抗集就是答案（矛盾陈述 8 / 政策外 8 / 连珠 8 / 情绪化 8）
+- E6' adversarial 是技术评审真问的："你们的边界场景覆盖了吗"——32 条对抗集就是答案（矛盾陈述 8 / 政策外 8 / 连珠 8 / 情绪化 8）
 
 ---
 
@@ -8020,7 +8020,7 @@ OPTIMIZATION §3.4 圈的"意图黄金集"原说"每类 ≥30 条（规则易错
 把智能客服从"单渠道 demo"升级为"多渠道 24h 业务平台"，首个落地的真实业务渠道是**闲鱼 IM**。完整技术栈：MCP stdio 协议连 goofish-cli（5 工具 → 18 工具） + 24h daemon（5 模块） + 场景化话术（3 模板） + 订单事件落库（5 态状态机） + 智能退款决策（4 类）。**812 passed / 0 failed**，端到端真跑验证（zwyyy ↔ 中华模具店 ORD001 智能拒绝）✅。
 
 ### 2. Why
-- 简历需要"真实业务场景"（之前全是 demo 演示）
+- 项目文档需要"真实业务场景"（之前全是 demo 演示）
 - 智能客服的 RAG/LangGraph/716 测试已就绪——缺的是**业务接入层**（薄包装）
 - 闲鱼有 MCP 兼容 CLI（fancyboi999/goofish-cli 307⭐）—— 复用现成 + 不逆向协议
 - 主题不变原则（你拍板）：智能客服核心 0 改动，业务层薄包装即可
@@ -8173,7 +8173,7 @@ OPTIMIZATION §3.4 圈的"意图黄金集"原说"每类 ≥30 条（规则易错
 | `af3c149` (V16.3.4) | **LLM 真用层修复** | stream_dispatcher.py + orchestrator.py + refund_handler.py + prompt_assembler.py + test | +313/-19 |
 
 ### 2. Why
-- 简历/演示价值：闲鱼智能客服必须基于渠道上下文（卖家真实事实）而非通用 KB，否则买家收到「抱歉暂无」无价值回复，无法体现 V16「真实业务场景」设计初衷
+- 项目文档/演示价值：闲鱼智能客服必须基于渠道上下文（卖家真实事实）而非通用 KB，否则买家收到「抱歉暂无」无价值回复，无法体现 V16「真实业务场景」设计初衷
 - 不修：买家全问"45 号钢 / 718 / 模具材质"等专属问题都返模板化兜底，演示价值崩塌
 
 ### 3. Problem→Fix（3 次尝试避免同思路重试）

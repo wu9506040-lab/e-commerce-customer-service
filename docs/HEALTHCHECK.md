@@ -1,6 +1,6 @@
 # ECS 健康监控接入指南（healthcheck.io）
 
-> 让面试官/HR 看到 README 上有一颗绿色"在线"徽章 = 整个系统真的在 7×24 小时活着。
+> 让访客看到 README 上有一颗绿色"在线"徽章 = 整个系统真的在 7×24 小时活着。
 > 比纯截图证明"我跑过 demo"更可信。
 
 ---
@@ -157,8 +157,8 @@ curl https://hc-ping.com/YOUR-UUID-HERE/fail     # 标记 failed
 
 ---
 
-## 7. 简历/面试场景话术
+## 7. 运维演示场景
 
 > "这个 README 上的绿点是真实的——我在阿里云 ECS 上跑了一个 5 分钟周期的健康上报脚本（`scripts/healthcheck_ping.py`），探活整个 FastAPI 服务的 MySQL/Redis/Qdrant 三件套。一旦 ECS 挂了，5 分钟内我邮箱会收到告警。"
 
-这是简历项目里 **"持续运营"** 的最直接证据，比任何 mock 数据都有说服力。
+这是本项目 **"持续运营"** 的最直接证据，比任何 mock 数据都有说服力。
