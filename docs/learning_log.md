@@ -8253,3 +8253,84 @@ if not products and not kb_docs:
 - commit: `66c3328` (V16.3.3-5) + `af3c149` (V16.3.4)
 - memory: `~/.claude/projects/C--Users-zw/memory/project_xianyu_v1633_progress.md`
 - 踩坑过程详见 §74 (V16 全栈演进) + 本节"3 次尝试"——下次类似 bug 先 grep 输出模板字符串
+## §76 · V19.1 商城渠道人工直发 + 灰度开关三源一致性（2026-10-30）
+
+### 1. What
+在隔离 worktree（`E:\codex` · 分支 `codex/isolated-dev`，从 `master@44ed47d` 切出）完成 V19.1 商城渠道人工直发功能，并补齐 2 处收尾缺失 + 1 处预存在 lint 失败。4 个 commit：
+
+| commit | 范围 | 文件 |
+|--------|------|------|
+| `feat(xianyu)` | 商城人工直发 + 买家端 5s 轮询 + 6 条新测试 | `backend/app/api/{conversations,xianyu_admin}.py` + `frontend/src/{api.ts,types.ts}` + `frontend/src/components/MessageList.vue` + `frontend/src/views/{ChatPage,XianyuWorkbench}.vue` + `backend/tests/test_admin_mall_direct_send.py`（新） |
+| `chore(deploy)` | 灰度开关三源一致性（关闭审计 1.7 / 1.8） | `deploy/.env.example` + `deploy/docker-compose.yml` |
+| `fix(lint)` | `coordinator.py` 补 `Any` 导入（CI ruff F821 门禁） | `backend/app/services/agents/coordinator.py` |
+| `docs` | 收录《项目现状审计报告 v1.0》+ 文档索引更新 | `docs/PROJECT_AUDIT_2026-10-30.md`（757 行，新）+ `docs/README.md` + 本节 |
+
+### 2. Why
+- **业务**：此前商城渠道人工客服**只能走工单流程**，工作台输入框被硬编码禁用（`商城渠道暂不支持直发`）。V19.1 让人工能在商城会话里直接回话，买家端靠 5s 轮询可见。
+- **渠道差异（本次核心设计约束）**：闲鱼有 daemon ws 实时下发，商城没有 → 两条链路必须显式区分。**不能用 `cid` 前缀判断渠道**（闲鱼 cid 传进 API 时前缀已被剥掉），故在 `SendBody` 显式加 `channel` 字段。
+- **治理**：审计报告 §6.6 指出「灰度开关真值三源漂移」——`config.py` 有默认值、`compose` 缺注入、`.env.example` **零声明**，导致改开关必须重建镜像。本次一并关闭。
+
+### 3. Tech
+FastAPI + Pydantic v2 + SQLAlchemy 2.0（`intent_snapshot` 为 JSON 列）+ Vue3 + TS + Vite + pytest 9.1.1 + ruff 0.16.10。
+
+### 4. Flow
+```
+人工客服（闲鱼工作台，输入回复）
+  ↓ POST /admin/xianyu/send { cid, text, channel }
+  ↓
+  ├─ channel == "mall"（商城）：cid 即 session_id（禁止加 xianyu- 前缀）
+  │     → 落库 Message(role=assistant, intent_snapshot={human:True, agent:管理员名})
+  │     → 返回 {ok, queued:False}   ← 不下发 daemon
+  │
+  └─ channel == "xianyu"（闲鱼）：_cid_to_session(cid) 加前缀
+        → 落库同上
+        → redis.publish(COMMAND_CHANNEL, {action:"send",...}) → queued:True
+
+买家端（ChatPage.vue，5s setInterval 轮询，streaming/loading 期间跳过）
+  ↓ GET /conversations/{session_id}/messages
+  ↓ MessageItem.human = intent_snapshot.human is True
+  ↓ MessageList.vue 渲染：human=True → 绿头像「客」+「人工客服」标签；否则「智」
+```
+
+### 5. Problem & Fix
+
+**Problem 1 · 误删样式块导致 UI 掉样式**
+- 现象：`ChatPage.vue` 尾部删了 3 个 `<style scoped>`（`.flow-steps` 状态机指示器 / `.quick-confirm` 审批卡片 / `.ctx-banner` 上下文横幅），但模板 L504/506/515/522/524 **仍在引用这 5 个 class**（绑定 `flowStepIdx` / `contextBanner` / `showQuickConfirm` 等活变量）→ 三块 UI 变成无样式裸 div。
+- 根因：删除时只判断「CSS 块看起来冗余」，**没做模板引用与样式的配对校验**。
+- Fix：从 `44ed47d` 取回原样式块按字节精确回填（保住工作区 CRLF + 无 BOM），并加「模板 class ↔ 样式 class」计数校验。
+- **教训**：删样式前必须 `grep class 名` 双向确认——**模板引用数 > 0 就不能删样式**。
+
+**Problem 2 · 配置三源漂移（部署层陷阱）**
+- 现象：`deploy/.env.example` **零** Feature Flag 声明；`docker-compose.yml` 缺 5 个注入（`ENABLE_MULTI_QUERY` / `ENABLE_PROMPT_VERSIONING` / `ENABLE_DEMO_LOGIN` / `ENABLE_USER_PROFILE` / `ENABLE_USER_CONTEXT_PRELOAD`）→ 改这些开关必须重建镜像。
+- Fix：`.env.example` 补齐 **14 个**开关（含注释 + 与 `config.py` 一致的默认值），compose 补注入缺的 5 个。写完用脚本自动校验 `config.py ↔ compose ↔ .env.example` 三源（14/14 一致）。
+- **教训**：**任何在 `.env.example` 里声明的开关，都必须同时在 compose 注入**——否则 `.env.example` 本身就成了谎言（声明了但不生效）。
+
+**Problem 3 · 预存在失败要先隔离，别背锅也别放过**
+- `ruff check` 报 2 处 F821（`coordinator.py` 缺 `Any` 导入）：用 `git stash` 对照 HEAD 验证**确属预存在**（非本次引入）。虽属"别人的锅"，但它让 CI lint 门禁常红、阻塞本分支自证，故用独立 commit 修掉（1 行，`typing` 导入补 `Any`）。
+- 前端 `vue-tsc --noEmit` 报 4 处 TS2339（`OrderCard.vue`）：该文件与 HEAD **零差异** → 预存在问题；且 CI 本身**不含前端构建 job**。未越界修改，单独记录。
+
+**Problem 4 · 本地环境缺依赖 + pip 装崩版本组合**
+- `pytest` 收集 1234 条时 `tests/test_agent_checkpointer.py` 报 `ModuleNotFoundError: langgraph.checkpoint.sqlite`（本地缺 `langgraph-checkpoint-sqlite`，与本次改动无关）。
+- 直接 `pip install langgraph-checkpoint-sqlite` 会把 `langgraph-checkpoint` 顶到 **4.3.1**，与 `langgraph 0.2.76`（要求 `<3.0.0`）冲突 → 按 `requirements.txt` 约束 pin 回 `langgraph-checkpoint>=2.0.10,<3.0.0` + `langgraph-checkpoint-sqlite>=1.0,<3`。
+- **教训**：装依赖前先读 `requirements.txt` 的版本区间，**别让 pip 的隐式升级破坏既有约束**。
+
+### 6. Architecture Role
+- **模块边界**：本次改动横跨 `api/`（路由层：2 个 endpoint）+ `frontend/`（展示层）+ `deploy/`（配置层），**未触碰 `services/` 业务编排层**——商城直发只是「把人工消息落库 + 打标」，不需要新的 Service，符合 §7.2 分层规则与 §9.2 模块隔离。
+- **接口契约**：`SendBody.channel` 与 `MessageItem.human` 是本次唯一两处对外契约变化，均为**新增可选字段**（`channel` 默认 `"xianyu"`、`human` 默认 `False`）→ **向后兼容**，既有调用方无需改动。
+- **数据责任**：人工标记落在 `Message.intent_snapshot.human`（Conversation 模块拥有的数据），未新建表、未动表结构 → 符合 L1 数据库分级（无需迁移脚本）。
+- **AI 安全**：本次不涉及 Prompt / LLM 调用链，未触碰 §9.5 的 5 防；人工消息标记只用于前端视觉区分，不参与 AI 决策。
+- **可观测性**：后端沿用既有 `logger.info`（`[mall-direct] 人工直发落库（商城渠道）: sid=... admin=...`），保留 `session_id` / `admin` 可追踪字段。
+
+### 7. 验证证据链
+1. **pytest 全量**：`1225 passed, 18 skipped, 0 failed`（94.8s），覆盖率 **65.53% ≥ 63%** 门禁（CI 同参数复刻）
+2. **新增测试 6/6 pass**：`backend/tests/test_admin_mall_direct_send.py`（mall 不加前缀 / 落库事实 / 不 publish daemon / 闲鱼默认分支 / human 标记三态）
+3. **ruff 致命门禁**：`All checks passed!`（exit 0）
+4. **vite build**：exit 0，产物正常（CI 不含前端 job，本地补跑）
+5. **三源一致性脚本**：14 个开关 `config.py ↔ compose ↔ .env.example` 全一致，默认值全对齐
+6. **env diff check**：`python scripts/ci_env_diff.py` 无 drift（模板文件不参与 drift 检查 → 本次改动不触发）
+7. **预存在问题隔离**：OrderCard.vue TS 错误 + coordinator.py F821 均以 `git stash` 对照 HEAD 证明为预存在
+
+### 8. Followup
+- `OrderCard.vue` 4 处 TS2339（`Property 'ok' does not exist on type 'never'`）——预存在问题，建议单开一个 lint/类型债 commit 修复，并考虑给 CI 加前端 `vue-tsc` job（当前 CI 无前端构建，等于放弃了这道门）
+- 审计报告 1.7 / 1.8 已在本 commit 关闭；其余 P0/P1 修复路线（§8 三批次）待排期
+- 本分支尚未推远程（`codex/isolated-dev` 无上游），合并回 `master` 需 `git -C E:\智能客服 merge codex/isolated-dev` 或走 PR

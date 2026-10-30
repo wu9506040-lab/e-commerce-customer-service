@@ -2,7 +2,7 @@
 
 > 本目录是项目唯一的"知识仓库"。新成员 / AI 编程工具 / 外部评审请按本文档的阅读路径进入。
 >
-> 最后更新：2026-07-11 · Phase 0 治理优化落地
+> 最后更新：2026-10-30 · 收录《项目现状审计报告 v1.0》
 
 ---
 
@@ -16,7 +16,7 @@
 | 工程纪律 | 仓库根 `CLAUDE.md`（V2.1）                                      |
 | 业务基线 | `architecture/business.md`（V3.1 冻结）                          |
 | 系统形态 | `architecture/system.md`                                         |
-| 演进基线 | `development/roadmap.md`（V2 待生成，基于实际代码）              |
+| 演进基线 | `development/roadmap.md`（V2 · 基于实际代码扫描）                 |
 | AI 开发规则 | `governance/ai_development_rules.md`                          |
 
 ---
@@ -59,7 +59,7 @@
 1. README + architecture/system.md            ← 系统拓扑
 2. architecture/business.md V3.1               ← 业务架构全景
 3. CLAUDE.md §9 + governance/ai_development_rules.md ← 工程纪律
-4. development/roadmap_v1.md                   ← 技术演进路线
+4. development/roadmap.md                    ← 技术演进路线
 5. learning_log.md（里程碑 M1-M13）            ← 实际落地证据
 ```
 
@@ -79,18 +79,18 @@ docs/
 │   └── ai_development_rules.md            ← AI 开发规则 / 反例清单 / Prompt 管理
 │
 ├── development/                           ← 演进路线
-│   └── roadmap_v1.md                      ← V1 演进基线（待生成 V2）
+│   ├── roadmap.md                         ← V2 演进基线（基于实际代码）
 │
 ├── decisions/                             ← 重大架构决策（ADR · 待填充）
 │
 ├── learning_log.md                        ← 模块学习日志（M1-M13+ · 持续追加）
+├── PROJECT_AUDIT_2026-10-30.md            ← 现状审计报告（v1.0 · 全量评估 + 修复路线）
 │
 ├── OPERATIONS.md                          ← 部署 / 运维
 ├── HEALTHCHECK.md                         ← healthcheck.io 监控接入
 ├── demo_walkthrough_report.md             ← 公网演示 walkthrough
 ├── test_coverage.md                       ← 测试覆盖说明
 │
-├── PROJECT_DESIGN.md                      ← 项目设计草稿（10 项 TODO）
 ├── refund_graph_v3.png                    ← 退款流程图（v3）
 │
 ├── ecommerce_kb/                          ← 知识库数据（gitignore）
@@ -150,9 +150,9 @@ docs/
 | ✅ 落地   | `CLAUDE.md` V2.1                       | Phase 0 完成                        |
 | ✅ 落地   | `governance/ai_development_rules.md`  | 反例 / Prompt 检查已文档化           |
 | ✅ 落地   | `architecture/system.md`              | 系统形态已对齐 CLAUDE.md §9          |
-| 🚧 待生成 | `development/roadmap.md` V2           | **下一步：扫描实际代码后生成 V2**     |
+| ✅ 落地   | `development/roadmap.md` V2           | 已基于实际代码扫描 · Sprint 1-5 全部闭合 |
 | 🚧 待填充 | `decisions/`                           | 仅在产生重大决策时新增                |
-| 🚧 草稿   | `PROJECT_DESIGN.md`                   | 10 项 TODO 待填充                    |
+| ✅ 落地   | `PROJECT_AUDIT_2026-10-30.md`       | 全量审计 · 风险登记册 · 三批次修复路线 |
 
 ---
 
