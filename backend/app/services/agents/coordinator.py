@@ -19,7 +19,7 @@ V12 意图分类早已识别出 top-K=2 意图，但下游只答 primary——**
 from __future__ import annotations
 
 import logging
-from typing import Generator, Optional, Tuple
+from typing import Any, Generator, Optional, Tuple
 
 from app.services.agents.base import AgentContext, AgentProtocol
 from app.services.agents.registry import get_expert
