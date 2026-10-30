@@ -24,6 +24,8 @@ services:
       QWEN_API_KEY: ${QWEN_API_KEY}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL}
       QWEN_MODEL: ${QWEN_MODEL}
+      # 双意图补答灰度开关（coordinator 次专家补答）
+      ENABLE_DUAL_INTENT_DISPATCH: ${ENABLE_DUAL_INTENT_DISPATCH:-false}
       # V21：embedding 独立凭证（空 = 回落 QWEN_API_KEY/DASHSCOPE_BASE_URL）
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
@@ -66,6 +68,14 @@ services:
       # 容器内 ~/.goofish-cli/cookies.json 需通过 volumes 挂载；
       # 启用前先在本机 goofish auth login 导出 cookie，再复制到容器
       ENABLE_XIANYU_TOOLS: ${ENABLE_XIANYU_TOOLS:-false}
+        # ---- Feature Flag 注入补全（2026-10-30 · 审计报告 1.7/1.8）----
+        # 此前 5 个开关只存在于 config.py 默认值，compose 未注入 →
+        # 改行为必须重建镜像（部署层漂移）。现全部注入，改 .env 即可生效。
+        ENABLE_MULTI_QUERY: ${ENABLE_MULTI_QUERY:-false}
+        ENABLE_PROMPT_VERSIONING: ${ENABLE_PROMPT_VERSIONING:-false}
+        ENABLE_DEMO_LOGIN: ${ENABLE_DEMO_LOGIN:-true}
+        ENABLE_USER_PROFILE: ${ENABLE_USER_PROFILE:-false}
+        ENABLE_USER_CONTEXT_PRELOAD: ${ENABLE_USER_CONTEXT_PRELOAD:-false}
     volumes:
       - uploads_data:/app/uploads
       - logs_data:/app/logs
