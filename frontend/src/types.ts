@@ -42,6 +42,8 @@ export interface Message {
   // M14 V3：SSE meta.handoff 字段（转人工兜底 payload）
   // 与后端 app/services/escalation_service.py::HandoffPayload 一一对应
   handoff?: HandoffPayload | null;
+  // V19.1 商城人工直发：role=assistant 且 intent_snapshot.human=true → 人工客服消息
+  human?: boolean;
   create_time: string;
 }
 

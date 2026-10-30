@@ -72,6 +72,7 @@ class MessageItem(BaseModel):
         None, description="对应相似度分数（仅 assistant）",
     )
     create_time: datetime = Field(..., description="消息创建时间")
+    human: bool = Field(False, description="是否人工客服消息（intent_snapshot.human）")
 
 
 class MessagesResponse(BaseModel):
@@ -288,6 +289,7 @@ def get_messages(
             contexts=r.contexts,
             scores=r.scores,
             create_time=r.create_time,
+            human=isinstance(r.intent_snapshot, dict) and r.intent_snapshot.get("human") is True,
         )
         for r in page_messages
     ]

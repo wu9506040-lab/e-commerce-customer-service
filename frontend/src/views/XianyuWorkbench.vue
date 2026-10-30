@@ -171,14 +171,10 @@ function select(c: Conv) {
 async function onSend() {
   const text = draft.value.trim();
   if (!text || busy.value || !currentCid.value) return;
-  if (!isXianyu.value) {
-    error.value = '商城渠道暂不支持直发（请走人工工单流程）';
-    return;
-  }
   busy.value = true;
   error.value = '';
   try {
-    await sendXianyuMessage(currentCid.value, text);
+    await sendXianyuMessage(currentCid.value, text, '', currentChannel.value || 'xianyu');
     draft.value = '';
     setTimeout(refreshMessages, 600);
   } catch (e) {
@@ -351,11 +347,11 @@ onBeforeUnmount(() => {
           <textarea
             v-model="draft"
             rows="2"
-            :placeholder="isXianyu ? '输入回复，Enter 发送（Shift+Enter 换行）' : '商城渠道暂不支持直发'"
-            :disabled="!isXianyu"
+            :placeholder="isXianyu ? '输入回复，Enter 发送（Shift+Enter 换行）' : '输入人工回复，Enter 发送（买家端拉取可见）'"
+            :disabled="false"
             @keydown.enter.exact.prevent="onSend"
           ></textarea>
-          <button class="cw-btn cw-btn-blue cw-send" :disabled="busy || !draft.trim() || !isXianyu" @click="onSend">
+          <button class="cw-btn cw-btn-blue cw-send" :disabled="busy || !draft.trim()" @click="onSend">
             发送
           </button>
         </div>

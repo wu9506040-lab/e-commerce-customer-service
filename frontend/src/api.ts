@@ -712,11 +712,11 @@ export async function getXianyuEvents(limit = 50): Promise<{ events: XianyuEvent
   return http('/admin/xianyu/events?limit=' + limit);
 }
 
-export async function sendXianyuMessage(cid: string, text: string, toid = ''): Promise<{ ok: boolean }> {
+export async function sendXianyuMessage(cid: string, text: string, toid = '', channel = 'xianyu'): Promise<{ ok: boolean }> {
   return http('/admin/xianyu/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cid, text, toid }),
+    body: JSON.stringify({ cid, text, toid, channel }),
   });
 }
 

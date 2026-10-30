@@ -7,7 +7,7 @@
         统一会话列表：闲鱼（session xianyu-* 前缀 + Redis 实时态）+ 商城（其余会话）
 - GET  /conversations/{channel}/{cid}/messages   会话消息历史（含 AI/人工标记）
 - GET  /events?limit=    实时事件流（daemon 上行）
-- POST /send             人工直发（闲鱼渠道；落库 role=assistant + intent_snapshot.human=true）
+- POST /send             人工直发（闲鱼=落库+daemon 下发；商城=仅落库，买家端轮询拉取）
 - POST /takeover|release 接管/恢复 AI
 
 AI/人工区分：Message.intent_snapshot.human === true → 人工；否则 AI。
@@ -334,6 +334,7 @@ class SendBody(BaseModel):
     cid: str = Field(..., min_length=1)
     text: str = Field(..., min_length=1, max_length=2000)
     toid: str = Field("", description="买家 unb（可选，daemon 有映射缓存）")
+    channel: str = Field("xianyu", description="xianyu=直发+daemon 下发；mall=仅落库（买家端轮询拉取）")
 
 
 class TakeoverBody(BaseModel):
@@ -347,6 +348,20 @@ def send_xianyu_message(
     admin: User = Depends(require_admin),
 ):
     # 1. 落库（role=assistant + intent_snapshot.human=true → 工作台可区分 AI/人工）
+    # V19.1：channel 显式区分——闲鱼 cid 到这里已被剥前缀，不能再用前缀判断渠道
+    if body.channel == "mall":
+        row = Message(
+            session_id=body.cid,  # 商城会话：cid 即 session_id，禁止加 xianyu- 前缀
+            user_id=admin.id,
+            role="assistant",
+            content=body.text,
+            intent_snapshot={"human": True, "agent": admin.username},
+        )
+        db.add(row)
+        db.commit()
+        logger.info(f"[mall-direct] 人工直发落库（商城渠道）: sid={body.cid} admin={admin.username}")
+        return {"ok": True, "queued": False, "channel": "mall", "cid": body.cid, "message_id": row.id}
+
     sid = _cid_to_session(body.cid)
     row = Message(
         session_id=sid,

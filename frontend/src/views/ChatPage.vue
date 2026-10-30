@@ -6,7 +6,7 @@
  * - SSE meta 完整保存到 message（intent/entities/tool_result_preview）
  * - 会话列表：左侧侧边栏
  */
-import { computed, ref, onMounted, watch } from 'vue';
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   listConversations,
@@ -142,17 +142,37 @@ async function switchToSession(sessionId: string) {
   router.replace({ name: 'chat-session', params: { sessionId } });
 }
 
-async function loadMessages() {
+async function loadMessages(silent = false) {
   if (!currentSessionId.value) return;
-  messagesLoading.value = true;
+  if (!silent) messagesLoading.value = true;
   try {
     const page = await getMessages(currentSessionId.value, undefined, 100);
-    messages.value = [...page.messages].reverse();
+    const next = [...page.messages].reverse();
+    // 人工回复到达时轻提示（长度变化 = 有新消息）
+    const hasNew = next.length > messages.value.length;
+    messages.value = next;
+    if (silent && hasNew) {
+      // 新消息（人工直发）到达——滚动到底部由 MessageList 自身逻辑处理，
+      // 这里只做轻量刷新，不打断用户输入
+    }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载消息失败';
+    if (!silent) error.value = e instanceof Error ? e.message : '加载消息失败';
   } finally {
-    messagesLoading.value = false;
+    if (!silent) messagesLoading.value = false;
   }
+}
+
+// V19.1 商城人工直发：买家端轮询（5s 静默刷新，人工回复落库后在此可见）
+let pollTimer: number | null = null;
+function startPolling() {
+  if (pollTimer !== null) return;
+  pollTimer = window.setInterval(() => {
+    if (streaming.value || messagesLoading.value || !currentSessionId.value) return;
+    void loadMessages(true);
+  }, 5000);
+}
+function stopPolling() {
+  if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
 }
 
 // =============================================================
@@ -416,6 +436,7 @@ async function sendMessage(text: string, ctx?: { sku?: string; orderNo?: string 
 // 路由参数处理
 // =============================================================
 onMounted(async () => {
+  startPolling();
   await loadConversations();
 
   // /chat/:sessionId → 恢复会话
@@ -424,6 +445,8 @@ onMounted(async () => {
     await switchToSession(sid);
   }
 });
+
+onUnmounted(stopPolling);
 
 // 监听路由变化（用户手动改 URL）
 watch(

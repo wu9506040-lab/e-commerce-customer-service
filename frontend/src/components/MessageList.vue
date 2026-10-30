@@ -85,10 +85,11 @@ onMounted(scrollToBottom);
       :key="`${msg.create_time}-${idx}`"
       :class="['message', msg.role]"
     >
-      <div class="avatar-mini" v-if="msg.role === 'assistant'">
-        <span>智</span>
+      <div class="avatar-mini" :class="{ human: msg.human }" v-if="msg.role === 'assistant'">
+        <span>{{ msg.human ? '客' : '智' }}</span>
       </div>
       <div class="bubble">
+        <div v-if="msg.human" class="human-tag">人工客服</div>
         <div class="content">
           <MarkdownView :text="msg.content" />
         </div>
@@ -246,6 +247,18 @@ onMounted(scrollToBottom);
   justify-content: center;
   flex-shrink: 0;
   align-self: flex-start;
+}
+.avatar-mini.human {
+  background: var(--green-500, #22c55e);
+}
+.human-tag {
+  display: inline-block;
+  font-size: 11px;
+  color: #16a34a;
+  background: rgba(34, 197, 94, 0.12);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-bottom: 4px;
 }
 
 .bubble {
